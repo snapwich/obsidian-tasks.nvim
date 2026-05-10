@@ -621,8 +621,19 @@ T["resolve_insert: relative capture_file resolved against vault root"] = functio
   eq(vim.fn.filereadable(expected), 0)
 
   -- Stub _G.Obsidian so current_workspace() returns our temp vault root.
+  -- root is a table with __tostring to match real obsidian.nvim (where
+  -- ws.root is a Path object, not a plain string).
   local prev_obsidian = _G.Obsidian
-  _G.Obsidian = { workspace = { root = vault_root }, workspaces = {} }
+  _G.Obsidian = {
+    workspace = {
+      root = setmetatable({}, {
+        __tostring = function()
+          return vault_root
+        end,
+      }),
+    },
+    workspaces = {},
+  }
 
   local render_bufnr = make_buf({ "text" })
 

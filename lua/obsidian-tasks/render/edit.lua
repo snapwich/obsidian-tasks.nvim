@@ -331,7 +331,8 @@ function M.resolve_insert(bufnr, after_lnum, new_text)
       return require("obsidian-tasks.util.obsidian").current_workspace()
     end)
     if ws_ok and ws and ws.root then
-      local root = ws.root:gsub("[/\\]+$", "")
+      -- ws.root may be a Path object (table with __tostring); coerce to string.
+      local root = tostring(ws.root):gsub("[/\\]+$", "")
       abs_path = root .. "/" .. capture_file
     else
       -- Obsidian not initialised: use path as-is (best-effort).
