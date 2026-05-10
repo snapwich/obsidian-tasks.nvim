@@ -107,9 +107,10 @@ function M.setup(opts)
   -- ── BufWritePost ────────────────────────────────────────────────────────────
   -- Refresh the buffer after a write when an active render exists.
   --
-  -- NOTE: Until T3 (BufWriteCmd) lands, the disk file will contain rendered
-  -- task lines in addition to the source content.  This is a known transitional
-  -- gap — T3 will intercept writes and strip managed lines before persisting.
+  -- For dashboard buffers (acwrite), this event is fired manually by the
+  -- BufWriteCmd handler in render/save.lua after writefile succeeds.
+  -- For regular .md buffers written via the normal Neovim path, this fires
+  -- automatically after the file is saved on disk.
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = group,
     pattern = "*.md",

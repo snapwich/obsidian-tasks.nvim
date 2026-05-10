@@ -262,6 +262,40 @@ function M.task_meta_for_row(bufnr, row)
   return nil
 end
 
+-- ── Region enumeration ────────────────────────────────────────────────────────
+
+--- Return a sorted list of { start_row, end_row } for all live region extmarks.
+---
+--- Reads current extmark positions so the result is always up-to-date even if
+--- surrounding lines have been inserted or deleted since the region was created.
+--- Used by the BufWriteCmd save handler to determine which rows to drop.
+---
+--- @param bufnr integer
+--- @return table[]  list of { start_row, end_row } 0-indexed inclusive, sorted by start_row
+function M.all_regions(bufnr)
+  if not _region_marks[bufnr] then
+    return {}
+  end
+  local ns = M.namespace()
+  local ems = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
+  local regions = {}
+  for _, em in ipairs(ems) do
+    local mark_id = em[1]
+    if _region_marks[bufnr][mark_id] then
+      local start_row = em[2]
+      local details = em[4]
+      local end_row = details.end_row ~= nil and details.end_row or start_row
+      regions[#regions + 1] = { start_row, end_row }
+    end
+  end
+  -- nvim_buf_get_extmarks already returns marks in position order, but sort
+  -- explicitly so callers can rely on the ordering guarantee.
+  table.sort(regions, function(a, b)
+    return a[1] < b[1]
+  end)
+  return regions
+end
+
 -- ── Debug / test helpers ──────────────────────────────────────────────────────
 
 --- Return the number of entries in each per-buffer side table.

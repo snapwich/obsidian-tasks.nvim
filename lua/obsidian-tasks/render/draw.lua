@@ -264,10 +264,13 @@ function M.draw(bufnr, fence_range, layout_lines)
     managed_region_id = managed_region_id,
   }
 
-  -- Attach buffer-local keymap on first draw for this buffer.
-  -- Lazy-require avoids a circular dependency (keymap → draw → keymap).
+  -- Attach buffer-local keymap and acwrite/BufWriteCmd handler on first draw.
+  -- Both are lazy-required to avoid circular dependencies at module load time.
   if is_first_for_buf then
     require("obsidian-tasks.render.keymap").attach(bufnr)
+    -- Set buftype=acwrite and register the BufWriteCmd handler so :w writes
+    -- only source content (queries + prose) and never mutates the buffer.
+    require("obsidian-tasks.render.save").set_acwrite(bufnr)
   end
 end
 
