@@ -180,11 +180,21 @@ T["on_write_cmd: BufWritePost fires after successful write"] = function()
 end
 
 -- ── on_write_cmd: modified = false ──────────────────────────────────────────
+--
+-- NOTE: must use a real listed buffer (nvim_create_buf(true, false), buftype="").
+-- Scratch buffers (buftype=nofile) silently ignore `vim.bo.modified = true`, so
+-- the pre-condition assertion would always be false and the test would be a tautology.
 
-T["on_write_cmd: modified is false after successful write"] = function()
-  local bufnr = make_buf({ "# Note", "some text" })
-  -- Manually mark as modified to confirm the handler clears it.
+T["on_write_cmd: modified transitions true→false after successful write"] = function()
+  -- Real listed buffer so that `modified` is properly tracked.
+  local bufnr = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "# Note", "some text" })
+  -- nvim_buf_set_lines on a real listed buffer sets modified=true automatically;
+  -- set explicitly as well so the pre-condition is clear.
   vim.bo[bufnr].modified = true
+
+  -- Pre-condition: must be modified before the write.
+  MiniTest.expect.equality(vim.bo[bufnr].modified, true)
 
   local tmpfile = vim.fn.tempname()
   save.on_write_cmd({ buf = bufnr, file = tmpfile })
@@ -193,6 +203,7 @@ T["on_write_cmd: modified is false after successful write"] = function()
   vim.fn.delete(tmpfile)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
+  -- Post-condition: handler must have cleared the flag.
   eq(modified_after, false)
 end
 
@@ -351,6 +362,83 @@ T["on_write_cmd: two query blocks — both managed regions dropped"] = function(
   eq(written[5], "```tasks")
   eq(written[6], "not done")
   eq(written[7], "```")
+end
+
+-- ── on_write_cmd: write-failure path ─────────────────────────────────────────
+--
+-- When writefile fails, the handler must:
+--   (a) leave vim.bo[bufnr].modified = true so the user can retry
+--   (b) NOT fire BufWritePost (render refresh / LSP must not run)
+--   (c) call log.error to inform the user
+--
+-- This corresponds to the explicit task spec requirement:
+--   "If the file write fails ... leave modified = true so they can retry."
+
+T["on_write_cmd: write failure leaves modified=true, suppresses BufWritePost, calls log.error"] = function()
+  -- Real listed buffer (buftype="") so modified is properly tracked.
+  local bufnr = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "# Note" })
+  vim.bo[bufnr].modified = true
+
+  -- Pre-condition: buffer is modified.
+  MiniTest.expect.equality(vim.bo[bufnr].modified, true)
+
+  -- Capture BufWritePost firings for this buffer.
+  local bwp_fired = false
+  local aucmd_id = vim.api.nvim_create_autocmd("BufWritePost", {
+    buffer = bufnr,
+    callback = function()
+      bwp_fired = true
+    end,
+  })
+
+  -- Capture log.error calls.
+  local log = require("obsidian-tasks.log")
+  local error_msgs = {}
+  local orig_error = log.error
+  log.error = function(msg)
+    error_msgs[#error_msgs + 1] = msg
+  end
+
+  -- Attempt to write to a path whose parent directory does not exist.
+  save.on_write_cmd({ buf = bufnr, file = "/no/such/dir/file.md" })
+
+  -- Restore log.error before assertions so any subsequent error is visible.
+  log.error = orig_error
+  vim.api.nvim_del_autocmd(aucmd_id)
+  local modified_after = vim.bo[bufnr].modified
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- (a) modified must still be true — user must be able to retry.
+  eq(modified_after, true)
+  -- (b) BufWritePost must NOT have fired.
+  eq(bwp_fired, false)
+  -- (c) log.error must have been called with the file path in the message.
+  MiniTest.expect.equality(#error_msgs >= 1, true)
+  MiniTest.expect.equality(error_msgs[1]:find("/no/such/dir/file.md", 1, true) ~= nil, true)
+end
+
+-- ── set_acwrite: idempotency — no duplicate BufWriteCmd handlers ──────────────
+--
+-- Calling set_acwrite(bufnr) twice must not register a duplicate BufWriteCmd
+-- autocmd.  This is reachable in normal usage: render.refresh_buffer clears
+-- _state[bufnr] (setting is_first_for_buf = true again on the next draw), so
+-- set_acwrite can be re-entered for the same buffer.
+--
+-- A duplicate handler would fire on_write_cmd twice per :w, corrupting the
+-- modified flag and double-firing BufWritePost.
+
+T["set_acwrite: calling twice registers exactly one BufWriteCmd autocmd"] = function()
+  local bufnr = vim.api.nvim_create_buf(false, true)
+
+  save.set_acwrite(bufnr)
+  save.set_acwrite(bufnr) -- second call must be a no-op
+
+  local autocmds = vim.api.nvim_get_autocmds({ event = "BufWriteCmd", buffer = bufnr })
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Exactly one BufWriteCmd handler must be registered (not two).
+  eq(#autocmds, 1)
 end
 
 return T
