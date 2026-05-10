@@ -1,0 +1,35 @@
+- [ ]
+- [ ] Just a task
+- [x] Done task
+- [/] In progress task
+- [-] Cancelled task
+- [h] On hold task
+  - [ ] Indented sub-task
+- [ ] Task 📅 2024-01-15
+- [ ] Task ⏳ 2024-02-01
+- [ ] Task 🛫 2024-03-10
+- [x] Task ✅ 2024-04-20
+- [-] Task ❌ 2024-05-05
+- [ ] Task ➕ 2024-06-01
+- [ ] Task 🔁 every week
+- [ ] Task 🔁 every month on the 1st
+- [ ] Task 🆔 abc-123
+- [ ] Task ⛔ xyz-456
+- [ ] Task 🏁 delete
+- [ ] Task 🔺
+- [ ] Task ⏫
+- [ ] Task 🔼
+- [ ] Task 🔽
+- [ ] Task ⏬
+- [ ] Task ⏫ 🛫 2024-01-01 ⏳ 2024-01-05 📅 2024-01-10 ➕ 2024-01-01
+- [x] Full task ⏫ 🔁 every week 🛫 2024-01-01 ⏳ 2024-01-05 📅 2024-01-10 ➕ 2024-01-01 ✅ 2024-01-10 ❌ 2024-01-11 🆔 abc-123 ⛔ def-456 🏁 delete
+- [ ] Task #project
+- [ ] Task 📅 2024-01-01 #urgent
+- [ ] My #work task 📅 2024-01-01
+- [ ] Task [due:: 2024-01-15]
+- [ ] Task [priority:: high]
+- [ ] Task [repeat:: every week]
+- [x] Task [completion:: 2024-04-20]
+- [-] Task [cancelled:: 2024-05-05]
+- [ ] Task [priority:: highest] [repeat:: every day] [start:: 2024-01-01] [scheduled:: 2024-01-05] [due:: 2024-01-10] [created:: 2024-01-01] [completion:: 2024-01-10] [cancelled:: 2024-01-11] [id:: abc-123] [dependsOn:: def-456] [onCompletion:: delete]
+- [ ] Task [scheduled:: 2024-01-10] 📅 2024-01-15
