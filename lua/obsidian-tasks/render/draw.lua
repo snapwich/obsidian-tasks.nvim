@@ -89,6 +89,10 @@ end
 function M.draw(bufnr, fence_range, layout_lines)
   local fence_first = fence_range[1]
 
+  -- Track whether this is the first draw for this buffer so we can attach
+  -- keymap bindings once (after state is initialised below).
+  local is_first_for_buf = _state[bufnr] == nil
+
   -- Clear only this specific block (not the whole buffer).
   if _state[bufnr] and _state[bufnr][fence_first] then
     clear_block(bufnr, fence_first)
@@ -218,6 +222,12 @@ function M.draw(bufnr, fence_range, layout_lines)
     em_map = em_map,
     all_eids = all_eids,
   }
+
+  -- Attach buffer-local keymap on first draw for this buffer.
+  -- Lazy-require avoids a circular dependency (keymap → draw → keymap).
+  if is_first_for_buf then
+    require("obsidian-tasks.render.keymap").attach(bufnr)
+  end
 end
 
 --- Clear all render extmarks and inserted task lines for a buffer.
@@ -253,6 +263,10 @@ function M.clear(bufnr)
 
   -- Drop state record.
   _state[bufnr] = nil
+
+  -- Remove buffer-local keymap bindings installed on first draw.
+  -- Lazy-require avoids a circular dependency (keymap → draw → keymap).
+  require("obsidian-tasks.render.keymap").detach(bufnr)
 end
 
 --- Check whether a buffer line is a render-inserted task line.
