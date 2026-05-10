@@ -863,6 +863,93 @@ T["BufWritePost: no re-render after strip when workspace is nil (non-vault file)
   r4()
 end
 
+-- ── ObsidianNoteWritePre: multi-block regression test ────────────────────────
+
+-- Regression guard for the cross-block deletion bug: in a two-block buffer,
+-- each per-block diff call must NOT emit a deletion for tasks in the OTHER block.
+-- Uses real draw + mocked edit so deletions are captured and checked.
+
+T["ObsidianNoteWritePre: no spurious cross-block deletions in two-block buffer"] = function()
+  -- Use the REAL edit.diff (not a mock) to exercise the block_em_map scoping fix.
+  -- Spy on apply_deletion so disk writes are suppressed but calls are captured.
+  local deletion_calls = {}
+  local real_edit = require("obsidian-tasks.render.edit")
+  local edit_spy = {
+    diff = real_edit.diff,
+    apply_patch = function(_p) end,
+    apply_deletion = function(d)
+      deletion_calls[#deletion_calls + 1] = d
+    end,
+    apply_insert = function(_i) end,
+  }
+  local r1 = install_mock("obsidian-tasks.render.edit", edit_spy)
+  local r2 = install_mock("obsidian-tasks.util.obsidian", make_obsidian_mock({ root = "/vault" }))
+
+  local draw_mod = require("obsidian-tasks.render.draw")
+
+  -- Buffer with two fence blocks.
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(bufnr, unique_md_path())
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+    "```tasks", -- 0
+    "not done", -- 1
+    "```", -- 2
+    "", -- 3
+    "```tasks", -- 4
+    "done", -- 5
+    "```", -- 6
+  })
+
+  -- Draw block A (fence 0-2) → task inserted at line 3.
+  local task_a = "- [ ] Task A"
+  draw_mod.draw(bufnr, { 0, 2 }, {
+    {
+      kind = "task",
+      text = task_a,
+      src_path = "/vault/a.md",
+      src_line = 10,
+      src_hash = vim.fn.sha256(task_a):sub(1, 16),
+    },
+  })
+
+  -- After block A, block B fence is now at lines 5-7 (shifted by 1 inserted task).
+  local task_b = "- [ ] Task B"
+  draw_mod.draw(bufnr, { 5, 7 }, {
+    {
+      kind = "task",
+      text = task_b,
+      src_path = "/vault/b.md",
+      src_line = 20,
+      src_hash = vim.fn.sha256(task_b):sub(1, 16),
+    },
+  })
+  -- task_b is now at line 8.
+
+  -- Fire ObsidianNoteWritePre with NO user edits → both tasks are unchanged.
+  local autocmds = get_autocmds()
+  autocmds.setup({ auto_render = false })
+  vim.api.nvim_exec_autocmds("User", { pattern = "ObsidianNoteWritePre", data = { buf = bufnr } })
+
+  -- The real diff scoped to each block's em_map must produce 0 deletions.
+  -- Before the fix (all-blocks tracked), diff(bufnr, {3,3}) would see task_b's
+  -- extmark at row 8 (outside range), fail both claims, and emit a spurious
+  -- DELETION for /vault/b.md:20 — and vice-versa for the second diff call.
+  eq(#deletion_calls, 0)
+
+  -- Both task lines must be stripped from the buffer (original 7 lines remain).
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(#lines, 7)
+  for _, l in ipairs(lines) do
+    MiniTest.expect.equality(l:find("Task A", 1, true), nil)
+    MiniTest.expect.equality(l:find("Task B", 1, true), nil)
+  end
+
+  draw_mod.clear(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  r1()
+  r2()
+end
+
 -- ── ObsidianNoteWritePre + strip: integration (real draw module) ─────────────
 
 -- Verifies actual buffer lines are removed; uses real draw + render modules,

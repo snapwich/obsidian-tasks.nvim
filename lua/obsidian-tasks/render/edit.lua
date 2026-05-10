@@ -59,9 +59,16 @@ end
 ---
 --- @param bufnr        integer
 --- @param render_range table   { first, last } 0-indexed inclusive
+--- @param block_em_map table?  optional: em_map for this block only (eid → meta).
+---                             When provided, only this block's extmarks are
+---                             considered; this prevents spurious deletions of
+---                             tasks that belong to other rendered blocks in the
+---                             same buffer.  Callers handling multi-block buffers
+---                             MUST supply this.  When nil the function falls
+---                             back to gathering extmarks from all blocks (safe
+---                             only when the buffer has exactly one block).
 --- @return table  { patches, deletions, inserts }
-function M.diff(bufnr, render_range)
-  local draw = require("obsidian-tasks.render.draw")
+function M.diff(bufnr, render_range, block_em_map)
   local NS = require("obsidian-tasks.util.extmark").NS
 
   local patches = {}
@@ -71,16 +78,24 @@ function M.diff(bufnr, render_range)
   local first = render_range[1]
   local last = render_range[2]
 
-  -- Gather all tracked task extmarks from the live render state.
-  local all_state = draw.render_state(bufnr)
-  if not all_state then
-    return { patches = patches, deletions = deletions, inserts = inserts }
-  end
-
+  -- Build the tracked extmark table.
+  -- When block_em_map is supplied, use it directly (multi-block safe).
+  -- Otherwise fall back to gathering from the full draw state (single-block path).
   local tracked = {} -- eid → { src_path, src_line, src_hash, render_lnum }
-  for _, block in pairs(all_state) do
-    for eid, meta in pairs(block.em_map or {}) do
+  if block_em_map then
+    for eid, meta in pairs(block_em_map) do
       tracked[eid] = meta
+    end
+  else
+    local draw = require("obsidian-tasks.render.draw")
+    local all_state = draw.render_state(bufnr)
+    if not all_state then
+      return { patches = patches, deletions = deletions, inserts = inserts }
+    end
+    for _, block in pairs(all_state) do
+      for eid, meta in pairs(block.em_map or {}) do
+        tracked[eid] = meta
+      end
     end
   end
 

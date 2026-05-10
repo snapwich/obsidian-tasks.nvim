@@ -145,11 +145,13 @@ function M.setup(opts)
       end
 
       -- Run diff and apply source-file changes for each rendered block.
-      -- Block iteration order does not matter here: diff only reads the render
-      -- buffer and writes to separate source files.
+      -- Pass block.em_map to scope diff to this block only; this prevents
+      -- spurious deletions of tasks that belong to other blocks in the buffer.
+      -- Block iteration order does not matter: diff reads the render buffer
+      -- but writes only to separate source files.
       for _, block in pairs(state) do
         if block.inserted_range ~= nil then
-          local result = edit.diff(bufnr, block.inserted_range)
+          local result = edit.diff(bufnr, block.inserted_range, block.em_map)
           for _, patch in ipairs(result.patches) do
             edit.apply_patch(patch)
           end
@@ -164,13 +166,17 @@ function M.setup(opts)
 
       -- Strip all render regions from the buffer and clear state so the
       -- disk write contains only fence lines.
-      local path = vim.api.nvim_buf_get_name(bufnr)
-      local ws = safe_workspace_for_path(path)
       render.clear_buffer(bufnr)
 
       -- Schedule re-render for BufWritePost when auto_render is enabled.
-      if opts.auto_render and ws ~= nil then
-        _pending_rerender[bufnr] = ws
+      -- Workspace lookup is deferred to here to avoid the pcall overhead
+      -- when auto_render is off.
+      if opts.auto_render then
+        local path = vim.api.nvim_buf_get_name(bufnr)
+        local ws = safe_workspace_for_path(path)
+        if ws ~= nil then
+          _pending_rerender[bufnr] = ws
+        end
       end
     end,
   })
