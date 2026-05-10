@@ -141,12 +141,21 @@ function M:get_completions(ctx, callback)
     cursor_col = ctx.cursor and ctx.cursor[2] or 0,
   }
 
-  -- Field-icon suggestions (T2).
+  -- Field-icon suggestions (T2): offered when cursor is in description position.
   local items = {}
   local ok_fields, fields_mod = pcall(require, "obsidian-tasks.cmp.fields")
   if ok_fields then
     local field_items = fields_mod.completions(adapted)
     for _, item in ipairs(field_items) do
+      items[#items + 1] = item
+    end
+  end
+
+  -- Per-field value suggestions (T3): offered when cursor is inside a field.
+  local ok_values, values_mod = pcall(require, "obsidian-tasks.cmp.values")
+  if ok_values then
+    local value_items = values_mod.completions(adapted)
+    for _, item in ipairs(value_items) do
       items[#items + 1] = item
     end
   end
