@@ -46,15 +46,25 @@ end
 --- @param bufnr integer  buffer number
 --- @param lnum  integer  0-indexed buffer line number
 --- @return table|nil
----   Render task:  { kind='render', src_path, src_line, src_hash, source_text_hash }
+---   Render task:  { kind='render', bufnr, lnum, task, src_path, src_line, src_hash, source_text_hash }
 ---   Source task:  { kind='source', bufnr, lnum, task }
 function M.resolve_task_at(bufnr, lnum)
   -- Check render layer first.
   local draw = require("obsidian-tasks.render.draw")
   local info = draw.is_render_line(bufnr, lnum)
   if info then
+    -- Parse the render-buffer line so cmd modules can mutate it in-place.
+    -- Mutated render lines are detected by F4 (diff Phase 2) and written back to source on :w.
+    local render_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
+    local task = nil
+    if #render_lines > 0 then
+      task = require("obsidian-tasks.task.parse").parse(render_lines[1])
+    end
     return {
       kind = "render",
+      bufnr = bufnr,
+      lnum = lnum,
+      task = task,
       src_path = info.src_path,
       src_line = info.src_line,
       src_hash = info.src_hash,

@@ -21,7 +21,7 @@ local FIELD_EMOJI = "🔁"
 --- @param resolved table   result of cmd.resolve_task_at()
 --- @param pattern  string  raw recurrence string
 local function recurrence_one(resolved, pattern)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local task = resolved.task
     task.fields[FIELD_KEY] = pattern
     -- Preserve origin if the field already existed; default to emoji.
@@ -30,8 +30,6 @@ local function recurrence_one(resolved, pattern)
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    require("obsidian-tasks.log").warn("ObsidianTask recurrence: render lines are updated via edit-through on :w")
   end
 end
 
@@ -68,10 +66,6 @@ function M.run(args, range)
     local resolved = cmd.resolve_task_at(bufnr, lnum)
     if not resolved then
       log.error("ObsidianTask recurrence: no task at cursor")
-      return
-    end
-    if resolved.kind == "render" then
-      log.warn("ObsidianTask recurrence: render lines are updated via edit-through on :w")
       return
     end
 

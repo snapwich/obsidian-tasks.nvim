@@ -13,17 +13,13 @@ local M = {}
 ---
 --- @param resolved table  result of cmd.resolve_task_at()
 local function toggle_one(resolved)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local status_mod = require("obsidian-tasks.task.status")
     local serialize = require("obsidian-tasks.task.serialize")
     local task = resolved.task
     task.status_symbol = status_mod.next(task.status_symbol)
     local new_line = serialize.serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    -- Render-line toggle is deferred to edit-through (F4) on :w.
-    -- Warn the user that the change will be applied on save.
-    require("obsidian-tasks.log").warn("ObsidianTask toggle: render lines are toggled via edit-through on :w")
   end
 end
 

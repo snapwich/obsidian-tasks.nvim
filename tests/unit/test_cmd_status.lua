@@ -6,7 +6,7 @@
 --   • Idempotency for done/cancel
 --   • Source-buffer mutation for all five commands
 --   • Visual-range bulk: all 5 tasks marked done with stamp
---   • Render-line path: warns instead of mutating (F4 handles on :w)
+--   • Render-line path: mutates buffer in-place (F4 diff detects and patches source on :w)
 --   • No-task range: warns without error
 
 local T = MiniTest.new_set()
@@ -155,14 +155,12 @@ T["toggle: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["toggle: render line emits warning and does not mutate buffer"] = function()
+T["toggle: render line mutates buffer in-place (F4 writes back to source on :w)"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.toggle").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.toggle").run({}, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -170,16 +168,8 @@ T["toggle: render line emits warning and does not mutate buffer"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  -- Buffer must be unchanged.
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  -- A warning must have been emitted.
-  local found_warn = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must be mutated: Todo → Done (default cycle).
+  MiniTest.expect.equality(lines[1]:sub(1, 5), "- [x]")
 end
 
 -- ── done: stamp logic ─────────────────────────────────────────────────────────
@@ -226,14 +216,12 @@ T["done: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["done: render line emits warning and does not mutate buffer"] = function()
+T["done: render line mutates buffer in-place (F4 writes back to source on :w)"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.done").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.done").run({}, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -241,14 +229,9 @@ T["done: render line emits warning and does not mutate buffer"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must be mutated: status set to 'x' and done stamp appended.
+  MiniTest.expect.equality(lines[1]:sub(1, 5), "- [x]")
+  MiniTest.expect.equality(lines[1]:find("\xe2\x9c\x85") ~= nil, true) -- ✅
 end
 
 T["done: uses opts.done_date_format from plugin opts"] = function()
@@ -364,14 +347,12 @@ T["cancel: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["cancel: render line emits warning and does not mutate buffer"] = function()
+T["cancel: render line mutates buffer in-place (F4 writes back to source on :w)"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.cancel").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.cancel").run({}, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -379,14 +360,9 @@ T["cancel: render line emits warning and does not mutate buffer"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must be mutated: status set to '-' and cancelled stamp appended.
+  MiniTest.expect.equality(lines[1]:sub(1, 5), "- [-]")
+  MiniTest.expect.equality(lines[1]:find("\xe2\x9d\x8c") ~= nil, true) -- ❌
 end
 
 T["cancel: uses opts.done_date_format from plugin opts"] = function()
@@ -472,14 +448,12 @@ T["inProgress: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["inProgress: render line emits warning and does not mutate buffer"] = function()
+T["inProgress: render line mutates buffer in-place (F4 writes back to source on :w)"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.inProgress").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.inProgress").run({}, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -487,14 +461,8 @@ T["inProgress: render line emits warning and does not mutate buffer"] = function
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must be mutated: status set to '/'.
+  MiniTest.expect.equality(lines[1]:sub(1, 5), "- [/]")
 end
 
 T["inProgress: visual range — all tasks set to in-progress"] = function()
@@ -560,14 +528,12 @@ T["onHold: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["onHold: render line emits warning and does not mutate buffer"] = function()
+T["onHold: render line mutates buffer in-place (F4 writes back to source on :w)"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.onHold").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.onHold").run({}, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -575,14 +541,8 @@ T["onHold: render line emits warning and does not mutate buffer"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must be mutated: status set to 'h'.
+  MiniTest.expect.equality(lines[1]:sub(1, 5), "- [h]")
 end
 
 T["onHold: visual range — all tasks set to on-hold"] = function()

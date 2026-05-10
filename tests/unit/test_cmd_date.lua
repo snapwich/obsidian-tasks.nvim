@@ -10,10 +10,10 @@
 --   • Visual range: all tasks in range get date set
 --   • No arg: emoji appended to task line (insert mode is UI-only, not tested)
 --   • No arg on non-task line: error emitted
---   • No arg on render line: warning emitted
+--   • No arg on render line: emoji appended in-place (same as source)
 --   • Invalid date arg: error emitted
 --   • No task in range with arg: warning emitted
---   • Render line with arg: warning emitted
+--   • Render line with arg: mutates buffer in-place
 
 local T = MiniTest.new_set()
 
@@ -259,14 +259,12 @@ T["due: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["due: render line with arg emits warning"] = function()
+T["due: render line with arg mutates buffer in-place"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.due").run({ "2026-12-31" }, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.due").run({ "2026-12-31" }, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -274,14 +272,9 @@ T["due: render line with arg emits warning"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the due date set.
+  MiniTest.expect.equality(lines[1]:find("2026%-12%-31") ~= nil, true)
+  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x93\x85") ~= nil, true) -- 📅
 end
 
 -- ── due: visual range ────────────────────────────────────────────────────────
@@ -369,17 +362,15 @@ T["due: no arg on non-task line emits error"] = function()
   MiniTest.expect.equality(found_error, true)
 end
 
-T["due: no arg on render line emits warning"] = function()
+T["due: no arg on render line appends emoji in-place"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
   local orig_cmd = vim.cmd
-  vim.cmd = function() end
+  vim.cmd = function() end -- suppress startinsert!
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.due").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.due").run({}, { line1 = 1, line2 = 1 })
 
   vim.cmd = orig_cmd
   draw_cleanup()
@@ -388,14 +379,8 @@ T["due: no arg on render line emits warning"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task") -- unchanged
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the 📅 emoji appended.
+  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x93\x85 $") ~= nil, true)
 end
 
 -- ── scheduled: smoke tests ───────────────────────────────────────────────────

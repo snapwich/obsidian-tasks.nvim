@@ -69,7 +69,7 @@ end
 --- @param resolved table   result of cmd.resolve_task_at()
 --- @param tag      string  e.g. "#project"
 local function add_one(resolved, tag)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local task = resolved.task
     -- Idempotent: only add if not already present.
     if not has_tag(task.tags, tag) then
@@ -77,8 +77,6 @@ local function add_one(resolved, tag)
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    require("obsidian-tasks.log").warn("ObsidianTask tags add: render lines are updated via edit-through on :w")
   end
 end
 
@@ -87,7 +85,7 @@ end
 --- @param resolved table   result of cmd.resolve_task_at()
 --- @param tag      string  e.g. "#project"
 local function remove_one(resolved, tag)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local task = resolved.task
     -- Silent no-op if the tag is not present.
     if not has_tag(task.tags, tag) then
@@ -100,8 +98,6 @@ local function remove_one(resolved, tag)
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    require("obsidian-tasks.log").warn("ObsidianTask tags remove: render lines are updated via edit-through on :w")
   end
 end
 

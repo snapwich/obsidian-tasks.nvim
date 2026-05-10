@@ -21,14 +21,12 @@ local FIELD_EMOJI = "⏳"
 --- @param resolved table   result of cmd.resolve_task_at()
 --- @param date     string  YYYY-MM-DD
 local function scheduled_one(resolved, date)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local task = resolved.task
     -- Overwrite (preserves _origin format when field already existed).
     task.fields[FIELD_KEY] = date
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    require("obsidian-tasks.log").warn("ObsidianTask scheduled: render lines are updated via edit-through on :w")
   end
 end
 
@@ -64,10 +62,6 @@ function M.run(args, range)
     local resolved = cmd.resolve_task_at(bufnr, lnum)
     if not resolved then
       log.error("ObsidianTask scheduled: no task at cursor")
-      return
-    end
-    if resolved.kind == "render" then
-      log.warn("ObsidianTask scheduled: render lines are updated via edit-through on :w")
       return
     end
 

@@ -8,7 +8,7 @@
 --   • priority: invalid level emits error
 --   • priority: missing level emits error
 --   • priority: visual range — all tasks get the priority
---   • priority: render line emits warning
+--   • priority: render line mutates buffer in-place
 --   • priority: no task in range emits warning
 --   • priority: tab completion returns 6 levels
 --   • recurrence: set raw pattern
@@ -16,9 +16,9 @@
 --   • recurrence: multi-word pattern
 --   • recurrence: no arg appends 🔁 emoji + space
 --   • recurrence: no arg on non-task line emits error
---   • recurrence: no arg on render line emits warning
+--   • recurrence: no arg on render line appends emoji in-place
 --   • recurrence: visual range — all tasks get recurrence
---   • recurrence: render line with arg emits warning
+--   • recurrence: render line with arg mutates buffer in-place
 --   • recurrence: no task in range emits warning
 --   • tags add: appends tag as trailing tag
 --   • tags add: idempotent (no duplicates)
@@ -30,8 +30,8 @@
 --   • tags: missing tag arg emits error
 --   • tags: tag without '#' emits error
 --   • tags: no task in range emits warning
---   • tags: render line add emits warning
---   • tags: render line remove emits warning
+--   • tags: render line add mutates buffer in-place
+--   • tags: render line remove mutates buffer in-place
 --   • tags: visual range add — all tasks get tag
 --   • tags: visual range remove — all tasks lose tag
 
@@ -274,14 +274,13 @@ T["priority: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["priority: render line emits warning and does not mutate buffer"] = function()
+T["priority: render line mutates buffer in-place"] = function()
+  local fields = require("obsidian-tasks.task.fields")
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.priority").run({ "high" }, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.priority").run({ "high" }, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -289,14 +288,8 @@ T["priority: render line emits warning and does not mutate buffer"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the high-priority emoji set.
+  MiniTest.expect.equality(lines[1]:find(fields.priority_levels.high, 1, true) ~= nil, true)
 end
 
 T["priority: visual range — all tasks get priority"] = function()
@@ -444,17 +437,15 @@ T["recurrence: no arg on non-task line emits error"] = function()
   MiniTest.expect.equality(found_error, true)
 end
 
-T["recurrence: no arg on render line emits warning"] = function()
+T["recurrence: no arg on render line appends emoji in-place"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
   local orig_cmd = vim.cmd
-  vim.cmd = function() end
+  vim.cmd = function() end -- suppress startinsert!
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.recurrence").run({}, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.recurrence").run({}, { line1 = 1, line2 = 1 })
 
   vim.cmd = orig_cmd
   draw_cleanup()
@@ -463,24 +454,16 @@ T["recurrence: no arg on render line emits warning"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the 🔁 emoji appended.
+  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x94\x81 $") ~= nil, true)
 end
 
-T["recurrence: render line with arg emits warning"] = function()
+T["recurrence: render line with arg mutates buffer in-place"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.recurrence").run({ "every week" }, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.recurrence").run({ "every week" }, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -488,14 +471,9 @@ T["recurrence: render line with arg emits warning"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the recurrence pattern set.
+  MiniTest.expect.equality(lines[1]:find("every week") ~= nil, true)
+  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x94\x81") ~= nil, true) -- 🔁
 end
 
 T["recurrence: no task in range emits warning"] = function()
@@ -732,14 +710,12 @@ T["tags: no task in range emits warning"] = function()
   MiniTest.expect.equality(found_warn, true)
 end
 
-T["tags add: render line emits warning and does not mutate buffer"] = function()
+T["tags add: render line mutates buffer in-place"] = function()
   local bufnr = make_buf({ "- [ ] Render task" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.tags").run({ "add", "#foo" }, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.tags").run({ "add", "#foo" }, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -747,24 +723,16 @@ T["tags add: render line emits warning and does not mutate buffer"] = function()
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task")
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the tag added.
+  MiniTest.expect.equality(lines[1]:find("#foo") ~= nil, true)
 end
 
-T["tags remove: render line emits warning and does not mutate buffer"] = function()
+T["tags remove: render line mutates buffer in-place"] = function()
   local bufnr = make_buf({ "- [ ] Render task #foo" })
   local draw_cleanup = mock_render_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
-  local calls = capture_notify(function()
-    require("obsidian-tasks.cmd.tags").run({ "remove", "#foo" }, { line1 = 1, line2 = 1 })
-  end)
+  require("obsidian-tasks.cmd.tags").run({ "remove", "#foo" }, { line1 = 1, line2 = 1 })
 
   draw_cleanup()
   buf_cleanup()
@@ -772,14 +740,9 @@ T["tags remove: render line emits warning and does not mutate buffer"] = functio
   local lines = buf_lines(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  MiniTest.expect.equality(lines[1], "- [ ] Render task #foo")
-  local found_warn = false
-  for _, c in ipairs(calls) do
-    if c.level == vim.log.levels.WARN then
-      found_warn = true
-    end
-  end
-  MiniTest.expect.equality(found_warn, true)
+  -- Buffer must have the tag removed.
+  MiniTest.expect.equality(lines[1]:find("#foo") == nil, true)
+  MiniTest.expect.equality(lines[1]:find("Render task") ~= nil, true)
 end
 
 T["tags add: visual range — all tasks get tag"] = function()

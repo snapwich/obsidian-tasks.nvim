@@ -31,7 +31,7 @@ end
 --- @param resolved table   result of cmd.resolve_task_at()
 --- @param level    string  one of the VALID_LEVELS values
 local function priority_one(resolved, level)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local task = resolved.task
     if level == "none" then
       task.fields.priority = nil
@@ -45,8 +45,6 @@ local function priority_one(resolved, level)
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    require("obsidian-tasks.log").warn("ObsidianTask priority: render lines are updated via edit-through on :w")
   end
 end
 

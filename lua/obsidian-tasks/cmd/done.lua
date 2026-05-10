@@ -25,7 +25,7 @@ end
 ---
 --- @param resolved table  result of cmd.resolve_task_at()
 local function done_one(resolved)
-  if resolved.kind == "source" then
+  if resolved.kind == "source" or resolved.kind == "render" then
     local serialize = require("obsidian-tasks.task.serialize")
     local task = resolved.task
 
@@ -41,8 +41,6 @@ local function done_one(resolved)
 
     local new_line = serialize.serialize(task)
     vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
-  elseif resolved.kind == "render" then
-    require("obsidian-tasks.log").warn("ObsidianTask done: render lines are updated via edit-through on :w")
   end
 end
 
