@@ -422,11 +422,17 @@ end
 
 -- ── render_state ──────────────────────────────────────────────────────────────
 
+-- render_state now returns a map keyed by fence_first (0-indexed).
+-- All single-block tests access state via render_state(bufnr)[fence_first].
+
 T["render_state: returns state record after draw"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
 
-  local state = draw_mod.render_state(bufnr)
+  -- render_state returns { [fence_first] = block_state }
+  local all_state = draw_mod.render_state(bufnr)
+  MiniTest.expect.equality(all_state ~= nil, true)
+  local state = all_state[0]
   MiniTest.expect.equality(state ~= nil, true)
   eq(type(state.fence_range), "table")
   eq(type(state.em_map), "table")
@@ -437,7 +443,7 @@ T["render_state: fence_range matches argument"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
 
-  local state = draw_mod.render_state(bufnr)
+  local state = draw_mod.render_state(bufnr)[0]
   eq(state.fence_range[1], 0)
   eq(state.fence_range[2], 2)
   draw_mod.clear(bufnr)
@@ -455,7 +461,7 @@ T["render_state: inserted_range covers task lines"] = function()
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
 
-  local state = draw_mod.render_state(bufnr)
+  local state = draw_mod.render_state(bufnr)[0]
   -- 2 tasks inserted after fence (line 2), so range 3..4
   eq(state.inserted_range[1], 3)
   eq(state.inserted_range[2], 4)
@@ -470,7 +476,7 @@ T["render_state: inserted_range is nil when no task lines"] = function()
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
 
-  local state = draw_mod.render_state(bufnr)
+  local state = draw_mod.render_state(bufnr)[0]
   eq(state.inserted_range, nil)
   draw_mod.clear(bufnr)
 end
@@ -478,6 +484,84 @@ end
 T["render_state: returns nil when no render active"] = function()
   local bufnr = make_buf({ "text" })
   eq(draw_mod.render_state(bufnr), nil)
+end
+
+-- ── multi-block ────────────────────────────────────────────────────────────────
+
+T["draw: two blocks in same buffer have independent state"] = function()
+  -- Buffer with two fences; second fence starts at line 4.
+  local bufnr = make_buf({
+    "```tasks", -- 0
+    "not done", -- 1
+    "```", -- 2
+    "", -- 3
+    "```tasks", -- 4
+    "done", -- 5
+    "```", -- 6
+  })
+
+  local layout_a = simple_layout("- [ ] Alpha", "/v/a.md", 1)
+  local layout_b = simple_layout("- [x] Beta", "/v/b.md", 2)
+
+  -- Draw block A (fence 0-2), then block B (fence 4-6).
+  draw_mod.draw(bufnr, fence(0, 2), layout_a)
+  -- After block A: 1 task inserted after line 2, so block B fence is now at 5-7.
+  draw_mod.draw(bufnr, fence(5, 7), layout_b)
+
+  -- Both blocks' state should exist independently.
+  local all_state = draw_mod.render_state(bufnr)
+  MiniTest.expect.equality(all_state ~= nil, true)
+  MiniTest.expect.equality(all_state[0] ~= nil, true)
+  MiniTest.expect.equality(all_state[5] ~= nil, true)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: redrawing one block does not clear the other"] = function()
+  local bufnr = make_buf({
+    "```tasks",
+    "not done",
+    "```",
+    "",
+    "```tasks",
+    "done",
+    "```",
+  })
+  local layout_a = simple_layout("- [ ] A", "/v/a.md", 1)
+  local layout_b = simple_layout("- [x] B", "/v/b.md", 2)
+
+  draw_mod.draw(bufnr, fence(0, 2), layout_a)
+  -- block B fence adjusted for block A's insertion (+1 task line)
+  draw_mod.draw(bufnr, fence(5, 7), layout_b)
+
+  -- Redraw block A only; block B state must survive.
+  draw_mod.draw(bufnr, fence(0, 2), layout_a)
+
+  local all_state = draw_mod.render_state(bufnr)
+  MiniTest.expect.equality(all_state[5] ~= nil, true)
+
+  draw_mod.clear(bufnr)
+end
+
+T["clear: removes all blocks for buffer"] = function()
+  local bufnr = make_buf({
+    "```tasks",
+    "not done",
+    "```",
+    "",
+    "```tasks",
+    "done",
+    "```",
+  })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] A"))
+  draw_mod.draw(bufnr, fence(5, 7), simple_layout("- [x] B"))
+
+  draw_mod.clear(bufnr)
+
+  eq(draw_mod.render_state(bufnr), nil)
+  -- All extmarks should be gone.
+  local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, 0, -1, { details = true })
+  eq(#ems, 0)
 end
 
 return T

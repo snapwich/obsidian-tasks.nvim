@@ -25,7 +25,7 @@ local function get_mtime(abs_path)
 end
 
 --- Read and parse all task lines from *abs_path* synchronously.
---- Returns a list of Task objects (may be empty).
+--- Returns a list of { task = Task, line_num = integer } entries (may be empty).
 --- @param abs_path string
 --- @return table[]
 local function parse_file(abs_path)
@@ -39,7 +39,9 @@ local function parse_file(abs_path)
     if not f then
       return
     end
+    local line_num = 0
     for line in f:lines() do
+      line_num = line_num + 1
       local task = parse.parse(line)
       if task then
         -- global_filter: post-parse exclusion
@@ -49,7 +51,7 @@ local function parse_file(abs_path)
           end
         end
         if task then
-          tasks[#tasks + 1] = task
+          tasks[#tasks + 1] = { task = task, line_num = line_num }
         end
       end
     end
@@ -86,6 +88,7 @@ function M.refresh_file(abs_path)
     return
   end
 
+  -- tasks is a list of { task, line_num } entries.
   local tasks = parse_file(abs_path)
   _index[abs_path] = { mtime = mtime, tasks = tasks }
 end
@@ -103,12 +106,12 @@ function M.refresh_all(workspace, on_done)
   -- Accumulate tasks per path during the walk.
   local pending = {} -- abs_path → { mtime, tasks = {} }
 
-  scan.walk(workspace, function(task, abs_path, _line_num)
+  scan.walk(workspace, function(task, abs_path, line_num)
     if not pending[abs_path] then
       local mtime = get_mtime(abs_path)
       pending[abs_path] = { mtime = mtime, tasks = {} }
     end
-    pending[abs_path].tasks[#pending[abs_path].tasks + 1] = task
+    pending[abs_path].tasks[#pending[abs_path].tasks + 1] = { task = task, line_num = line_num }
   end, function(_code)
     -- Merge pending into _index.
     -- Files that were previously indexed but returned no tasks in the new walk
@@ -130,14 +133,16 @@ end
 --- @param path_filter fun(abs_path: string): boolean | nil
 ---   When provided, only tasks from files where `path_filter(abs_path)` is
 ---   truthy are yielded.  Pass nil to iterate all indexed tasks.
---- @return fun(): table|nil, string|nil  iterator returning (task, abs_path)
+--- @return fun(): table|nil, string|nil, integer|nil
+---   iterator returning (task, abs_path, line_num)
 function M.tasks_in(path_filter)
-  -- Collect all matching (task, abs_path) pairs first, then return an iterator.
+  -- Collect all matching entries first, then return an iterator.
+  -- Each entry in the index is { task = Task, line_num = integer }.
   local result = {}
   for abs_path, entry in pairs(_index) do
     if path_filter == nil or path_filter(abs_path) then
-      for _, task in ipairs(entry.tasks) do
-        result[#result + 1] = { task = task, path = abs_path }
+      for _, item in ipairs(entry.tasks) do
+        result[#result + 1] = { task = item.task, path = abs_path, line_num = item.line_num }
       end
     end
   end
@@ -146,7 +151,7 @@ function M.tasks_in(path_filter)
     i = i + 1
     local item = result[i]
     if item then
-      return item.task, item.path
+      return item.task, item.path, item.line_num
     end
   end
 end

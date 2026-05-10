@@ -88,16 +88,17 @@ end
 --- @return table  QueryResult
 function M.run(ast, index)
   -- 1. Collect all tasks from the index.
-  local items = {} -- { task, path, _idx }
+  -- tasks_in() returns (task, abs_path, line_num).
+  local items = {} -- { task, path, line_num, _idx }
   local iter = index.tasks_in(nil)
   local idx = 0
   while true do
-    local task, path = iter()
+    local task, path, line_num = iter()
     if not task then
       break
     end
     idx = idx + 1
-    items[#items + 1] = { task = task, path = path, _idx = idx }
+    items[#items + 1] = { task = task, path = path, line_num = line_num, _idx = idx }
   end
 
   -- 2. Filter.
@@ -119,6 +120,11 @@ function M.run(ast, index)
   local group_map = {} -- name → { tasks = [] }
 
   for _, item in ipairs(filtered) do
+    -- Attach source metadata so layout.lua can build wikilinks and F4 can jump.
+    -- We stamp directly onto the task object; index entries are per-file so
+    -- mutation is safe.  Duplicated tasks (multi-group) share the same path/line.
+    item.task._src_path = item.path
+    item.task._src_line = item.line_num
     local names = group_mod.resolve(item.task, item.path, ast.group_by)
     for _, name in ipairs(names) do
       if not group_map[name] then
@@ -179,6 +185,9 @@ function M.run(ast, index)
     hide_flags = hide_flags,
     header_summary = summary,
     errors = ast.errors or {},
+    -- Exposed for render/layout.lua footer formatting.
+    _ast_sort = ast.sort_by,
+    limit = ast.limit,
   }
 end
 
