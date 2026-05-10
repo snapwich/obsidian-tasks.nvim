@@ -26,6 +26,13 @@ local M = {}
 --
 M._buffer_state = {}
 
+-- ── Lazy-init guard ───────────────────────────────────────────────────────────
+-- Tracks workspaces for which a refresh_all walk has already been kicked off.
+-- Prevents re-triggering the walk on each recursive render call when the vault
+-- has zero tasks (which would produce an infinite loop).
+-- Key: workspace object (identity), value: true.
+local _lazy_init_started = {}
+
 -- ── Opening-fence pattern ─────────────────────────────────────────────────────
 
 --- Match the opening fence of a tasks block.
@@ -121,18 +128,22 @@ function M.render_buffer(bufnr, workspace)
   end
 
   -- ── 2. Lazy index init ─────────────────────────────────────────────────────
-  -- Count index entries by iterating once; if empty, kick off async walk.
+  -- If the index appears empty and we have a workspace, kick off a one-shot
+  -- vault walk.  The _lazy_init_started guard prevents re-triggering the walk
+  -- on the recursive render call that fires from the completion callback —
+  -- which would otherwise loop forever when the vault has zero tasks.
   do
     local any = index.tasks_in(nil)()
-    if any == nil and workspace then
-      -- Index is empty; start an async walk and re-render when done.
+    if any == nil and workspace and not _lazy_init_started[workspace] then
+      _lazy_init_started[workspace] = true
+      -- Start async walk; re-render once complete (non-blocking).
       index.refresh_all(workspace, function()
         vim.schedule(function()
           M.render_buffer(bufnr, workspace)
         end)
       end)
-      -- Don't block user; return now (renders with empty results on first pass).
-      -- Fall through so the user sees "0 results" immediately rather than nothing.
+      -- Fall through: render immediately with empty results so the user sees
+      -- "0 results" rather than a blank block.
     end
   end
 

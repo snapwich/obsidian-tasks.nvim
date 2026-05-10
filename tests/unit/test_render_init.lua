@@ -486,6 +486,151 @@ T["render_buffer: error in run produces INTERNAL ERROR label, no crash"] = funct
   restore_idx()
 end
 
+-- ── render_buffer: lazy index init ───────────────────────────────────────────
+--
+-- These tests mock index.refresh_all to drive the one-shot semantics
+-- synchronously without relying on vim.schedule timing.
+
+--- Build an index mock that supports refresh_all.
+--- @param initial_entries table[]  initial task entries (may be empty)
+--- @return table index_mock, table mutable_entries (can be filled later)
+local function make_lazy_index_mock(initial_entries)
+  local entries = initial_entries or {}
+  local mock = {
+    refresh_all_calls = 0,
+    captured_on_done = nil,
+    entries = entries,
+  }
+
+  function mock.tasks_in(_filter)
+    local i = 0
+    return function()
+      i = i + 1
+      local e = mock.entries[i]
+      if e then
+        return e.task, e.path, e.line_num
+      end
+    end
+  end
+
+  function mock.refresh_all(_workspace, on_done)
+    mock.refresh_all_calls = mock.refresh_all_calls + 1
+    mock.captured_on_done = on_done
+  end
+
+  return mock
+end
+
+T["lazy init: refresh_all fires when index empty and workspace given"] = function()
+  local render = get_render_mod()
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local idx_mock = make_lazy_index_mock({})
+  local restore_idx = install_index_stub(idx_mock)
+
+  local workspace = { root = "/vault" }
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+
+  render.render_buffer(bufnr, workspace)
+
+  -- refresh_all should have been called exactly once.
+  eq(idx_mock.refresh_all_calls, 1)
+  -- An on_done callback was captured.
+  MiniTest.expect.equality(idx_mock.captured_on_done ~= nil, true)
+  -- A draw still happened (empty results rendered immediately).
+  MiniTest.expect.equality(#draw_mock.draw_calls >= 1, true)
+
+  restore_draw()
+  restore_idx()
+end
+
+T["lazy init: refresh_all NOT called again on recursive re-render (guard prevents loop)"] = function()
+  local render = get_render_mod()
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local idx_mock = make_lazy_index_mock({})
+  local restore_idx = install_index_stub(idx_mock)
+
+  local workspace = { root = "/vault" }
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+
+  -- First call: guard not set yet, refresh_all fires.
+  render.render_buffer(bufnr, workspace)
+  eq(idx_mock.refresh_all_calls, 1)
+
+  -- Simulate the recursive re-render that on_done/vim.schedule would trigger.
+  -- The guard (_lazy_init_started[workspace]) must prevent a second refresh_all.
+  render.render_buffer(bufnr, workspace)
+  eq(idx_mock.refresh_all_calls, 1) -- still 1, not 2
+
+  restore_draw()
+  restore_idx()
+end
+
+T["lazy init: second render produces normal result when index is now populated"] = function()
+  local render = get_render_mod()
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local idx_mock = make_lazy_index_mock({})
+  local restore_idx = install_index_stub(idx_mock)
+
+  local workspace = { root = "/vault" }
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+
+  -- First render: empty index → refresh_all fired.
+  render.render_buffer(bufnr, workspace)
+  eq(idx_mock.refresh_all_calls, 1)
+  -- First draw has 0 tasks.
+  local first_task_count = 0
+  for _, ll in ipairs(draw_mock.draw_calls[1].layout_lines) do
+    if ll.kind == "task" then
+      first_task_count = first_task_count + 1
+    end
+  end
+  eq(first_task_count, 0)
+
+  -- Simulate the vault walk completing: populate the index and re-render.
+  local parse_mod = require("obsidian-tasks.task.parse")
+  local t = parse_mod.parse("- [ ] Buy milk")
+  assert(t ~= nil)
+  idx_mock.entries = { { task = t, path = "/vault/note.md", line_num = 1 } }
+
+  -- Second render (as on_done callback would trigger via vim.schedule).
+  render.render_buffer(bufnr, workspace)
+
+  -- refresh_all still 1 (guard in place), but now tasks appear in layout.
+  eq(idx_mock.refresh_all_calls, 1)
+  local second_draw = draw_mock.draw_calls[2]
+  MiniTest.expect.equality(second_draw ~= nil, true)
+  local second_task_count = 0
+  for _, ll in ipairs(second_draw.layout_lines) do
+    if ll.kind == "task" then
+      second_task_count = second_task_count + 1
+    end
+  end
+  eq(second_task_count, 1) -- the "Buy milk" task rendered
+
+  restore_draw()
+  restore_idx()
+end
+
+T["lazy init: no refresh_all when workspace not given"] = function()
+  local render = get_render_mod()
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local idx_mock = make_lazy_index_mock({})
+  local restore_idx = install_index_stub(idx_mock)
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+
+  -- No workspace argument → must not call refresh_all.
+  render.render_buffer(bufnr) -- workspace omitted
+  eq(idx_mock.refresh_all_calls, 0)
+
+  restore_draw()
+  restore_idx()
+end
+
 -- ── clear_buffer ──────────────────────────────────────────────────────────────
 
 T["clear_buffer: calls draw.clear and drops buffer state"] = function()
