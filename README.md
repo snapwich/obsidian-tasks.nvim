@@ -59,8 +59,8 @@ require("obsidian-tasks").setup({
   done_date_format = "%Y-%m-%d",   -- string (must contain %)
 
   -- Timezone used when stamping the done date.
-  -- "local" uses the system timezone; "!" prefix forces UTC (e.g. "!%Y-%m-%d").
-  done_date_tz = "local",          -- string
+  -- "local" uses the system timezone; "utc" forces UTC (prepends "!" to the format).
+  done_date_tz = "local",          -- "local" | "utc"
 
   -- Default file for :ObsidianTask new when no heading context is found.
   capture_file = nil,              -- string | nil  (absolute or vault-relative path)

@@ -725,4 +725,64 @@ T["toggle: respects user-overridden next via status.merge"] = function()
   MiniTest.expect.equality(result, "- [/] My task")
 end
 
+-- ── done_date_tz wiring ───────────────────────────────────────────────────────
+
+--- Capture the format argument passed to os.date; returns captured_fmt getter + restore fn.
+local function capture_os_date_fmt(fixed_result)
+  local captured = nil
+  local orig = os.date
+  os.date = function(fmt)
+    captured = fmt
+    return fixed_result
+  end
+  return function()
+    os.date = orig
+    return captured
+  end
+end
+
+T["done: done_date_tz=utc prepends ! to format passed to os.date"] = function()
+  local ot_restore = install_mock("obsidian-tasks", {
+    opts = { done_date_format = "%Y-%m-%d", done_date_tz = "utc" },
+  })
+  local get_fmt = capture_os_date_fmt("2024-01-15")
+  run_cmd_on_line("obsidian-tasks.cmd.done", "- [ ] My task")
+  local fmt = get_fmt()
+  ot_restore()
+  MiniTest.expect.equality(fmt ~= nil and fmt:sub(1, 1) == "!", true)
+end
+
+T["done: done_date_tz=local does not prepend ! to format"] = function()
+  local ot_restore = install_mock("obsidian-tasks", {
+    opts = { done_date_format = "%Y-%m-%d", done_date_tz = "local" },
+  })
+  local get_fmt = capture_os_date_fmt("2024-01-15")
+  run_cmd_on_line("obsidian-tasks.cmd.done", "- [ ] My task")
+  local fmt = get_fmt()
+  ot_restore()
+  MiniTest.expect.equality(fmt ~= nil and fmt:sub(1, 1) ~= "!", true)
+end
+
+T["cancel: done_date_tz=utc prepends ! to format passed to os.date"] = function()
+  local ot_restore = install_mock("obsidian-tasks", {
+    opts = { done_date_format = "%Y-%m-%d", done_date_tz = "utc" },
+  })
+  local get_fmt = capture_os_date_fmt("2024-01-15")
+  run_cmd_on_line("obsidian-tasks.cmd.cancel", "- [ ] My task")
+  local fmt = get_fmt()
+  ot_restore()
+  MiniTest.expect.equality(fmt ~= nil and fmt:sub(1, 1) == "!", true)
+end
+
+T["cancel: done_date_tz=local does not prepend ! to format"] = function()
+  local ot_restore = install_mock("obsidian-tasks", {
+    opts = { done_date_format = "%Y-%m-%d", done_date_tz = "local" },
+  })
+  local get_fmt = capture_os_date_fmt("2024-01-15")
+  run_cmd_on_line("obsidian-tasks.cmd.cancel", "- [ ] My task")
+  local fmt = get_fmt()
+  ot_restore()
+  MiniTest.expect.equality(fmt ~= nil and fmt:sub(1, 1) ~= "!", true)
+end
+
 return T
