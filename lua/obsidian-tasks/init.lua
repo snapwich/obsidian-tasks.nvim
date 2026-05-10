@@ -12,6 +12,8 @@ function M.setup(opts)
   opts = opts or {}
   local config = require("obsidian-tasks.config")
   M.opts = config.merge(opts)
+  -- Wire autocmds (BufReadPost / FocusGained / BufWritePost / BufDelete).
+  require("obsidian-tasks.autocmds").setup(M.opts)
 end
 
 return M
