@@ -8,7 +8,7 @@ Render, filter, and edit tasks across your Obsidian vault — directly in Neovim
 ## Requirements
 
 - Neovim ≥ 0.10
-- [obsidian.nvim](https://github.com/epwalsh/obsidian.nvim)
+- [obsidian.nvim](https://github.com/obsidian-nvim/obsidian.nvim)
 - [blink.cmp](https://github.com/saghen/blink.cmp)
 
 ## Installation

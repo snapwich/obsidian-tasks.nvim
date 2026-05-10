@@ -595,4 +595,57 @@ T["date_input.suggestions: custom list used for all date fields"] = function()
   MiniTest.expect.equality(labels["only-phrase"] ~= nil, true)
 end
 
+-- ── opts.date_input.natural_language ─────────────────────────────────────────
+
+T["natural_language=false: typed text does not produce ISO-parsed item"] = function()
+  -- With natural_language=false the freeform parse should be skipped.
+  local c1 = install_mock("obsidian-tasks", {
+    opts = {
+      date_input = { natural_language = false, suggestions = { "today" } },
+    },
+  })
+  local emoji = "📅"
+  local line = "- [ ] task " .. emoji .. " today"
+  local col = #line
+  local mod = fresh_values()
+  local items = mod.completions(ctx(line, col))
+  c1()
+  -- ISO-parsed item would be today's date prepended; with NL disabled it should not appear.
+  local today_iso = os.date("%Y-%m-%d")
+  local labels = label_set(items)
+  MiniTest.expect.equality(labels[today_iso] ~= nil, false)
+  -- The static suggestions list should still be returned.
+  MiniTest.expect.equality(labels["today"] ~= nil, true)
+end
+
+T["natural_language=true: typed text produces ISO-parsed item (default behaviour)"] = function()
+  local c1 = install_mock("obsidian-tasks", {
+    opts = {
+      date_input = { natural_language = true },
+    },
+  })
+  local emoji = "📅"
+  local line = "- [ ] task " .. emoji .. " today"
+  local col = #line
+  local mod = fresh_values()
+  local items = mod.completions(ctx(line, col))
+  c1()
+  local today_iso = os.date("%Y-%m-%d")
+  MiniTest.expect.equality(#items > 0, true)
+  MiniTest.expect.equality(items[1].label, today_iso)
+end
+
+T["natural_language: unset opts → NL parse enabled by default"] = function()
+  -- Empty opts → nl_enabled should be true (default).
+  local c1 = install_mock("obsidian-tasks", { opts = {} })
+  local emoji = "📅"
+  local line = "- [ ] task " .. emoji .. " today"
+  local col = #line
+  local mod = fresh_values()
+  local items = mod.completions(ctx(line, col))
+  c1()
+  local today_iso = os.date("%Y-%m-%d")
+  MiniTest.expect.equality(items[1].label, today_iso)
+end
+
 return T

@@ -199,10 +199,11 @@ end
 
 --- Build date completion items.
 ---
---- Uses opts.date_input.suggestions when configured; otherwise falls back to
---- the built-in NL_DATE_PHRASES list.  If the typed text can be parsed as an
---- ISO date via cmp/date_nl, an ISO item is prepended (so the user sees their
---- own input validated and completed first).
+--- Respects opts.date_input.natural_language: when false, the freeform NL→ISO
+--- parse is skipped.  Uses opts.date_input.suggestions when configured;
+--- otherwise falls back to the built-in NL_DATE_PHRASES list.  If the typed
+--- text can be parsed as an ISO date via cmp/date_nl (and NL is enabled), an
+--- ISO item is prepended (so the user sees their own input validated first).
 ---
 --- @param typed string  text typed after the field marker (may be empty)
 --- @return table[]
@@ -210,9 +211,12 @@ local function date_items(typed)
   local items = {}
 
   local ok_date_nl, date_nl = pcall(require, "obsidian-tasks.cmp.date_nl")
+  local ok_ot, ot = pcall(require, "obsidian-tasks")
+  local date_opts = ok_ot and ot.opts and ot.opts.date_input or nil
 
-  -- Freeform ISO parse: if the typed text is a recognisable date, offer it first.
-  if typed and typed ~= "" and ok_date_nl then
+  -- Freeform ISO parse: skip when natural_language is explicitly disabled.
+  local nl_enabled = not (date_opts and date_opts.natural_language == false)
+  if typed and typed ~= "" and ok_date_nl and nl_enabled then
     local iso = date_nl.parse(typed)
     if iso then
       items[#items + 1] = {
@@ -225,12 +229,10 @@ local function date_items(typed)
     end
   end
 
-  -- Respect opts.date_input.suggestions when the plugin has been set up;
-  -- fall back to the built-in NL_DATE_PHRASES list otherwise.
+  -- Respect opts.date_input.suggestions when configured; fall back to built-in list.
   local phrases = NL_DATE_PHRASES
-  local ok_ot, ot = pcall(require, "obsidian-tasks")
-  if ok_ot and ot.opts and ot.opts.date_input and ot.opts.date_input.suggestions then
-    phrases = ot.opts.date_input.suggestions
+  if date_opts and date_opts.suggestions then
+    phrases = date_opts.suggestions
   end
 
   for _, phrase in ipairs(phrases) do
