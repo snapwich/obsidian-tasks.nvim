@@ -406,12 +406,327 @@ T["diff: empty buffer state returns empty result"] = function()
   eq(#result.inserts, 0)
 end
 
--- ── apply_insert stub ─────────────────────────────────────────────────────────
+-- ── apply_insert: without bufnr remains a no-op ───────────────────────────────
 
-T["apply_insert: stub does not error"] = function()
+T["apply_insert: no bufnr → no-op, no error"] = function()
   MiniTest.expect.no_error(function()
     edit_mod.apply_insert({ after_lnum = 5, new_text = "- [ ] New task" })
   end)
+end
+
+-- ── resolve_insert: helpers ───────────────────────────────────────────────────
+
+--- Override opts.capture_file for the duration of *fn*, restore afterwards.
+local function with_capture_file(path, fn)
+  local plugin = require("obsidian-tasks")
+  local orig = plugin.opts.capture_file
+  plugin.opts.capture_file = path
+  local ok, err = pcall(fn)
+  plugin.opts.capture_file = orig
+  if not ok then
+    error(err, 2)
+  end
+end
+
+--- Override vim.notify for the duration of *fn*; returns captured calls.
+--- Each entry: { msg, level }.
+local function capture_notify(fn)
+  local calls = {}
+  local orig = vim.notify
+  vim.notify = function(msg, level, _opts)
+    calls[#calls + 1] = { msg = msg, level = level }
+  end
+  local ok, err = pcall(fn)
+  vim.notify = orig
+  if not ok then
+    error(err, 2)
+  end
+  return calls
+end
+
+--- Draw a single-task block into *render_bufnr* and return the task's render row.
+--- Returns the 0-indexed row where the task line was inserted.
+local function draw_task(render_bufnr, src_path, src_line, task_text)
+  local layout = simple_layout(task_text or "- [ ] Task", src_path, src_line)
+  draw_mod.draw(render_bufnr, fence(0, 2), layout)
+  -- fence is lines 0-2; task is inserted at line 3.
+  return 3
+end
+
+-- ── resolve_insert: sibling above (loaded buffer) ─────────────────────────────
+
+T["resolve_insert: sibling above → inserts after src_line in loaded source buffer"] = function()
+  -- Source buffer: task at 1-indexed line 1.
+  local src_bufnr, src_path = make_named_buf({ "- [ ] Task A", "extra line" })
+
+  -- Render buffer with one task drawn.
+  local render_bufnr = make_buf({ "```tasks", "not done", "```" })
+  local task_row = draw_task(render_bufnr, src_path, 1, "- [ ] Task A")
+
+  -- User inserts a line AFTER the task (at row task_row + 1).
+  -- The new line's after_lnum = task_row + 1.
+  local after_lnum = task_row + 1
+
+  with_capture_file(nil, function()
+    edit_mod.resolve_insert(render_bufnr, after_lnum, "- [ ] New task")
+  end)
+
+  -- Source buffer must have the new line inserted after 1-indexed line 1.
+  local lines = vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
+  eq(lines[1], "- [ ] Task A")
+  eq(lines[2], "- [ ] New task")
+  eq(lines[3], "extra line")
+
+  draw_mod.clear(render_bufnr)
+end
+
+-- ── resolve_insert: sibling above (disk fallback) ─────────────────────────────
+
+T["resolve_insert: sibling above → inserts after src_line on disk when not loaded"] = function()
+  local path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [ ] Task A", "extra line" }, path)
+
+  -- Make sure this path is NOT loaded as a buffer.
+  eq(vim.fn.bufnr(path, false), -1)
+
+  local render_bufnr = make_buf({ "```tasks", "not done", "```" })
+  local task_row = draw_task(render_bufnr, path, 1, "- [ ] Task A")
+
+  local after_lnum = task_row + 1
+
+  with_capture_file(nil, function()
+    edit_mod.resolve_insert(render_bufnr, after_lnum, "- [ ] New task")
+  end)
+
+  local lines = vim.fn.readfile(path)
+  eq(lines[1], "- [ ] Task A")
+  eq(lines[2], "- [ ] New task")
+  eq(lines[3], "extra line")
+
+  draw_mod.clear(render_bufnr)
+end
+
+-- ── resolve_insert: sibling above with multiple tasks ────────────────────────
+
+T["resolve_insert: sibling is immediately above insert row"] = function()
+  -- Two tasks drawn: A at row 3, B at row 4.  Insert at row 5 (after B).
+  local src_a = "/vault/a_sibling.md"
+  local src_b_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [ ] Task B", "tail" }, src_b_path)
+  eq(vim.fn.bufnr(src_b_path, false), -1)
+
+  local render_bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = two_task_layout("- [ ] Task A", src_a, 10, "- [ ] Task B", src_b_path, 1)
+  draw_mod.draw(render_bufnr, fence(0, 2), layout)
+  -- Task A at row 3, Task B at row 4.
+
+  -- Insert after row 4 (= after Task B).
+  local after_lnum = 5
+
+  with_capture_file(nil, function()
+    edit_mod.resolve_insert(render_bufnr, after_lnum, "- [ ] Inserted after B")
+  end)
+
+  -- Only Task B's source should be modified (nearest sibling above row 5 is row 4 = Task B).
+  local lines = vim.fn.readfile(src_b_path)
+  eq(lines[1], "- [ ] Task B")
+  eq(lines[2], "- [ ] Inserted after B")
+  eq(lines[3], "tail")
+
+  draw_mod.clear(render_bufnr)
+end
+
+-- ── resolve_insert: capture_file path (no sibling) ───────────────────────────
+
+T["resolve_insert: no sibling, capture_file set → appended to file (created on first use)"] = function()
+  local cap_path = vim.fn.tempname() .. ".md"
+  eq(vim.fn.filereadable(cap_path), 0) -- must not exist yet
+
+  -- No draw state: state is nil, so no blocks → no sibling found.
+  local render_bufnr = make_buf({ "- [ ] anything" })
+
+  with_capture_file(cap_path, function()
+    -- after_lnum = 0, no draw state → walk_stop = 0, walk_start = -1 → no walk → no anchor.
+    edit_mod.resolve_insert(render_bufnr, 0, "- [ ] Captured")
+  end)
+
+  eq(vim.fn.filereadable(cap_path), 1) -- file created
+  local lines = vim.fn.readfile(cap_path)
+  eq(lines[1], "- [ ] Captured")
+end
+
+T["resolve_insert: capture_file exists → new task appended after existing content"] = function()
+  local cap_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [ ] Existing task" }, cap_path)
+
+  local render_bufnr = make_buf({ "- [ ] anything" })
+
+  with_capture_file(cap_path, function()
+    edit_mod.resolve_insert(render_bufnr, 0, "- [ ] New capture")
+  end)
+
+  local lines = vim.fn.readfile(cap_path)
+  eq(#lines, 2)
+  eq(lines[1], "- [ ] Existing task")
+  eq(lines[2], "- [ ] New capture")
+end
+
+T["resolve_insert: capture_file loaded as buffer → appended via buffer API"] = function()
+  -- Use an absolute path as the buffer name so resolve_buf(abs_path) matches
+  -- regardless of whether _G.Obsidian is set from other tests.
+  local cf_path = vim.fn.tempname() .. "_capture.md"
+  local cf_bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(cf_bufnr, 0, -1, false, { "- [ ] Existing" })
+  vim.api.nvim_buf_set_name(cf_bufnr, cf_path)
+
+  MiniTest.expect.equality(vim.fn.bufnr(cf_path, false) > -1, true)
+
+  local render_bufnr = make_buf({ "- [ ] anything" })
+
+  with_capture_file(cf_path, function()
+    edit_mod.resolve_insert(render_bufnr, 0, "- [ ] Via buffer")
+  end)
+
+  local lines = vim.api.nvim_buf_get_lines(cf_bufnr, 0, -1, false)
+  eq(#lines, 2)
+  eq(lines[1], "- [ ] Existing")
+  eq(lines[2], "- [ ] Via buffer")
+end
+
+-- ── resolve_insert: capture_file with parent dirs ─────────────────────────────
+
+T["resolve_insert: capture_file parent dirs created if missing"] = function()
+  local base = vim.fn.tempname()
+  local cap_path = base .. "/deep/nested/inbox.md"
+  eq(vim.fn.filereadable(cap_path), 0)
+  eq(vim.fn.isdirectory(vim.fn.fnamemodify(cap_path, ":h")), 0)
+
+  local render_bufnr = make_buf({ "text" })
+
+  with_capture_file(cap_path, function()
+    edit_mod.resolve_insert(render_bufnr, 0, "- [ ] Deep capture")
+  end)
+
+  eq(vim.fn.filereadable(cap_path), 1)
+  local lines = vim.fn.readfile(cap_path)
+  eq(lines[1], "- [ ] Deep capture")
+end
+
+-- ── resolve_insert: relative capture_file → vault root ───────────────────────
+
+T["resolve_insert: relative capture_file resolved against vault root"] = function()
+  local vault_root = vim.fn.tempname()
+  vim.fn.mkdir(vault_root, "p")
+  local expected = vault_root .. "/inbox.md"
+  eq(vim.fn.filereadable(expected), 0)
+
+  -- Stub _G.Obsidian so current_workspace() returns our temp vault root.
+  local prev_obsidian = _G.Obsidian
+  _G.Obsidian = { workspace = { root = vault_root }, workspaces = {} }
+
+  local render_bufnr = make_buf({ "text" })
+
+  with_capture_file("inbox.md", function()
+    edit_mod.resolve_insert(render_bufnr, 0, "- [ ] Relative capture")
+  end)
+
+  _G.Obsidian = prev_obsidian
+
+  eq(vim.fn.filereadable(expected), 1)
+  local lines = vim.fn.readfile(expected)
+  eq(lines[1], "- [ ] Relative capture")
+end
+
+-- ── resolve_insert: no capture_file → warn, no write ─────────────────────────
+
+T["resolve_insert: no sibling and no capture_file → warn emitted, no file written"] = function()
+  local render_bufnr = make_buf({ "text" })
+
+  local notify_calls = capture_notify(function()
+    with_capture_file(nil, function()
+      edit_mod.resolve_insert(render_bufnr, 0, "- [ ] Orphan")
+    end)
+  end)
+
+  -- Must have emitted a WARN containing the expected message.
+  local found_warn = false
+  for _, call in ipairs(notify_calls) do
+    if call.level == vim.log.levels.WARN and call.msg:find("no anchor", 1, true) then
+      found_warn = true
+    end
+  end
+  MiniTest.expect.equality(found_warn, true)
+end
+
+-- ── resolve_insert: block boundary (no cross-block sibling) ──────────────────
+
+T["resolve_insert: insert at start of block with no tasks above → no cross-block sibling"] = function()
+  -- Two-block render: block 1 has task A at row 3, block 2 has task B at row N.
+  -- User inserts a line as the very first insert in block 2 (walk_stop = block2_start).
+  -- The walk must NOT reach task A in block 1.
+
+  local src_a_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [ ] Task A" }, src_a_path)
+  local src_b_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [ ] Task B" }, src_b_path)
+
+  -- Buffer with two fence blocks.
+  local render_bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(render_bufnr, 0, -1, false, {
+    "```tasks", -- 0
+    "not done", -- 1
+    "```", -- 2
+    "", -- 3
+    "```tasks", -- 4
+    "done", -- 5
+    "```", -- 6
+  })
+
+  -- Draw block 1 (fence 0-2): task A inserted at row 3 (buffer shifts).
+  draw_mod.draw(render_bufnr, { 0, 2 }, {
+    {
+      kind = "task",
+      text = "- [ ] Task A",
+      src_path = src_a_path,
+      src_line = 1,
+      src_hash = vim.fn.sha256("- [ ] Task A"):sub(1, 16),
+    },
+  })
+  -- After block 1 draw: task A at row 3; blank at row 4; block 2 fence at rows 5-7.
+
+  -- Draw block 2 (fence now at 5-7): task B inserted at row 8.
+  draw_mod.draw(render_bufnr, { 5, 7 }, {
+    {
+      kind = "task",
+      text = "- [ ] Task B",
+      src_path = src_b_path,
+      src_line = 1,
+      src_hash = vim.fn.sha256("- [ ] Task B"):sub(1, 16),
+    },
+  })
+  -- Task B now at row 8.  Block 2 inserted_range = {8, 8}.
+
+  -- Simulate insert at row 8 (user inserts at the same position as task B,
+  -- pushing task B to row 9 in the live buffer).  For the purpose of this test
+  -- we test with after_lnum = 8 where block_start = 8, making the walk range
+  -- empty → no sibling found → falls to capture_file.
+  local cap_path = vim.fn.tempname() .. ".md"
+
+  with_capture_file(cap_path, function()
+    edit_mod.resolve_insert(render_bufnr, 8, "- [ ] Inserted at top of block 2")
+  end)
+
+  -- Task A's source must NOT have been modified.
+  local lines_a = vim.fn.readfile(src_a_path)
+  eq(lines_a[1], "- [ ] Task A")
+  eq(#lines_a, 1)
+
+  -- New task must be in capture_file instead.
+  eq(vim.fn.filereadable(cap_path), 1)
+  local lines_cap = vim.fn.readfile(cap_path)
+  eq(lines_cap[1], "- [ ] Inserted at top of block 2")
+
+  draw_mod.clear(render_bufnr)
 end
 
 return T

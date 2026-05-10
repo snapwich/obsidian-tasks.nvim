@@ -159,7 +159,7 @@ function M.setup(opts)
             edit.apply_deletion(deletion)
           end
           for _, ins in ipairs(result.inserts) do
-            edit.apply_insert(ins)
+            edit.apply_insert(ins, bufnr)
           end
         end
       end

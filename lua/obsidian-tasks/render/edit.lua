@@ -234,15 +234,148 @@ function M.apply_deletion(deletion)
   end
 end
 
---- Apply a user-inserted render line.
---- Resolution logic (nearest-sibling source file, capture_file fallback) lives
---- in render/newline.lua (F4 T3 — ot-wjee).  This stub exists so the diff
---- caller can forward inserts without knowing the resolution module.
+--- Resolve a user-inserted render line to its target source file.
 ---
---- @param insert table  { after_lnum, new_text }
-function M.apply_insert(insert)
-  -- Forwarded to F4 T3: render/newline.lua (ot-wjee).
-  _ = insert
+--- Resolution heuristic (in priority order):
+---   1. Walk UP from after_lnum within the current render block.
+---      The first task extmark found ("nearest sibling above") determines the
+---      target source file; new_text is inserted after that task's src_line.
+---   2. If no sibling exists, fall back to opts.capture_file.
+---      The path is resolved to absolute (relative → vault root via
+---      util/obsidian.current_workspace().root), parent dirs are created if
+---      needed, and new_text is appended.
+---   3. If neither an anchor nor a capture_file is configured, emit
+---      log.warn and silently drop the line.
+---
+--- Source-file writes use the same loaded-buffer-preferred / disk-fallback
+--- primitives as apply_patch / apply_deletion.
+---
+--- @param bufnr      integer  render buffer number
+--- @param after_lnum integer  0-indexed row of the user-inserted line
+--- @param new_text   string   text typed by the user
+function M.resolve_insert(bufnr, after_lnum, new_text)
+  local draw = require("obsidian-tasks.render.draw")
+
+  -- Find the render block that owns the region containing after_lnum.
+  -- Used as a walk boundary so sibling search cannot cross into adjacent blocks.
+  local state = draw.render_state(bufnr)
+  local block_start = nil
+  if state then
+    for _, block in pairs(state) do
+      if block.inserted_range then
+        local r = block.inserted_range
+        -- Pick the block whose inserted_range starts closest to (but ≤) after_lnum.
+        if r[1] <= after_lnum then
+          if block_start == nil or r[1] > block_start then
+            block_start = r[1]
+          end
+        end
+      end
+    end
+  end
+
+  -- Walk UP from (after_lnum - 1) down to block_start.
+  -- draw.is_render_line returns metadata only for lines with a task extmark.
+  local anchor = nil
+  local walk_stop = block_start or 0
+  for lnum = after_lnum - 1, walk_stop, -1 do
+    local info = draw.is_render_line(bufnr, lnum)
+    if info then
+      anchor = info
+      break
+    end
+  end
+
+  if anchor then
+    -- Insert new_text after anchor.src_line (1-indexed) in the source file.
+    -- 0-indexed insertion position = src_line (inserts before 0-indexed row
+    -- src_line, which is after 1-indexed row src_line).
+    local path = anchor.src_path
+    local src_line = anchor.src_line -- 1-indexed
+
+    log.debug("resolve_insert: sibling → " .. path .. ":" .. tostring(src_line))
+
+    local src_bufnr = resolve_buf(path)
+    if src_bufnr > -1 then
+      -- Loaded buffer: insert before 0-indexed row src_line (= after 1-indexed src_line).
+      vim.api.nvim_buf_set_lines(src_bufnr, src_line, src_line, false, { new_text })
+    else
+      -- Disk fallback.
+      local lines = vim.fn.readfile(path)
+      if type(lines) ~= "table" then
+        log.error("resolve_insert: cannot read " .. path)
+        return
+      end
+      -- table.insert at Lua index src_line + 1 inserts after the 1-indexed src_line.
+      table.insert(lines, src_line + 1, new_text)
+      vim.fn.writefile(lines, path)
+    end
+    return
+  end
+
+  -- No sibling above: try opts.capture_file.
+  local opts_ok, plugin = pcall(require, "obsidian-tasks")
+  local capture_file = opts_ok and plugin.opts and plugin.opts.capture_file
+
+  if not capture_file then
+    log.warn("dropped a new task — no anchor and no opts.capture_file set")
+    return
+  end
+
+  -- Resolve relative path against vault root.
+  local abs_path
+  if capture_file:sub(1, 1) == "/" then
+    abs_path = capture_file
+  else
+    local ws_ok, ws = pcall(function()
+      return require("obsidian-tasks.util.obsidian").current_workspace()
+    end)
+    if ws_ok and ws and ws.root then
+      local root = ws.root:gsub("[/\\]+$", "")
+      abs_path = root .. "/" .. capture_file
+    else
+      -- Obsidian not initialised: use path as-is (best-effort).
+      abs_path = capture_file
+    end
+  end
+
+  -- Create parent dirs on first use.
+  local parent = vim.fn.fnamemodify(abs_path, ":h")
+  vim.fn.mkdir(parent, "p")
+
+  log.debug("resolve_insert: capture_file → " .. abs_path)
+
+  -- Append: prefer loaded buffer, disk fallback.
+  local cf_bufnr = resolve_buf(abs_path)
+  if cf_bufnr > -1 then
+    local line_count = vim.api.nvim_buf_line_count(cf_bufnr)
+    vim.api.nvim_buf_set_lines(cf_bufnr, line_count, line_count, false, { new_text })
+  else
+    if vim.fn.filereadable(abs_path) == 1 then
+      local lines = vim.fn.readfile(abs_path)
+      if type(lines) ~= "table" then
+        lines = {}
+      end
+      lines[#lines + 1] = new_text
+      vim.fn.writefile(lines, abs_path)
+    else
+      -- File does not exist yet — create it.
+      vim.fn.writefile({ new_text }, abs_path)
+    end
+  end
+end
+
+--- Apply a user-inserted render line.
+--- Delegates to M.resolve_insert when bufnr is provided.
+--- When bufnr is absent (legacy callers), this is a no-op.
+---
+--- @param insert table    { after_lnum, new_text }
+--- @param bufnr  integer? render buffer number (required for resolution)
+function M.apply_insert(insert, bufnr)
+  if not bufnr then
+    return
+  end
+  M.resolve_insert(bufnr, insert.after_lnum, insert.new_text)
 end
 
 return M
