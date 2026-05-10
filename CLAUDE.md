@@ -57,6 +57,10 @@ Run locally: `make test` (clones mini.nvim to `.deps/` on first run).
 - `.jr/plans/requirements_v1.md` — confirmed scope decisions
 - `.jr/plans/implementation.md` — module layout, phase plan, risks
 
+## BufWritePre ordering
+
+We subscribe to `User:ObsidianNoteWritePre` (not raw `BufWritePre`) so our render-strip fires AFTER obsidian.nvim has finished updating frontmatter; any future feature that must mutate the buffer before write should also use this User event.
+
 ## Convention
 
 Append to this file only when a future agent would otherwise miss a non-obvious

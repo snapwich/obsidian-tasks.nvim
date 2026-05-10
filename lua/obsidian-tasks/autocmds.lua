@@ -1,10 +1,17 @@
 -- lua/obsidian-tasks/autocmds.lua
 -- Auto-render wiring: BufReadPost, FocusGained, BufWritePost, BufDelete.
+-- F4 edit-through wiring: User:ObsidianNoteWritePre (diff + patch + strip).
 -- Called from init.setup() after opts are merged and validated.
 --
 -- No autocmds are registered unless setup() is called.
 
 local M = {}
+
+-- ── Pending re-render tracking ────────────────────────────────────────────────
+-- Populated by User:ObsidianNoteWritePre when a render was stripped and
+-- auto_render is enabled.  Consumed by BufWritePost to re-render after write.
+-- Reset on each M.setup() call to avoid stale entries across re-registrations.
+local _pending_rerender = {} -- [bufnr] = workspace
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,13 +42,18 @@ end
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
---- Register all render autocmds under the `obsidian_tasks_render` augroup.
+--- Register all render autocmds under the `obsidian_tasks_render` augroup and
+--- all edit-through autocmds under the `obsidian_tasks_edit` augroup.
 --- Must be called after opts are available (i.e. from init.setup()).
---- Re-calling this clears and re-registers (augroup cleared = true).
+--- Re-calling this clears and re-registers both augroups.
 ---
 --- @param opts table  merged plugin opts (see config.lua)
 function M.setup(opts)
+  -- Reset pending re-render state on each setup call.
+  _pending_rerender = {}
+
   local group = vim.api.nvim_create_augroup("obsidian_tasks_render", { clear = true })
+  local edit_group = vim.api.nvim_create_augroup("obsidian_tasks_edit", { clear = true })
 
   -- ── BufReadPost ─────────────────────────────────────────────────────────────
   -- Auto-render vault md files that contain ```tasks blocks.
@@ -103,9 +115,74 @@ function M.setup(opts)
     end,
   })
 
+  -- ── User:ObsidianNoteWritePre: diff + patch + strip ──────────────────────────
+  -- Fires AFTER obsidian.nvim has updated frontmatter, making it the last
+  -- buffer mutation before the actual disk write.
+  --
+  -- For every rendered block in the buffer:
+  --   1. Diff current render lines against the draw-time snapshot.
+  --   2. Apply patches / deletions / inserts to source files.
+  --   3. Strip all render regions so the disk write contains only fences.
+  --
+  -- If opts.auto_render is enabled, record the buffer for re-render in
+  -- BufWritePost once the write completes.
+  vim.api.nvim_create_autocmd("User", {
+    group = edit_group,
+    pattern = "ObsidianNoteWritePre",
+    callback = function(ev)
+      -- In production, obsidian.nvim fires this event while the note buffer is
+      -- current, so ev.buf is the buffer being written.  Tests (and any caller
+      -- that wants to target a specific buffer) may pass ev.data.buf instead.
+      local bufnr = (type(ev.data) == "table" and type(ev.data.buf) == "number" and ev.data.buf) or ev.buf
+      local draw = require("obsidian-tasks.render.draw")
+      local edit = require("obsidian-tasks.render.edit")
+      local render = require("obsidian-tasks.render")
+
+      -- No active render → nothing to strip.
+      local state = draw.render_state(bufnr)
+      if state == nil then
+        return
+      end
+
+      -- Run diff and apply source-file changes for each rendered block.
+      -- Block iteration order does not matter here: diff only reads the render
+      -- buffer and writes to separate source files.
+      for _, block in pairs(state) do
+        if block.inserted_range ~= nil then
+          local result = edit.diff(bufnr, block.inserted_range)
+          for _, patch in ipairs(result.patches) do
+            edit.apply_patch(patch)
+          end
+          for _, deletion in ipairs(result.deletions) do
+            edit.apply_deletion(deletion)
+          end
+          for _, ins in ipairs(result.inserts) do
+            edit.apply_insert(ins)
+          end
+        end
+      end
+
+      -- Strip all render regions from the buffer and clear state so the
+      -- disk write contains only fence lines.
+      local path = vim.api.nvim_buf_get_name(bufnr)
+      local ws = safe_workspace_for_path(path)
+      render.clear_buffer(bufnr)
+
+      -- Schedule re-render for BufWritePost when auto_render is enabled.
+      if opts.auto_render and ws ~= nil then
+        _pending_rerender[bufnr] = ws
+      end
+    end,
+  })
+
   -- ── BufWritePost ────────────────────────────────────────────────────────────
-  -- Re-render the saved buffer if it currently has an active render.
-  -- (F4 handles BufWritePre stripping; this covers the post-save re-render.)
+  -- Re-render the saved buffer after a write.
+  --
+  -- Two paths:
+  --   • F4 path: ObsidianNoteWritePre stripped the render; re-render using the
+  --     workspace recorded in _pending_rerender (only when auto_render=true).
+  --   • F3 path: no strip happened (render was active but unchanged); refresh
+  --     using the existing active render state.
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = group,
     pattern = "*.md",
@@ -113,7 +190,15 @@ function M.setup(opts)
       local bufnr = ev.buf
       local render = require("obsidian-tasks.render")
 
-      -- Only refresh when a render is active for this buffer.
+      -- F4 path: re-render after ObsidianNoteWritePre strip.
+      local pending_ws = _pending_rerender[bufnr]
+      if pending_ws then
+        _pending_rerender[bufnr] = nil
+        render.render_buffer(bufnr, pending_ws)
+        return
+      end
+
+      -- F3 path: refresh if an active render exists (no strip occurred).
       if render._buffer_state[bufnr] == nil then
         return
       end
@@ -136,6 +221,8 @@ function M.setup(opts)
       local bufnr = ev.buf
       local render = require("obsidian-tasks.render")
       render.clear_buffer(bufnr)
+      -- Also clear any pending re-render for this buffer.
+      _pending_rerender[bufnr] = nil
     end,
   })
 end
