@@ -31,10 +31,23 @@
 --
 --   Inserts:    rows in render_range not claimed by any task.
 --
+-- Scan window:
+--   The scanned range is extended beyond render_range[2] to cover ALL live
+--   extmark positions.  When the user inserts lines above or between tasks,
+--   extmarks shift to rows beyond the original render_range[2]; without the
+--   expansion those extmarks would miss Phase 1 and falsely appear as deletions
+--   in Phase 2.  The window is bounded by buf_line_count - 1.
+--
+--   Limitation: lines inserted AFTER the last task (rows beyond the furthest
+--   tracked extmark's live position) remain undetectable — the scan window
+--   stops at the last tracked extmark.  v1-accepted behaviour.
+--
 -- This two-phase approach correctly handles:
 --   • in-place content edit   (extmark drifts → weak claim detects text change)
 --   • insert above a task     (extmark tracks new row → strong claim, old row
 --                              is unclaimed → insert)
+--   • insert between tasks    (both extmarks strong-claimed at shifted rows,
+--                              gap row is unclaimed → insert)
 --   • delete non-last task    (surviving task's extmark at the deleted row →
 --                              strong claim; deleted task has no valid claim →
 --                              deletion)
@@ -55,10 +68,12 @@ end
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 --- Diff render lines in render_range against the draw-time snapshot.
---- See the module design note for the two-phase algorithm details.
+--- See the module design note for the two-phase algorithm and scan-window details.
 ---
 --- @param bufnr        integer
---- @param render_range table   { first, last } 0-indexed inclusive
+--- @param render_range table   { first, last } 0-indexed inclusive; the scan
+---                             window is automatically expanded to cover all
+---                             tracked extmarks that shifted beyond `last`.
 --- @param block_em_map table?  optional: em_map for this block only (eid → meta).
 ---                             When provided, only this block's extmarks are
 ---                             considered; this prevents spurious deletions of
@@ -99,9 +114,29 @@ function M.diff(bufnr, render_range, block_em_map)
     end
   end
 
-  -- Snapshot text + hashes for every line in render_range (capped at buffer end).
+  -- Cache live extmark positions in one pass and compute the expanded scan window.
+  -- Extmarks that shifted beyond render_range[2] due to user insertions must be
+  -- pulled into the scan window so Phase 1 can strong-claim them; without this
+  -- expansion they would fall to Phase 2, whose render_lnum may be claimed by
+  -- another task, producing a false deletion.
   local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
-  local scan_last = math.min(last, buf_line_count - 1)
+  local eid_to_row = {} -- eid → live row (nil if extmark no longer exists)
+  local max_tracked_row = last -- start from render_range[2]
+
+  for eid, _ in pairs(tracked) do
+    local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, eid, {})
+    if pos and #pos >= 2 then
+      eid_to_row[eid] = pos[1]
+      if pos[1] > max_tracked_row then
+        max_tracked_row = pos[1]
+      end
+    end
+  end
+
+  -- Expand scan window to furthest tracked extmark, bounded by buffer end.
+  -- Lines beyond the last tracked extmark (insert-after-last-task) are outside
+  -- the scan window — v1-accepted limitation documented in the module header.
+  local scan_last = math.min(max_tracked_row, buf_line_count - 1)
 
   local range_texts = {} -- lnum → current text
   local range_hashes = {} -- lnum → sha256[:16]
@@ -111,14 +146,14 @@ function M.diff(bufnr, render_range, block_em_map)
     range_hashes[lnum] = vim.fn.sha256(range_texts[lnum]):sub(1, 16)
   end
 
-  -- Phase 1 — strong claims: extmark's live row is in range AND hash matches.
+  -- Phase 1 — strong claims: extmark's live row is in scan window AND hash matches.
+  -- Uses cached positions (eid_to_row) — no second round-trip to nvim.
   -- Each row can be claimed at most once.
   local claimed_lnums = {} -- lnum → true
   local eid_task_row = {} -- eid → resolved row
 
   for eid, meta in pairs(tracked) do
-    local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, eid, {})
-    local current_row = (pos and #pos >= 2) and pos[1] or nil
+    local current_row = eid_to_row[eid]
     if
       current_row ~= nil
       and current_row >= first

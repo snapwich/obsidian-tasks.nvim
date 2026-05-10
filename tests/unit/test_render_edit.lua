@@ -371,6 +371,51 @@ T["diff: deleting first task in two-task block produces one deletion"] = functio
   draw_mod.clear(bufnr)
 end
 
+-- ── diff: scan-window expansion (production render-range scenarios) ───────────
+-- These tests use the exact render_range that autocmds.lua would pass in
+-- production (= the block's inserted_range, i.e. {3, 4} for a two-task block).
+-- Without scan-window expansion the shifted extmarks fall outside the window
+-- and are falsely reported as deletions.
+
+T["diff: insert above first task in two-task block (production range)"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = two_task_layout("- [ ] Task A", "/v/a.md", 1, "- [ ] Task B", "/v/b.md", 2)
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- Tasks at rows 3 (A) and 4 (B).  Insert a line ABOVE row 3.
+  -- With right_gravity=true both extmarks shift: A→4, B→5.
+  vim.api.nvim_buf_set_lines(bufnr, 3, 3, false, { "- [ ] New above" })
+
+  -- Production render_range (= original inserted_range).
+  local result = edit_mod.diff(bufnr, { 3, 4 })
+
+  eq(#result.patches, 0) -- neither source must be overwritten
+  eq(#result.deletions, 0) -- Task B must NOT be falsely deleted
+  eq(#result.inserts, 1) -- only the new line is an insert
+  eq(result.inserts[1].new_text, "- [ ] New above")
+
+  draw_mod.clear(bufnr)
+end
+
+T["diff: insert between two tasks (production range)"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = two_task_layout("- [ ] Task A", "/v/a.md", 1, "- [ ] Task B", "/v/b.md", 2)
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- Tasks at rows 3 (A) and 4 (B).  Insert between them: B shifts to row 5.
+  vim.api.nvim_buf_set_lines(bufnr, 4, 4, false, { "- [ ] Between" })
+
+  -- Production render_range.
+  local result = edit_mod.diff(bufnr, { 3, 4 })
+
+  eq(#result.patches, 0) -- Task B source must NOT be overwritten with "Between"
+  eq(#result.deletions, 0)
+  eq(#result.inserts, 1)
+  eq(result.inserts[1].new_text, "- [ ] Between")
+
+  draw_mod.clear(bufnr)
+end
+
 -- ── diff: mixed operations ────────────────────────────────────────────────────
 
 T["diff: edit + insert in same render range"] = function()

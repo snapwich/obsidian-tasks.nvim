@@ -496,7 +496,7 @@ end
 -- The test locks in this current behavior so future regressions (further
 -- breakage) or improvements (fix) are both detected.
 
-T["insert-above: task A strong-claimed; task B deletion (known algorithm limit)"] = function()
+T["insert-above: task A and B strong-claimed; new row is insert to capture_file"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local parse = require("obsidian-tasks.task.parse")
@@ -526,7 +526,8 @@ T["insert-above: task A strong-claimed; task B deletion (known algorithm limit)"
   vim.api.nvim_buf_set_lines(bufnr, 3, 3, false, { "- [ ] Above A" })
 
   -- run_write_pre with NO range override: uses block.inserted_range = {3, 4}.
-  -- scan_last = min(4, buf_count-1) = 4.  Task B extmark is at row 5 (outside).
+  -- With scan-window expansion, extmarks at rows 4 and 5 are pulled into the
+  -- window: task A strong-claimed at row 4, task B strong-claimed at row 5.
   with_capture_file(cap_path, function()
     run_write_pre(bufnr)
   end)
@@ -536,13 +537,12 @@ T["insert-above: task A strong-claimed; task B deletion (known algorithm limit)"
   eq(#lines_a, 1)
   eq(lines_a[1], "- [ ] Task A")
 
-  -- Source B: CURRENTLY wrongly deleted because task B's extmark drifts to row 5
-  -- (outside scan range) and render_lnum=4 is claimed by task A's strong claim.
-  -- This assertion documents the known limitation.
+  -- Source B: task B correctly strong-claimed at row 5 (no deletion).
   local lines_b = vim.fn.readfile(src_b)
-  eq(#lines_b, 0)
+  eq(#lines_b, 1)
+  eq(lines_b[1], "- [ ] Task B")
 
-  -- The new line at row 3 IS detected as insert (row 3 unclaimed).
+  -- The new line at row 3 is detected as insert (row 3 unclaimed).
   -- No sibling above row 3 within block → falls to capture_file.
   eq(vim.fn.filereadable(cap_path), 1)
   local cap_lines = vim.fn.readfile(cap_path)
