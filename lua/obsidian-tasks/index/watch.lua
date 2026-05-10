@@ -270,6 +270,9 @@ function M.start(workspace)
 
   local log = require("obsidian-tasks.log")
   local root = workspace and workspace.root
+  if root ~= nil and type(root) ~= "string" then
+    root = tostring(root)
+  end
 
   if type(root) ~= "string" or root == "" then
     log.warn("watcher: invalid workspace root, watcher disabled")
