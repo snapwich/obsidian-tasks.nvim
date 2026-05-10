@@ -475,6 +475,338 @@ T["S6: stale jump — task shifted 5 lines — CR lands on moved line"] = functi
   vim.fn.delete(src_path)
 end
 
+-- ── Insert-above regression guard (ot-plh6 discovery) ───────────────────────
+--
+-- Two-task render.  User inserts a new line at the TOP of the render region
+-- (row 3, before task A).  After the insert:
+--   • task A's extmark tracks to row 4 (right_gravity=true).
+--   • task B's extmark tracks to row 5 (insert was above row 4).
+-- run_write_pre uses block.inserted_range = {3, 4} without any override.
+--
+-- Expected: source A unchanged (task A strong-claimed), source B unchanged
+-- (task B strong-claimed at row 5 which is outside scan range scan_last=4 →
+-- Phase 2 render_lnum=4 claimed by A → deletion).
+--
+-- Current behavior: task B is INCORRECTLY emitted as a deletion because its
+-- extmark drifted to row 5 (outside the fixed scan range) and render_lnum=4
+-- is claimed by task A's strong claim.  This is a known algorithm limitation:
+-- the fixed draw-time inserted_range does not expand when lines are inserted
+-- within the render region.
+--
+-- The test locks in this current behavior so future regressions (further
+-- breakage) or improvements (fix) are both detected.
+
+T["insert-above: task A strong-claimed; task B deletion (known algorithm limit)"] = function()
+  local render = fresh_render()
+  local draw_mod = require("obsidian-tasks.render.draw")
+  local parse = require("obsidian-tasks.task.parse")
+
+  local src_a = make_tmpfile({ "- [ ] Task A" })
+  local src_b = make_tmpfile({ "- [ ] Task B" })
+  local cap_path = vim.fn.tempname() .. ".md"
+
+  local task_a = parse.parse("- [ ] Task A")
+  local task_b = parse.parse("- [ ] Task B")
+  assert(task_a ~= nil)
+  assert(task_b ~= nil)
+
+  local restore_idx = install_mock(
+    "obsidian-tasks.index",
+    make_index_stub({
+      { task = task_a, path = src_a, line_num = 1 },
+      { task = task_b, path = src_b, line_num = 1 },
+    })
+  )
+
+  -- Render: task A at row 3, task B at row 4.  inserted_range = {3, 4}.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr)
+
+  -- Insert ABOVE task A (at row 3), pushing A to 4 and B to 5.
+  vim.api.nvim_buf_set_lines(bufnr, 3, 3, false, { "- [ ] Above A" })
+
+  -- run_write_pre with NO range override: uses block.inserted_range = {3, 4}.
+  -- scan_last = min(4, buf_count-1) = 4.  Task B extmark is at row 5 (outside).
+  with_capture_file(cap_path, function()
+    run_write_pre(bufnr)
+  end)
+
+  -- Source A: task A correctly strong-claimed at row 4 (no patch, no deletion).
+  local lines_a = vim.fn.readfile(src_a)
+  eq(#lines_a, 1)
+  eq(lines_a[1], "- [ ] Task A")
+
+  -- Source B: CURRENTLY wrongly deleted because task B's extmark drifts to row 5
+  -- (outside scan range) and render_lnum=4 is claimed by task A's strong claim.
+  -- This assertion documents the known limitation.
+  local lines_b = vim.fn.readfile(src_b)
+  eq(#lines_b, 0)
+
+  -- The new line at row 3 IS detected as insert (row 3 unclaimed).
+  -- No sibling above row 3 within block → falls to capture_file.
+  eq(vim.fn.filereadable(cap_path), 1)
+  local cap_lines = vim.fn.readfile(cap_path)
+  eq(cap_lines[1], "- [ ] Above A")
+
+  draw_mod.clear(bufnr)
+  restore_idx()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_a)
+  vim.fn.delete(src_b)
+  vim.fn.delete(cap_path)
+end
+
+-- ── Delete-non-last-task regression guard (ot-plh6 discovery) ────────────────
+--
+-- Two-task render.  User deletes the FIRST task (task A).  After deletion:
+--   • task A's extmark drifts to row 3 (now has task B's content → hash mismatch
+--     → no strong claim).
+--   • task B's extmark also lands at row 3 (line shifted up → hash matches
+--     → strong claim).
+-- run_write_pre correctly identifies the deletion of task A and leaves B intact.
+-- This is the "delete-non-last-task" fix verified by the two-phase algorithm.
+
+T["delete-non-last: task A deleted, task B source completely unchanged"] = function()
+  local render = fresh_render()
+  local draw_mod = require("obsidian-tasks.render.draw")
+  local parse = require("obsidian-tasks.task.parse")
+
+  -- Two separate source files.
+  local src_a = make_tmpfile({ "# Note A", "- [ ] Task A", "footer A" })
+  local src_b = make_tmpfile({ "# Note B", "- [ ] Task B", "footer B" })
+
+  local task_a = parse.parse("- [ ] Task A")
+  local task_b = parse.parse("- [ ] Task B")
+  assert(task_a ~= nil)
+  assert(task_b ~= nil)
+
+  local restore_idx = install_mock(
+    "obsidian-tasks.index",
+    make_index_stub({
+      { task = task_a, path = src_a, line_num = 2 },
+      { task = task_b, path = src_b, line_num = 2 },
+    })
+  )
+
+  -- Render: task A at row 3, task B at row 4.  inserted_range = {3, 4}.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr)
+
+  -- Delete task A (row 3).  Task B shifts to row 3.
+  vim.api.nvim_buf_set_lines(bufnr, 3, 4, false, {})
+
+  -- run_write_pre with NO range override.
+  run_write_pre(bufnr)
+
+  -- Source A: task A line removed.
+  local lines_a = vim.fn.readfile(src_a)
+  eq(#lines_a, 2)
+  eq(lines_a[1], "# Note A")
+  eq(lines_a[2], "footer A")
+
+  -- Source B: COMPLETELY unchanged (task B strong-claimed at row 3 → no op).
+  local lines_b = vim.fn.readfile(src_b)
+  eq(#lines_b, 3)
+  eq(lines_b[1], "# Note B")
+  eq(lines_b[2], "- [ ] Task B")
+  eq(lines_b[3], "footer B")
+
+  -- Buffer stripped to fence.
+  local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(buf_lines[1], "```tasks")
+
+  draw_mod.clear(bufnr)
+  restore_idx()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_a)
+  vim.fn.delete(src_b)
+end
+
+-- ── S3 companion: insert outside draw-time range → not detected ───────────────
+--
+-- Companion to S3.  run_write_pre is called WITHOUT range_override (production
+-- path).  The user-inserted line is at row 5, OUTSIDE block.inserted_range={3,4}.
+-- edit.diff only scans {3,4} → the new line is invisible → source files and
+-- any sink are untouched.  Locks in current production behavior.
+
+T["S3-companion: insert outside draw range → not detected, sources unchanged"] = function()
+  local render = fresh_render()
+  local draw_mod = require("obsidian-tasks.render.draw")
+  local parse = require("obsidian-tasks.task.parse")
+
+  local src_a = make_tmpfile({ "- [ ] Task A" })
+  local src_b = make_tmpfile({ "- [ ] Task B" })
+  local cap_path = vim.fn.tempname() .. ".md"
+
+  local task_a = parse.parse("- [ ] Task A")
+  local task_b = parse.parse("- [ ] Task B")
+  assert(task_a ~= nil)
+  assert(task_b ~= nil)
+
+  local restore_idx = install_mock(
+    "obsidian-tasks.index",
+    make_index_stub({
+      { task = task_a, path = src_a, line_num = 1 },
+      { task = task_b, path = src_b, line_num = 1 },
+    })
+  )
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr)
+
+  -- Insert at row 5 (AFTER both tasks in range {3, 4}).
+  vim.api.nvim_buf_set_lines(bufnr, 5, 5, false, { "- [ ] Outside range" })
+
+  -- Production path: NO range_override.  Diff only covers {3, 4} → row 5 not seen.
+  with_capture_file(cap_path, function()
+    run_write_pre(bufnr)
+  end)
+
+  -- Both source files unchanged (no patches, no deletions).
+  local lines_a = vim.fn.readfile(src_a)
+  eq(#lines_a, 1)
+  eq(lines_a[1], "- [ ] Task A")
+
+  local lines_b = vim.fn.readfile(src_b)
+  eq(#lines_b, 1)
+  eq(lines_b[1], "- [ ] Task B")
+
+  -- capture_file NOT created (insert not detected → resolve_insert never called).
+  eq(vim.fn.filereadable(cap_path), 0)
+
+  draw_mod.clear(bufnr)
+  restore_idx()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_a)
+  vim.fn.delete(src_b)
+  -- cap_path never created, no delete needed
+end
+
+-- ── S4/S5 companion: empty render + run_write_pre → no side effects ───────────
+--
+-- Companion to S4 and S5.  When no tasks are rendered, block.inserted_range is
+-- nil.  run_write_pre skips the diff entirely (the guard `if range then` is false).
+-- Result: neither capture_file nor warn is triggered — the pipeline is a no-op.
+-- Locks in that the production path is inert for empty render blocks.
+
+T["S4/S5-companion: empty render + run_write_pre → no write, no warn"] = function()
+  local fresh = fresh_render()
+  local draw_mod = require("obsidian-tasks.render.draw")
+  local restore_idx = install_mock("obsidian-tasks.index", make_index_stub({}))
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  fresh.render_buffer(bufnr)
+
+  local cap_path = vim.fn.tempname() .. ".md"
+
+  local notify_calls = capture_notify(function()
+    with_capture_file(cap_path, function()
+      -- run_write_pre: state exists but all blocks have inserted_range=nil → no-op.
+      run_write_pre(bufnr)
+    end)
+  end)
+
+  -- capture_file NOT created.
+  eq(vim.fn.filereadable(cap_path), 0)
+
+  -- No warn emitted (diff was never run → resolve_insert never called).
+  local found_warn = false
+  for _, call in ipairs(notify_calls) do
+    if call.level == vim.log.levels.WARN then
+      found_warn = true
+    end
+  end
+  MiniTest.expect.equality(found_warn, false)
+
+  draw_mod.clear(bufnr)
+  restore_idx()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+-- ── S6 companion: full render pipeline stale jump → stale line ───────────────
+--
+-- Companion to S6.  Uses render.render_buffer (production path) so src_hash is
+-- computed by layout.lua from the RENDERED text (task text + wikilink suffix).
+-- The source file is externally shifted so the task is at a different line.
+-- resolve_jump_line cannot match the rendered hash against source-file lines →
+-- falls back to the stale src_line and emits log.info.
+-- Locks in this known production limitation.
+
+T["S6-companion: full pipeline stale jump → falls back to stale src_line"] = function()
+  local render = fresh_render()
+  local draw_mod = require("obsidian-tasks.render.draw")
+  local parse = require("obsidian-tasks.task.parse")
+
+  local task_text = "- [ ] Stale companion task"
+  local src_path = make_tmpfile({ "# Note", task_text })
+
+  local task = parse.parse(task_text)
+  assert(task ~= nil)
+
+  local restore_idx =
+    install_mock("obsidian-tasks.index", make_index_stub({ { task = task, path = src_path, line_num = 2 } }))
+
+  -- Full render pipeline: layout.lua will append wikilink, compute hash from
+  -- "task_text [[basename]]" — hash does NOT match raw source file content.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 20,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  render.render_buffer(bufnr)
+
+  -- Task rendered at row 3 (0-indexed); cursor at 1-indexed row 4.
+  vim.api.nvim_win_set_cursor(winid, { 4, 0 })
+
+  -- Externally shift the source file: task now at line 7 (was 2).
+  vim.fn.writefile({ "padding 1", "padding 2", "padding 3", "padding 4", "padding 5", "# Note", task_text }, src_path)
+
+  -- Invoke <CR> handler.
+  local maps = vim.api.nvim_buf_get_keymap(bufnr, "n")
+  local cr_cb = nil
+  for _, m in ipairs(maps) do
+    if m.lhs == "<CR>" then
+      cr_cb = m.callback
+    end
+  end
+  MiniTest.expect.equality(cr_cb ~= nil, true)
+
+  local notify_calls = capture_notify(function()
+    cr_cb()
+  end)
+
+  -- Cursor must be at the STALE line (2), not the moved line (7), because the
+  -- rendered hash (with wikilink) cannot match any raw source file line.
+  local pos = vim.api.nvim_win_get_cursor(0)
+  eq(pos[1], 2)
+
+  -- log.info must have been emitted about the stale recorded line.
+  local found_info = false
+  for _, call in ipairs(notify_calls) do
+    if call.level == vim.log.levels.INFO and call.msg:find("recorded line", 1, true) then
+      found_info = true
+    end
+  end
+  MiniTest.expect.equality(found_info, true)
+
+  -- Cleanup.
+  local src_bufnr = vim.fn.bufnr(src_path)
+  if src_bufnr ~= -1 then
+    vim.api.nvim_buf_delete(src_bufnr, { force = true })
+  end
+  if vim.api.nvim_win_is_valid(winid) then
+    vim.api.nvim_win_close(winid, true)
+  end
+  draw_mod.clear(bufnr)
+  restore_idx()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+end
+
 -- ── Multi-block round-trip (regression guard) ─────────────────────────────────
 --
 -- Regression guard from [jr:code-reviewer] (ot-mwsl): multi-block buffers were
