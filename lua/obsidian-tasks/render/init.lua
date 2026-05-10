@@ -8,7 +8,7 @@
 --   • Handle multi-block buffers (blocks render independently).
 --   • Catch Lua exceptions and emit an INTERNAL ERROR label in place of results.
 --   • Lazy index init: kick off a vault walk on first render if index is empty.
---   • Track per-buffer state for F4 (edit-through) in M._buffer_state.
+--   • Track per-buffer state in M._buffer_state (used by BufWritePost refresh).
 
 local M = {}
 

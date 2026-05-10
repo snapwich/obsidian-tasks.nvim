@@ -2,7 +2,7 @@
 -- Managed-region module: extmark scheme, side tables, and namespace.
 --
 -- Owns the lifecycle of three kinds of extmarks in a DEDICATED namespace
--- (separate from util/extmark.lua's NS which is used for conceal + virt_lines):
+-- (separate from util/extmark.lua's NS which is used for virt_lines):
 --
 --   1. Fence-opening extmarks  — anchored to the opening ```tasks fence line.
 --   2. Bracketing extmarks     — span the full row range of a managed region.
