@@ -1,16 +1,11 @@
 -- plugin/obsidian-tasks.lua
--- Plugin entry point. Defines the :ObsidianTask ex-command stub.
--- Full dispatcher wired in F5 T1.
+-- Plugin entry point.
+--
+-- The :ObsidianTask command is registered by obsidian-tasks.cmd.setup(), which
+-- is called from obsidian-tasks.setup().  No stub is registered here — the
+-- command only becomes available after the user calls require('obsidian-tasks').setup().
 
 if vim.g.loaded_obsidian_tasks then
   return
 end
 vim.g.loaded_obsidian_tasks = true
-
-vim.api.nvim_create_user_command("ObsidianTask", function(_)
-  vim.notify("obsidian-tasks: dispatcher not yet wired (F5)", vim.log.levels.INFO)
-end, {
-  nargs = "*",
-  range = true,
-  desc = "ObsidianTask subcommands (not yet wired — see F5)",
-})
