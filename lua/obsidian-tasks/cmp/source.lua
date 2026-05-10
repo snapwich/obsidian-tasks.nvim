@@ -124,13 +124,35 @@ end
 -- ── Completions ───────────────────────────────────────────────────────────────
 
 --- Provide completion items.
---- Currently a stub — T2 (cmp/fields.lua) and T3 (cmp/values.lua) fill this in.
 ---
---- @param _ctx      table    blink.cmp context
+--- Delegates field-icon suggestions to cmp/fields.lua.
+--- Per-field value suggestions will be added by cmp/values.lua (T3).
+---
+--- blink.cmp context shape used here:
+---   ctx.line       string   full text of the current line
+---   ctx.cursor     {row, col}  1-indexed row, 0-indexed col byte offset
+---
+--- @param ctx       table    blink.cmp context
 --- @param callback  fun(response: table)
-function M:get_completions(_ctx, callback)
+function M:get_completions(ctx, callback)
+  -- Adapt blink context to the shape expected by sub-modules.
+  local adapted = {
+    line = ctx.line or "",
+    cursor_col = ctx.cursor and ctx.cursor[2] or 0,
+  }
+
+  -- Field-icon suggestions (T2).
+  local items = {}
+  local ok_fields, fields_mod = pcall(require, "obsidian-tasks.cmp.fields")
+  if ok_fields then
+    local field_items = fields_mod.completions(adapted)
+    for _, item in ipairs(field_items) do
+      items[#items + 1] = item
+    end
+  end
+
   callback({
-    items = {},
+    items = items,
     is_incomplete_forward = false,
     is_incomplete_backward = false,
   })
