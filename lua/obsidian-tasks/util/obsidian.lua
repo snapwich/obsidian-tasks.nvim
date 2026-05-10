@@ -79,9 +79,14 @@ end
 -- ── frontmatter ───────────────────────────────────────────────────────────────
 
 --- Parse the YAML frontmatter of a file at the given path.
+--- obsidian.frontmatter.parse returns (ret, metadata, errors) where:
+---   ret      = validated/known keys (id, tags, aliases, ...)
+---   metadata = all other user YAML keys
+---   errors   = list of validation error strings
+--- We merge ret+metadata into one table so callers get the full picture.
 --- @param path string  absolute path to the file
---- @return table|nil metadata
---- @return table      errors list (empty on success)
+--- @return table|nil  merged frontmatter (ret ∪ metadata), or nil on read error
+--- @return table      errors list (empty on success; non-empty on parse or read error)
 function M.parse_frontmatter(path)
   check_guard()
   -- Read file lines
@@ -100,17 +105,21 @@ function M.parse_frontmatter(path)
     return nil, { err_msg }
   end
   local frontmatter = require("obsidian.frontmatter")
-  return frontmatter.parse(lines, path)
+  local ret, metadata, errors = frontmatter.parse(lines, path)
+  -- Merge known fields (ret) and user metadata into a single table.
+  -- ret takes precedence on key collision (validated values are preferred).
+  return vim.tbl_extend("force", metadata or {}, ret or {}), errors or {}
 end
 
 -- ── path shorthand ────────────────────────────────────────────────────────────
 
 --- Construct an obsidian.nvim Path object.
+--- obsidian.path returns the Path constructor table directly (not nested under .Path).
 --- @param p string|table
 --- @return table  Path object
 function M.path(p)
   check_guard()
-  return require("obsidian.path").Path.new(p)
+  return require("obsidian.path").new(p)
 end
 
 return M

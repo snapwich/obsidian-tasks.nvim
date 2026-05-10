@@ -1,6 +1,7 @@
 -- tests/unit/test_obsidian_adapter.lua
 -- Unit tests for util/obsidian.lua adapter.
--- Uses stub _G.Obsidian global and package.loaded stubs for obsidian.* modules.
+-- Stubs verified against real obsidian.nvim at /home/dev/.local/share/nvim/lazy/obsidian.nvim.
+-- Uses Obsidian global + package.loaded stubs for obsidian.* modules.
 -- No real obsidian.nvim is required at test time.
 
 local T = MiniTest.new_set()
@@ -290,21 +291,29 @@ T["search_async: calls search.search_async with correct args"] = function()
 end
 
 -- ── parse_frontmatter ─────────────────────────────────────────────────────────
+-- Real obsidian.frontmatter.parse returns (ret, metadata, errors):
+--   ret      = validated known keys (id, tags, aliases, ...)
+--   metadata = user YAML keys not known to obsidian
+--   errors   = validation error strings
+-- The adapter merges ret+metadata into one table and returns (merged, errors).
 
-T["parse_frontmatter: calls frontmatter.parse with lines and path"] = function()
+T["parse_frontmatter: stub returns 3 values; adapter merges ret+metadata"] = function()
   set_obsidian_stub()
-  -- Write a real temp file so io.open works
   local tmpfile = os.tmpname() .. ".md"
   local f = io.open(tmpfile, "w")
-  f:write("---\ntitle: Test\n---\n# Content\n")
+  f:write("---\ntitle: Test\ntags: [foo]\n---\n# Content\n")
   f:close()
 
   local captured = {}
   local cleanup = stub_module("obsidian.frontmatter", {
+    -- Mirror real API: (ret, metadata, errors)
     parse = function(lines, path)
       captured.lines = lines
       captured.path = path
-      return { title = "Test" }, {}
+      local ret = { tags = { "foo" } } -- known field
+      local metadata = { title = "Test" } -- user key
+      local errors = {}
+      return ret, metadata, errors
     end,
   })
   local adapter = fresh_adapter()
@@ -314,15 +323,64 @@ T["parse_frontmatter: calls frontmatter.parse with lines and path"] = function()
 
   MiniTest.expect.equality(type(captured.lines), "table")
   MiniTest.expect.equality(captured.path, tmpfile)
+  -- Both ret and metadata keys should be present in merged result
   MiniTest.expect.equality(meta.title, "Test")
+  MiniTest.expect.equality(type(meta.tags), "table")
+  MiniTest.expect.equality(meta.tags[1], "foo")
   MiniTest.expect.equality(#errs, 0)
+end
+
+T["parse_frontmatter: ret keys win over metadata on collision"] = function()
+  set_obsidian_stub()
+  local tmpfile = os.tmpname() .. ".md"
+  local f = io.open(tmpfile, "w")
+  f:write("---\nid: validated\n---\n")
+  f:close()
+
+  local cleanup = stub_module("obsidian.frontmatter", {
+    parse = function(_, _)
+      -- Simulate same key appearing in both (shouldn't happen in practice, but test merge order)
+      local ret = { id = "validated" }
+      local metadata = { id = "raw" }
+      return ret, metadata, {}
+    end,
+  })
+  local adapter = fresh_adapter()
+  local meta, _ = adapter.parse_frontmatter(tmpfile)
+  cleanup()
+  os.remove(tmpfile)
+
+  -- ret takes precedence (force merge: metadata base, ret override)
+  MiniTest.expect.equality(meta.id, "validated")
+end
+
+T["parse_frontmatter: parse errors forwarded as second return"] = function()
+  set_obsidian_stub()
+  local tmpfile = os.tmpname() .. ".md"
+  local f = io.open(tmpfile, "w")
+  f:write("---\nbad: ~invalid\n---\n")
+  f:close()
+
+  local cleanup = stub_module("obsidian.frontmatter", {
+    parse = function(_, _)
+      return {}, {}, { "invalid value for field 'bad'" }
+    end,
+  })
+  local adapter = fresh_adapter()
+  local meta, errs = adapter.parse_frontmatter(tmpfile)
+  cleanup()
+  os.remove(tmpfile)
+
+  MiniTest.expect.equality(type(meta), "table")
+  MiniTest.expect.equality(#errs, 1)
+  MiniTest.expect.equality(errs[1], "invalid value for field 'bad'")
 end
 
 T["parse_frontmatter: returns nil + error table when file unreadable"] = function()
   set_obsidian_stub()
   local cleanup = stub_module("obsidian.frontmatter", {
     parse = function(_, _)
-      return {}, {}
+      return {}, {}, {}
     end,
   })
   local adapter = fresh_adapter()
@@ -334,18 +392,19 @@ T["parse_frontmatter: returns nil + error table when file unreadable"] = functio
 end
 
 -- ── path shorthand ────────────────────────────────────────────────────────────
+-- Real obsidian.path returns the Path table directly (no .Path nesting).
+-- Correct call: require('obsidian.path').new(p)
 
-T["path: calls obsidian.path.Path.new with argument"] = function()
+T["path: calls obsidian.path.new with argument (no .Path nesting)"] = function()
   set_obsidian_stub()
   local called_with
   local fake_path_obj = { __type = "Path", str = "/my/path" }
+  -- Mirror real API: obsidian.path module IS the Path table, with .new at top level
   local cleanup = stub_module("obsidian.path", {
-    Path = {
-      new = function(p)
-        called_with = p
-        return fake_path_obj
-      end,
-    },
+    new = function(p)
+      called_with = p
+      return fake_path_obj
+    end,
   })
   local adapter = fresh_adapter()
   local result = adapter.path("/my/path")
