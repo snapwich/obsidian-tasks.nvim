@@ -284,23 +284,65 @@ T["refresh: calls render.refresh_buffer with current bufnr"] = function()
       called_bufnr = b
     end,
   })
+  -- Stub util.obsidian so workspace lookup doesn't require obsidian.nvim.
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return nil
+    end,
+  })
 
   require("obsidian-tasks.cmd.refresh").run({}, { line1 = 1, line2 = 1 })
 
   buf_cleanup()
   render_cleanup()
+  oa_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   MiniTest.expect.equality(called_bufnr, bufnr)
 end
 
-T["refresh: safe when render.refresh_buffer is a no-op (no error raised)"] = function()
-  local bufnr = make_buf({ "plain text, no tasks block" })
+T["refresh: forwards resolved workspace to refresh_buffer"] = function()
+  local fake_ws = { root = "/vault", name = "test-vault" }
+  local bufnr = make_buf({ "```tasks", "```" })
   local buf_cleanup = mock_current_buf(bufnr)
 
-  -- Stub that does nothing (simulates no active render).
+  local called_ws = "UNSET"
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    refresh_buffer = function() end,
+    refresh_buffer = function(_b, ws)
+      called_ws = ws
+    end,
+  })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return fake_ws
+    end,
+  })
+
+  require("obsidian-tasks.cmd.refresh").run({}, { line1 = 1, line2 = 1 })
+
+  buf_cleanup()
+  render_cleanup()
+  oa_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  MiniTest.expect.equality(called_ws, fake_ws)
+end
+
+T["refresh: passes nil workspace when obsidian not ready (safe fallback)"] = function()
+  -- Simulates obsidian.nvim not yet set up: workspace_for_path raises.
+  local bufnr = make_buf({ "- [ ] Task" })
+  local buf_cleanup = mock_current_buf(bufnr)
+
+  local called_ws = "UNSET"
+  local render_cleanup = install_mock("obsidian-tasks.render", {
+    refresh_buffer = function(_b, ws)
+      called_ws = ws
+    end,
+  })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      error("obsidian not ready")
+    end,
   })
 
   local ok, err = pcall(function()
@@ -309,6 +351,35 @@ T["refresh: safe when render.refresh_buffer is a no-op (no error raised)"] = fun
 
   buf_cleanup()
   render_cleanup()
+  oa_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Must not propagate the error.
+  MiniTest.expect.equality(ok, true, "refresh must not raise on obsidian error: " .. tostring(err))
+  -- Must call refresh_buffer with nil workspace (graceful degradation).
+  MiniTest.expect.equality(called_ws, nil)
+end
+
+T["refresh: safe when render.refresh_buffer is a no-op (no error raised)"] = function()
+  local bufnr = make_buf({ "plain text, no tasks block" })
+  local buf_cleanup = mock_current_buf(bufnr)
+
+  local render_cleanup = install_mock("obsidian-tasks.render", {
+    refresh_buffer = function() end,
+  })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return nil
+    end,
+  })
+
+  local ok, err = pcall(function()
+    require("obsidian-tasks.cmd.refresh").run({}, { line1 = 1, line2 = 1 })
+  end)
+
+  buf_cleanup()
+  render_cleanup()
+  oa_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   MiniTest.expect.equality(ok, true, "refresh should not raise: " .. tostring(err))
@@ -324,12 +395,17 @@ T["refresh: ignores args and range (whole-buffer operation)"] = function()
       call_count = call_count + 1
     end,
   })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return nil
+    end,
+  })
 
-  -- Pass non-trivial args/range; should still call refresh_buffer exactly once.
   require("obsidian-tasks.cmd.refresh").run({ "extra" }, { line1 = 1, line2 = 99 })
 
   buf_cleanup()
   render_cleanup()
+  oa_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   MiniTest.expect.equality(call_count, 1)
@@ -349,22 +425,64 @@ T["render: calls render.render_buffer with current bufnr"] = function()
       called_bufnr = b
     end,
   })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return nil
+    end,
+  })
 
   require("obsidian-tasks.cmd.render").run({}, { line1 = 1, line2 = 1 })
 
   buf_cleanup()
   render_cleanup()
+  oa_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   MiniTest.expect.equality(called_bufnr, bufnr)
 end
 
-T["render: safe on buffer with no tasks block (no error)"] = function()
-  local bufnr = make_buf({ "# Just a heading", "- [ ] Task" })
+T["render: forwards resolved workspace to render_buffer"] = function()
+  local fake_ws = { root = "/vault", name = "test-vault" }
+  local bufnr = make_buf({ "```tasks", "```" })
   local buf_cleanup = mock_current_buf(bufnr)
 
+  local called_ws = "UNSET"
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    render_buffer = function() end, -- no-op stub
+    render_buffer = function(_b, ws)
+      called_ws = ws
+    end,
+  })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return fake_ws
+    end,
+  })
+
+  require("obsidian-tasks.cmd.render").run({}, { line1 = 1, line2 = 1 })
+
+  buf_cleanup()
+  render_cleanup()
+  oa_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  MiniTest.expect.equality(called_ws, fake_ws)
+end
+
+T["render: passes nil workspace when obsidian not ready (safe fallback)"] = function()
+  -- Simulates obsidian.nvim not yet set up: workspace_for_path raises.
+  local bufnr = make_buf({ "```tasks", "```" })
+  local buf_cleanup = mock_current_buf(bufnr)
+
+  local called_ws = "UNSET"
+  local render_cleanup = install_mock("obsidian-tasks.render", {
+    render_buffer = function(_b, ws)
+      called_ws = ws
+    end,
+  })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      error("obsidian not ready")
+    end,
   })
 
   local ok, err = pcall(function()
@@ -373,6 +491,33 @@ T["render: safe on buffer with no tasks block (no error)"] = function()
 
   buf_cleanup()
   render_cleanup()
+  oa_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  MiniTest.expect.equality(ok, true, "render must not raise on obsidian error: " .. tostring(err))
+  MiniTest.expect.equality(called_ws, nil)
+end
+
+T["render: safe on buffer with no tasks block (no error)"] = function()
+  local bufnr = make_buf({ "# Just a heading", "- [ ] Task" })
+  local buf_cleanup = mock_current_buf(bufnr)
+
+  local render_cleanup = install_mock("obsidian-tasks.render", {
+    render_buffer = function() end,
+  })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return nil
+    end,
+  })
+
+  local ok, err = pcall(function()
+    require("obsidian-tasks.cmd.render").run({}, { line1 = 1, line2 = 1 })
+  end)
+
+  buf_cleanup()
+  render_cleanup()
+  oa_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   MiniTest.expect.equality(ok, true, "render should not raise: " .. tostring(err))
@@ -388,11 +533,17 @@ T["render: ignores args and range (whole-buffer operation)"] = function()
       call_count = call_count + 1
     end,
   })
+  local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
+    workspace_for_path = function()
+      return nil
+    end,
+  })
 
   require("obsidian-tasks.cmd.render").run({ "ignored" }, { line1 = 5, line2 = 10 })
 
   buf_cleanup()
   render_cleanup()
+  oa_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   MiniTest.expect.equality(call_count, 1)
