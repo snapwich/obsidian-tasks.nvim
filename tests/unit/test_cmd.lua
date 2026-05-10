@@ -446,4 +446,149 @@ T["dispatch: all valid subcmd names route without 'unknown' error"] = function()
   end
 end
 
+-- ── M._completion: top-level subcmd name completion ─────────────────────────
+
+T["completion: empty arg_lead returns all 15 valid subcmds"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local result = cmd._completion("", "ObsidianTask ", 13)
+  MiniTest.expect.equality(#result, 15)
+  local set = {}
+  for _, v in ipairs(result) do
+    set[v] = true
+  end
+  MiniTest.expect.equality(set["toggle"], true)
+  MiniTest.expect.equality(set["done"], true)
+  MiniTest.expect.equality(set["new"], true)
+  MiniTest.expect.equality(set["inProgress"], true)
+end
+
+T["completion: prefix 'to' returns only {toggle}"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local result = cmd._completion("to", "ObsidianTask to", 15)
+  MiniTest.expect.equality(#result, 1)
+  MiniTest.expect.equality(result[1], "toggle")
+end
+
+T["completion: prefix 's' returns {scheduled, start}"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local result = cmd._completion("s", "ObsidianTask s", 14)
+  -- "scheduled" and "start" both start with "s"
+  MiniTest.expect.equality(#result, 2)
+  local set = {}
+  for _, v in ipairs(result) do
+    set[v] = true
+  end
+  MiniTest.expect.equality(set["scheduled"], true)
+  MiniTest.expect.equality(set["start"], true)
+end
+
+T["completion: prefix with no matches returns {}"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local result = cmd._completion("zzz", "ObsidianTask zzz", 16)
+  MiniTest.expect.equality(#result, 0)
+end
+
+-- ── M._completion: delegation to subcmd M.complete ───────────────────────────
+
+T["completion: second word delegates to subcmd M.complete"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local cleanup = install_mock("obsidian-tasks.cmd.priority", {
+    run = function() end,
+    complete = function(arg_lead, _cmdline, _pos)
+      return { "marker-" .. arg_lead }
+    end,
+  })
+  -- cmdline: "ObsidianTask priority h"  — arg_lead = "h"
+  local result = cmd._completion("h", "ObsidianTask priority h", 23)
+  cleanup()
+  MiniTest.expect.equality(#result, 1)
+  MiniTest.expect.equality(result[1], "marker-h")
+end
+
+T["completion: second word with no M.complete returns {}"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local cleanup = install_mock("obsidian-tasks.cmd.toggle", {
+    run = function() end,
+    -- deliberately no complete field
+  })
+  local result = cmd._completion("x", "ObsidianTask toggle x", 21)
+  cleanup()
+  MiniTest.expect.equality(#result, 0)
+end
+
+T["completion: second word for unknown subcmd returns {}"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  local result = cmd._completion("foo", "ObsidianTask nosuchsubcmd foo", 29)
+  MiniTest.expect.equality(#result, 0)
+end
+
+-- ── M.setup: command registration ────────────────────────────────────────────
+
+T["setup: registers :ObsidianTask with nargs=* and range"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  -- Remove any prior registration to start fresh.
+  pcall(vim.api.nvim_del_user_command, "ObsidianTask")
+
+  cmd.setup()
+
+  local cmds = vim.api.nvim_get_commands({})
+  MiniTest.expect.equality(cmds["ObsidianTask"] ~= nil, true)
+  MiniTest.expect.equality(cmds["ObsidianTask"].nargs, "*")
+  -- range attribute present (non-nil / non-false)
+  MiniTest.expect.equality(cmds["ObsidianTask"].range ~= nil, true)
+end
+
+T["setup: replaces pre-existing stub command"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  -- Install a stub with nargs="?" to simulate the F1 plugin/ stub.
+  pcall(vim.api.nvim_del_user_command, "ObsidianTask")
+  vim.api.nvim_create_user_command("ObsidianTask", function() end, { nargs = "?" })
+
+  cmd.setup()
+
+  local cmds = vim.api.nvim_get_commands({})
+  MiniTest.expect.equality(cmds["ObsidianTask"] ~= nil, true)
+  MiniTest.expect.equality(cmds["ObsidianTask"].nargs, "*")
+end
+
+T["setup: calling setup twice does not error"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  pcall(vim.api.nvim_del_user_command, "ObsidianTask")
+  cmd.setup()
+  -- Second call should replace the first without error.
+  cmd.setup()
+  local cmds = vim.api.nvim_get_commands({})
+  MiniTest.expect.equality(cmds["ObsidianTask"] ~= nil, true)
+end
+
+-- ── M.setup: end-to-end via vim.cmd ──────────────────────────────────────────
+
+T["setup: vim.cmd ObsidianTask toggle cycles source buffer task"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  cmd.setup()
+
+  local bufnr = make_buf({ "- [ ] End-to-end task" })
+
+  local orig_gcb = vim.api.nvim_get_current_buf
+  vim.api.nvim_get_current_buf = function()
+    return bufnr
+  end
+  local draw_cleanup = install_mock("obsidian-tasks.render.draw", {
+    is_render_line = function()
+      return nil
+    end,
+  })
+
+  -- Execute via the registered command; default range = current line = 1.
+  vim.cmd("1ObsidianTask toggle")
+
+  vim.api.nvim_get_current_buf = orig_gcb
+  draw_cleanup()
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  MiniTest.expect.equality(lines[1], "- [x] End-to-end task")
+end
+
 return T

@@ -180,6 +180,9 @@ local function completion(arg_lead, cmdline, cursorpos)
   return {}
 end
 
+-- Export for unit testing (prefixed _ to mark as internal).
+M._completion = completion
+
 -- ── Setup ─────────────────────────────────────────────────────────────────────
 
 --- Register the :ObsidianTask user command.
