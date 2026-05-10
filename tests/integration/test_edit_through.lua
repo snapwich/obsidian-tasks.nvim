@@ -46,6 +46,9 @@ local function make_index_stub(entries)
         end
       end
     end,
+    -- F7: reverse-index maintenance (no-op in edit-through integration tests)
+    set_render_paths = function(_bufnr, _paths_set) end,
+    clear_render_paths = function(_bufnr) end,
   }
 end
 

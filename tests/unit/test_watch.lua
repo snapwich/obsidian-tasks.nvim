@@ -97,6 +97,9 @@ T["debounce: single event triggers one refresh_file call"] = function()
     refresh_file = function(p)
       refresh_calls[#refresh_calls + 1] = p
     end,
+    reverse_index = function(_)
+      return {}
+    end,
   })
   local r2 = install_mock("obsidian-tasks", {
     opts = { watcher_debounce_ms = 300 },
@@ -128,6 +131,9 @@ T["debounce: 5 rapid events coalesce into 1 refresh per path"] = function()
   local r1 = install_mock("obsidian-tasks.index", {
     refresh_file = function(p)
       refresh_calls[#refresh_calls + 1] = p
+    end,
+    reverse_index = function(_)
+      return {}
     end,
   })
   local r2 = install_mock("obsidian-tasks", {
@@ -169,6 +175,9 @@ T["debounce: distinct paths each produce a refresh_file call"] = function()
     refresh_file = function(p)
       refresh_calls[#refresh_calls + 1] = p
     end,
+    reverse_index = function(_)
+      return {}
+    end,
   })
   local r2 = install_mock("obsidian-tasks", {
     opts = { watcher_debounce_ms = 300 },
@@ -201,6 +210,9 @@ end
 T["debounce: ObsidianTasksFilesChanged autocmd fires after flush"] = function()
   local r1 = install_mock("obsidian-tasks.index", {
     refresh_file = function(_) end,
+    reverse_index = function(_)
+      return {}
+    end,
   })
   local r2 = install_mock("obsidian-tasks", {
     opts = { watcher_debounce_ms = 100 },
@@ -340,6 +352,9 @@ T["stop: clears handles and cancels pending debounce timer"] = function()
   local r1 = install_mock("obsidian-tasks.index", {
     refresh_file = function(p)
       refresh_calls[#refresh_calls + 1] = p
+    end,
+    reverse_index = function(_)
+      return {}
     end,
   })
   local r2 = install_mock("obsidian-tasks", {
@@ -499,6 +514,287 @@ T["init.setup: watcher NOT started when opts.watcher=false"] = function()
   r_status()
   r_autocmds()
   r_cmd()
+end
+
+-- ── Watcher → render refresh ────────────────────────────────────────────────────
+
+--- Build a full index mock including reverse_index, refresh_file, etc.
+--- reverse_map: path → list of bufnrs (or empty list if nil)
+local function make_index_mock(reverse_map, refresh_fn)
+  reverse_map = reverse_map or {}
+  refresh_fn = refresh_fn or function(_) end
+  return {
+    refresh_file = refresh_fn,
+    reverse_index = function(path)
+      return reverse_map[path] or {}
+    end,
+  }
+end
+
+T["refresh: fs event triggers render.refresh_buffer for affected bufnr"] = function()
+  -- Arrange: one path maps to bufnr=55 in the reverse index.
+  local refresh_buf_calls = {}
+  local r_index = install_mock(
+    "obsidian-tasks.index",
+    make_index_mock({
+      ["/vault/note.md"] = { 55 },
+    })
+  )
+  local r_render = install_mock("obsidian-tasks.render", {
+    _buffer_state = {}, -- empty → cursor not in render region
+    refresh_buffer = function(b)
+      refresh_buf_calls[#refresh_buf_calls + 1] = b
+    end,
+  })
+  local r_opts = install_mock("obsidian-tasks", {
+    opts = { watcher_debounce_ms = 300 },
+  })
+
+  -- buf_is_valid → true for bufnr 55
+  local orig_valid = vim.api.nvim_buf_is_valid
+  vim.api.nvim_buf_is_valid = function(_)
+    return true
+  end
+  -- current buf ≠ 55 → cursor-in-region check returns false immediately
+  local orig_cur_buf = vim.api.nvim_get_current_buf
+  vim.api.nvim_get_current_buf = function()
+    return 999
+  end
+
+  local watch = fresh("obsidian-tasks.index.watch")
+
+  with_captured_defer(function(_, drain)
+    with_sync_schedule(function()
+      watch._push_event("ws1", "/vault/note.md", 300)
+    end)
+    drain()
+    eq(#refresh_buf_calls, 1)
+    eq(refresh_buf_calls[1], 55)
+  end)
+
+  vim.api.nvim_buf_is_valid = orig_valid
+  vim.api.nvim_get_current_buf = orig_cur_buf
+  r_index()
+  r_render()
+  r_opts()
+end
+
+T["refresh: 10 paths changed in one debounce window → buffer refreshed at most once"] = function()
+  -- Each of the 10 paths maps to the same bufnr=77.
+  local reverse_map = {}
+  for i = 1, 10 do
+    reverse_map["/vault/file" .. i .. ".md"] = { 77 }
+  end
+
+  local refresh_buf_calls = {}
+  local r_index = install_mock("obsidian-tasks.index", make_index_mock(reverse_map))
+  local r_render = install_mock("obsidian-tasks.render", {
+    _buffer_state = {},
+    refresh_buffer = function(b)
+      refresh_buf_calls[#refresh_buf_calls + 1] = b
+    end,
+  })
+  local r_opts = install_mock("obsidian-tasks", {
+    opts = { watcher_debounce_ms = 300 },
+  })
+
+  local orig_valid = vim.api.nvim_buf_is_valid
+  vim.api.nvim_buf_is_valid = function(_)
+    return true
+  end
+  local orig_cur_buf = vim.api.nvim_get_current_buf
+  vim.api.nvim_get_current_buf = function()
+    return 999
+  end
+
+  local watch = fresh("obsidian-tasks.index.watch")
+
+  with_captured_defer(function(_, drain)
+    with_sync_schedule(function()
+      for i = 1, 10 do
+        watch._push_event("ws_batch", "/vault/file" .. i .. ".md", 300)
+      end
+    end)
+    drain()
+    -- Despite 10 events (all mapping to bufnr=77), only ONE refresh call.
+    eq(#refresh_buf_calls, 1)
+    eq(refresh_buf_calls[1], 77)
+  end)
+
+  vim.api.nvim_buf_is_valid = orig_valid
+  vim.api.nvim_get_current_buf = orig_cur_buf
+  r_index()
+  r_render()
+  r_opts()
+end
+
+T["refresh: cursor in render region → deferred, not immediately refreshed"] = function()
+  -- Set up bufnr=42 with a render_range of {5, 10} (0-indexed lines 5–10).
+  -- Cursor is at 1-indexed row 6 = 0-indexed 5 → inside the region.
+  local refresh_buf_calls = {}
+  local r_index = install_mock(
+    "obsidian-tasks.index",
+    make_index_mock({
+      ["/vault/note.md"] = { 42 },
+    })
+  )
+  local r_render = install_mock("obsidian-tasks.render", {
+    _buffer_state = {
+      [42] = { { render_range = { 5, 10 } } },
+    },
+    refresh_buffer = function(b)
+      refresh_buf_calls[#refresh_buf_calls + 1] = b
+    end,
+  })
+  local r_opts = install_mock("obsidian-tasks", {
+    opts = { watcher_debounce_ms = 300 },
+  })
+
+  local orig_valid = vim.api.nvim_buf_is_valid
+  vim.api.nvim_buf_is_valid = function(_)
+    return true
+  end
+  -- Current buf IS 42 → cursor check proceeds.
+  local orig_cur_buf = vim.api.nvim_get_current_buf
+  vim.api.nvim_get_current_buf = function()
+    return 42
+  end
+  -- Cursor at row 6 (1-indexed) = line 5 (0-indexed), inside {5, 10}.
+  local orig_cursor = vim.api.nvim_win_get_cursor
+  vim.api.nvim_win_get_cursor = function(_)
+    return { 6, 0 }
+  end
+
+  local watch = fresh("obsidian-tasks.index.watch")
+  watch._reset_deferred()
+
+  with_captured_defer(function(_, drain)
+    with_sync_schedule(function()
+      watch._push_event("ws_defer", "/vault/note.md", 300)
+    end)
+    drain()
+
+    -- No immediate refresh — cursor is inside the render region.
+    eq(#refresh_buf_calls, 0)
+    -- The bufnr must be in the deferred set.
+    local deferred = watch._deferred_state()
+    eq(deferred[42], true)
+  end)
+
+  vim.api.nvim_buf_is_valid = orig_valid
+  vim.api.nvim_get_current_buf = orig_cur_buf
+  vim.api.nvim_win_get_cursor = orig_cursor
+  r_index()
+  r_render()
+  r_opts()
+end
+
+T["refresh: CursorMoved when cursor leaves render region fires deferred refresh"] = function()
+  -- Set up autocmd via watch.setup(), manually place bufnr=33 in deferred state,
+  -- then fire CursorMoved with cursor OUTSIDE the render region → refresh fires.
+  local refresh_buf_calls = {}
+  local r_render = install_mock("obsidian-tasks.render", {
+    -- Render region {5, 10}: cursor at 0-indexed 0 is OUTSIDE → refresh fires.
+    _buffer_state = {
+      [33] = { { render_range = { 5, 10 } } },
+    },
+    refresh_buffer = function(b)
+      refresh_buf_calls[#refresh_buf_calls + 1] = b
+    end,
+  })
+
+  local orig_valid = vim.api.nvim_buf_is_valid
+  vim.api.nvim_buf_is_valid = function(_)
+    return true
+  end
+  -- Current buf is 33.
+  local orig_cur_buf = vim.api.nvim_get_current_buf
+  vim.api.nvim_get_current_buf = function()
+    return 33
+  end
+  -- Cursor at row 1 (1-indexed) = 0-indexed 0, which is OUTSIDE {5, 10}.
+  local orig_cursor = vim.api.nvim_win_get_cursor
+  vim.api.nvim_win_get_cursor = function(_)
+    return { 1, 0 }
+  end
+
+  -- Clear Obsidian global so setup() doesn't trigger an immediate watcher start.
+  local orig_obsidian = _G.Obsidian
+  _G.Obsidian = nil
+
+  local watch = fresh("obsidian-tasks.index.watch")
+  watch._reset_deferred()
+
+  -- Register autocmds.
+  watch.setup()
+
+  -- Manually place bufnr=33 in deferred set.
+  watch._deferred_state()[33] = true
+
+  -- Fire the CursorMoved event.
+  vim.api.nvim_exec_autocmds("CursorMoved", {})
+
+  -- Cursor is outside the render region → deferred refresh must have fired.
+  eq(#refresh_buf_calls, 1)
+  eq(refresh_buf_calls[1], 33)
+  -- Deferred set must now be empty.
+  eq(watch._deferred_state()[33], nil)
+
+  _G.Obsidian = orig_obsidian
+  vim.api.nvim_buf_is_valid = orig_valid
+  vim.api.nvim_get_current_buf = orig_cur_buf
+  vim.api.nvim_win_get_cursor = orig_cursor
+  r_render()
+end
+
+T["refresh: CursorMoved while cursor still in render region does NOT fire refresh"] = function()
+  -- Deferred bufnr=44 with render_range {5, 10}; cursor at 0-indexed 7 (inside).
+  local refresh_buf_calls = {}
+  local r_render = install_mock("obsidian-tasks.render", {
+    _buffer_state = {
+      [44] = { { render_range = { 5, 10 } } },
+    },
+    refresh_buffer = function(b)
+      refresh_buf_calls[#refresh_buf_calls + 1] = b
+    end,
+  })
+
+  local orig_valid = vim.api.nvim_buf_is_valid
+  vim.api.nvim_buf_is_valid = function(_)
+    return true
+  end
+  local orig_cur_buf = vim.api.nvim_get_current_buf
+  vim.api.nvim_get_current_buf = function()
+    return 44
+  end
+  -- Cursor at row 8 (1-indexed) = 0-indexed 7, inside {5, 10}.
+  local orig_cursor = vim.api.nvim_win_get_cursor
+  vim.api.nvim_win_get_cursor = function(_)
+    return { 8, 0 }
+  end
+
+  local orig_obsidian = _G.Obsidian
+  _G.Obsidian = nil
+
+  local watch = fresh("obsidian-tasks.index.watch")
+  watch._reset_deferred()
+  watch.setup()
+
+  watch._deferred_state()[44] = true
+
+  -- Fire CursorMoved — cursor is still inside the render region.
+  vim.api.nvim_exec_autocmds("CursorMoved", {})
+
+  -- Refresh must NOT have fired.
+  eq(#refresh_buf_calls, 0)
+  -- Deferred flag still set.
+  eq(watch._deferred_state()[44], true)
+
+  _G.Obsidian = orig_obsidian
+  vim.api.nvim_buf_is_valid = orig_valid
+  vim.api.nvim_get_current_buf = orig_cur_buf
+  vim.api.nvim_win_get_cursor = orig_cursor
+  r_render()
 end
 
 return T

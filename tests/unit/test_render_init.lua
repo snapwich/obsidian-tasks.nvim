@@ -98,6 +98,9 @@ local function make_index_stub(entries)
         end
       end
     end,
+    -- F7: reverse-index maintenance (no-op in unit tests for render/init)
+    set_render_paths = function(_bufnr, _paths_set) end,
+    clear_render_paths = function(_bufnr) end,
   }
 end
 
@@ -517,6 +520,10 @@ local function make_lazy_index_mock(initial_entries)
     mock.refresh_all_calls = mock.refresh_all_calls + 1
     mock.captured_on_done = on_done
   end
+
+  -- F7: reverse-index maintenance (no-op in unit tests for render/init)
+  function mock.set_render_paths(_bufnr, _paths_set) end
+  function mock.clear_render_paths(_bufnr) end
 
   return mock
 end

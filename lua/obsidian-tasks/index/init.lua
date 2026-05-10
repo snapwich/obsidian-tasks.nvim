@@ -14,6 +14,10 @@ local M = {}
 -- Main index: abs_path → { mtime, tasks }
 local _index = {}
 
+-- Reverse index: abs_path → set of bufnrs whose renders include tasks from that path.
+-- Shape: _reverse_index[abs_path] = { [bufnr] = true, ... }
+local _reverse_index = {}
+
 -- ── helpers ───────────────────────────────────────────────────────────────────
 
 --- Return the mtime (seconds) for *abs_path*, or nil if stat fails.
@@ -164,14 +168,57 @@ function M.invalidate(abs_path)
   _index[abs_path] = nil
 end
 
---- Return a list of bufnrs whose render results currently include tasks from
---- *path*. This is a stub — implementation will be provided by F7 (render).
---- Shipped here so the public API surface is stable.
+--- Return a list of bufnrs whose render results currently include tasks from *path*.
+---
+--- The reverse index is maintained by render/init.lua via M.set_render_paths /
+--- M.clear_render_paths — callers must not populate it manually.
 ---
 --- @param path string  absolute path
---- @return integer[]  list of buffer numbers (always empty until F7 fills this)
-function M.reverse_index(_path)
-  return {}
+--- @return integer[]  list of buffer numbers (may be empty)
+function M.reverse_index(path)
+  local set = _reverse_index[path]
+  if not set then
+    return {}
+  end
+  local result = {}
+  for bufnr in pairs(set) do
+    result[#result + 1] = bufnr
+  end
+  return result
+end
+
+--- Record that *bufnr*'s current render includes tasks from the paths in
+--- *paths_set* (a { [abs_path] = true } table).
+---
+--- Called by render/init.lua after render_buffer completes.  Any previous
+--- path associations for *bufnr* are removed first so the index stays accurate
+--- across re-renders.
+---
+--- @param bufnr     integer
+--- @param paths_set table   { [abs_path] = true }
+function M.set_render_paths(bufnr, paths_set)
+  -- Remove this bufnr from all existing reverse-index entries.
+  for _, set in pairs(_reverse_index) do
+    set[bufnr] = nil
+  end
+  -- Add it for the new set of paths.
+  for path in pairs(paths_set) do
+    if not _reverse_index[path] then
+      _reverse_index[path] = {}
+    end
+    _reverse_index[path][bufnr] = true
+  end
+end
+
+--- Remove all reverse-index associations for *bufnr*.
+---
+--- Called by render/init.lua when a buffer's render is cleared.
+---
+--- @param bufnr integer
+function M.clear_render_paths(bufnr)
+  for _, set in pairs(_reverse_index) do
+    set[bufnr] = nil
+  end
 end
 
 --- Direct access to the internal index for testing.
@@ -185,6 +232,14 @@ end
 --- @return nil
 function M._reset()
   _index = {}
+  _reverse_index = {}
+end
+
+--- Direct access to the internal reverse index for testing.
+--- Not part of the public API — do not use outside tests.
+--- @return table
+function M._raw_reverse()
+  return _reverse_index
 end
 
 return M

@@ -519,11 +519,137 @@ init_tests["tasks_in: path_filter limits results"] = function()
   MiniTest.expect.equality(count_a, expected_a)
 end
 
-init_tests["reverse_index: stub returns empty list"] = function()
+init_tests["reverse_index: unknown path returns empty list"] = function()
   local index = fresh("obsidian-tasks.index")
+  index._reset()
   local result = index.reverse_index("/any/path.md")
   MiniTest.expect.equality(type(result), "table")
   MiniTest.expect.equality(#result, 0)
+end
+
+init_tests["set_render_paths: records bufnr in reverse index for each path"] = function()
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local bufnr = 42
+  local paths = { ["/vault/a.md"] = true, ["/vault/b.md"] = true }
+  index.set_render_paths(bufnr, paths)
+
+  local result_a = index.reverse_index("/vault/a.md")
+  local result_b = index.reverse_index("/vault/b.md")
+
+  -- Both paths should include bufnr=42
+  local function contains(t, v)
+    for _, x in ipairs(t) do
+      if x == v then
+        return true
+      end
+    end
+    return false
+  end
+  MiniTest.expect.equality(contains(result_a, bufnr), true)
+  MiniTest.expect.equality(contains(result_b, bufnr), true)
+  -- Unknown path is still empty
+  MiniTest.expect.equality(#index.reverse_index("/vault/c.md"), 0)
+end
+
+init_tests["set_render_paths: re-render replaces old path associations"] = function()
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local bufnr = 99
+
+  -- First render: bufnr includes tasks from a.md and b.md
+  index.set_render_paths(bufnr, { ["/vault/a.md"] = true, ["/vault/b.md"] = true })
+
+  -- Second render: bufnr now only includes tasks from c.md
+  index.set_render_paths(bufnr, { ["/vault/c.md"] = true })
+
+  -- Old paths must no longer reference bufnr
+  local function contains(t, v)
+    for _, x in ipairs(t) do
+      if x == v then
+        return true
+      end
+    end
+    return false
+  end
+  MiniTest.expect.equality(contains(index.reverse_index("/vault/a.md"), bufnr), false)
+  MiniTest.expect.equality(contains(index.reverse_index("/vault/b.md"), bufnr), false)
+  -- New path must reference bufnr
+  MiniTest.expect.equality(contains(index.reverse_index("/vault/c.md"), bufnr), true)
+end
+
+init_tests["set_render_paths: multiple bufnrs can share a path"] = function()
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local path = "/vault/shared.md"
+  index.set_render_paths(10, { [path] = true })
+  index.set_render_paths(20, { [path] = true })
+
+  local result = index.reverse_index(path)
+  MiniTest.expect.equality(#result, 2)
+  -- Both bufnrs must appear
+  local found_10, found_20 = false, false
+  for _, b in ipairs(result) do
+    if b == 10 then
+      found_10 = true
+    end
+    if b == 20 then
+      found_20 = true
+    end
+  end
+  MiniTest.expect.equality(found_10, true)
+  MiniTest.expect.equality(found_20, true)
+end
+
+init_tests["clear_render_paths: removes bufnr from all paths"] = function()
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local bufnr = 77
+  index.set_render_paths(bufnr, { ["/vault/x.md"] = true, ["/vault/y.md"] = true })
+
+  -- Sanity: bufnr is recorded
+  local function contains(t, v)
+    for _, x in ipairs(t) do
+      if x == v then
+        return true
+      end
+    end
+    return false
+  end
+  MiniTest.expect.equality(contains(index.reverse_index("/vault/x.md"), bufnr), true)
+
+  -- Clear and verify
+  index.clear_render_paths(bufnr)
+  MiniTest.expect.equality(#index.reverse_index("/vault/x.md"), 0)
+  MiniTest.expect.equality(#index.reverse_index("/vault/y.md"), 0)
+end
+
+init_tests["clear_render_paths: other bufnrs for same path are unaffected"] = function()
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local path = "/vault/shared.md"
+  index.set_render_paths(11, { [path] = true })
+  index.set_render_paths(22, { [path] = true })
+
+  -- Clear only bufnr=11
+  index.clear_render_paths(11)
+
+  local result = index.reverse_index(path)
+  -- bufnr=22 must still be there
+  local found_22 = false
+  for _, b in ipairs(result) do
+    if b == 22 then
+      found_22 = true
+    end
+    -- bufnr=11 must NOT be there
+    MiniTest.expect.equality(b ~= 11, true)
+  end
+  MiniTest.expect.equality(found_22, true)
 end
 
 T["index"] = init_tests

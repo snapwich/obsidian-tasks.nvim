@@ -26,6 +26,10 @@ M._handles = {}
 --- _debounce[ws_name] = { timer = uv_timer|nil, paths = {[path]=true}, gen = int }
 local _debounce = {}
 
+--- Bufnrs that need a refresh deferred until the cursor leaves their render region.
+--- _deferred[bufnr] = true
+local _deferred = {}
+
 -- ── Helpers ────────────────────────────────────────────────────────────────────
 
 --- Recursively collect all directories under *dir* (dir itself included).
@@ -54,6 +58,52 @@ local function collect_dirs(dir)
     end
   end
   return result
+end
+
+--- Return true if the current window's cursor sits inside a render-inserted
+--- task region of *bufnr*.
+---
+--- Only relevant when *bufnr* is the current buffer; returns false otherwise.
+--- Skipping non-current buffers is intentional: there is no "active cursor"
+--- in a background buffer, so it is always safe to refresh those immediately.
+---
+--- @param bufnr integer
+--- @return boolean
+local function _cursor_in_render_region(bufnr)
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return false
+  end
+  local render = require("obsidian-tasks.render")
+  local buf_state = render._buffer_state[bufnr]
+  if not buf_state then
+    return false
+  end
+  -- cursor() is 1-indexed; convert to 0-indexed for comparison with render_range.
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local cursor_line = cursor[1] - 1
+  for _, block in ipairs(buf_state) do
+    local rr = block.render_range
+    if rr and cursor_line >= rr[1] and cursor_line <= rr[2] then
+      return true
+    end
+  end
+  return false
+end
+
+--- Refresh *bufnr* now (if valid) or defer until cursor leaves the render
+--- region.  Must be called from the Neovim main loop (not a libuv callback).
+---
+--- @param bufnr integer
+local function _refresh_or_defer(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  if _cursor_in_render_region(bufnr) then
+    _deferred[bufnr] = true
+    return
+  end
+  local render = require("obsidian-tasks.render")
+  render.refresh_buffer(bufnr)
 end
 
 --- Push *path* into the debounce queue for *ws_name* and schedule a flush
@@ -115,7 +165,22 @@ local function schedule_flush(ws_name, path, delay_ms)
       index.refresh_file(p)
     end
 
-    -- Notify F7-T2 (refresh visible buffers on events).
+    -- Collect affected bufnrs (deduplicated) from the reverse index.
+    local affected = {}
+    for _, p in ipairs(unique) do
+      for _, bufnr in ipairs(index.reverse_index(p)) do
+        affected[bufnr] = true
+      end
+    end
+
+    -- Refresh each affected buffer exactly once.
+    -- Buffers where the cursor is inside the render region are deferred until
+    -- the cursor moves out (CursorMoved) or the buffer is written (BufWritePost).
+    for bufnr in pairs(affected) do
+      _refresh_or_defer(bufnr)
+    end
+
+    -- Notify listeners (e.g. integration tests) that files changed.
     -- Use pcall so a missing or broken handler never crashes the watcher.
     pcall(vim.api.nvim_exec_autocmds, "User", {
       pattern = "ObsidianTasksFilesChanged",
@@ -297,6 +362,40 @@ function M.setup()
     end,
   })
 
+  -- Drain deferred refreshes when cursor moves: if the cursor has left the
+  -- render region of a deferred buffer, refresh it now.
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = group,
+    callback = function()
+      local cur_bufnr = vim.api.nvim_get_current_buf()
+      if not _deferred[cur_bufnr] then
+        return
+      end
+      -- Cursor has moved — re-check whether it is still inside a render region.
+      if not _cursor_in_render_region(cur_bufnr) then
+        _deferred[cur_bufnr] = nil
+        if vim.api.nvim_buf_is_valid(cur_bufnr) then
+          require("obsidian-tasks.render").refresh_buffer(cur_bufnr)
+        end
+      end
+    end,
+  })
+
+  -- Also drain on write: the buffer write event guarantees the cursor left
+  -- or that the user explicitly saved — safe to refresh immediately.
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group = group,
+    callback = function()
+      local cur_bufnr = vim.api.nvim_get_current_buf()
+      if _deferred[cur_bufnr] then
+        _deferred[cur_bufnr] = nil
+        if vim.api.nvim_buf_is_valid(cur_bufnr) then
+          require("obsidian-tasks.render").refresh_buffer(cur_bufnr)
+        end
+      end
+    end,
+  })
+
   -- If obsidian.nvim is already initialised when our plugin sets up, start
   -- watching immediately (defer so callers finish their own setup first).
   if type(Obsidian) == "table" and Obsidian.workspace then
@@ -322,6 +421,18 @@ end
 --- @param delay_ms number
 function M._push_event(ws_name, path, delay_ms)
   schedule_flush(ws_name, path, delay_ms)
+end
+
+--- Direct access to the deferred-refresh set (for tests).
+--- Returns the live table — callers may mutate it to simulate state.
+--- @return table  { [bufnr] = true, ... }
+function M._deferred_state()
+  return _deferred
+end
+
+--- Reset the deferred-refresh set (for tests).
+function M._reset_deferred()
+  _deferred = {}
 end
 
 return M

@@ -148,9 +148,9 @@ function M.render_buffer(bufnr, workspace)
   end
 
   -- ── 3. Clear previous render ───────────────────────────────────────────────
-  -- Clear draw state (extmarks + inserted lines) then drop our own state.
-  draw.clear(bufnr)
-  M._buffer_state[bufnr] = nil
+  -- Clear draw state (extmarks + inserted lines), drop our own state, and
+  -- remove any reverse-index associations for this buffer.
+  M.clear_buffer(bufnr)
 
   -- ── 4. Find all blocks (positions in now-cleared buffer) ───────────────────
   local blocks = M.find_blocks(bufnr)
@@ -261,6 +261,19 @@ function M.render_buffer(bufnr, workspace)
   end
 
   M._buffer_state[bufnr] = new_buf_state
+
+  -- ── 6. Update reverse index ────────────────────────────────────────────────
+  -- Collect the unique set of source paths referenced by this render so
+  -- index.reverse_index(path) can return this buffer.
+  local paths_set = {}
+  for _, block_state in ipairs(new_buf_state) do
+    for _, meta in pairs(block_state.line_map) do
+      if meta.src_path then
+        paths_set[meta.src_path] = true
+      end
+    end
+  end
+  index.set_render_paths(bufnr, paths_set)
 end
 
 --- Refresh a buffer: clear all renders then re-render from scratch.
@@ -279,6 +292,8 @@ function M.clear_buffer(bufnr)
   local draw = require("obsidian-tasks.render.draw")
   draw.clear(bufnr)
   M._buffer_state[bufnr] = nil
+  -- Keep reverse index consistent: bufnr no longer has any active render.
+  require("obsidian-tasks.index").clear_render_paths(bufnr)
 end
 
 return M
