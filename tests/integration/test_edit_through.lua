@@ -8,12 +8,12 @@
 -- Each scenario creates isolated files to avoid cross-test pollution.
 --
 -- Deviation from spec (scenarios 3–5):
---   edit.diff only scans within block.inserted_range (draw-time rows).
---   For inserts AFTER the last task (outside that range), the autocmds.lua path
---   cannot detect them without a range extension; run_write_pre therefore accepts
---   optional per-block range overrides so scenario 3 can pass a wider scan range.
---   Scenarios 4 & 5 (empty render — no inserted_range) call resolve_insert
---   directly because there is no draw state to diff against.
+--   S3 uses a range_override because the user-inserted line is STRICTLY BEYOND
+--   the last tracked extmark — edit.diff's dynamic scan window stops at the
+--   furthest live extmark row, so lines after the last task remain undetectable
+--   (v1-accepted limitation).  S4 & S5 call resolve_insert directly because
+--   empty-render blocks have no inserted_range and run_write_pre's `if range`
+--   guard skips them entirely.
 
 local T = MiniTest.new_set()
 
@@ -479,22 +479,17 @@ end
 --
 -- Two-task render.  User inserts a new line at the TOP of the render region
 -- (row 3, before task A).  After the insert:
---   • task A's extmark tracks to row 4 (right_gravity=true).
---   • task B's extmark tracks to row 5 (insert was above row 4).
--- run_write_pre uses block.inserted_range = {3, 4} without any override.
+--   • task A's extmark shifts to row 4 (right_gravity=true, insert at row 3).
+--   • task B's extmark shifts to row 5 (insert above its original row 4).
+-- run_write_pre uses block.inserted_range = {3, 4} with NO range override.
 --
--- Expected: source A unchanged (task A strong-claimed), source B unchanged
--- (task B strong-claimed at row 5 which is outside scan range scan_last=4 →
--- Phase 2 render_lnum=4 claimed by A → deletion).
---
--- Current behavior: task B is INCORRECTLY emitted as a deletion because its
--- extmark drifted to row 5 (outside the fixed scan range) and render_lnum=4
--- is claimed by task A's strong claim.  This is a known algorithm limitation:
--- the fixed draw-time inserted_range does not expand when lines are inserted
--- within the render region.
---
--- The test locks in this current behavior so future regressions (further
--- breakage) or improvements (fix) are both detected.
+-- Dynamic scan window (edit.lua Phase 0) expands scan_last to max live extmark
+-- row: max(last=4, A=4, B=5) = 5.  Phase 1 strong-claims both tasks:
+--   • row 4 → task A (hash matches).
+--   • row 5 → task B (hash matches).
+-- Row 3 is unclaimed → detected as INSERT.  resolve_insert walks up from row 2
+-- (after_lnum=3 → walk from row 2) and finds no task extmark above row 3
+-- within the block, so the new line is routed to capture_file.
 
 T["insert-above: task A and B strong-claimed; new row is insert to capture_file"] = function()
   local render = fresh_render()
