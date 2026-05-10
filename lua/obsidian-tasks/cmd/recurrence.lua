@@ -70,8 +70,14 @@ function M.run(args, range)
     end
 
     -- Append "🔁 " to the end of the task line.
+    -- For render lines, strip the wikilink suffix first so F4 does not write
+    -- it to the source file on :w.
     local lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
-    local new_line = lines[1] .. " " .. FIELD_EMOJI .. " "
+    local base_line = lines[1] or ""
+    if resolved.kind == "render" and resolved.src_path then
+      base_line = cmd._strip_render_wikilink(base_line, resolved.src_path)
+    end
+    local new_line = base_line .. " " .. FIELD_EMOJI .. " "
     vim.api.nvim_buf_set_lines(bufnr, lnum, lnum + 1, false, { new_line })
 
     -- Position cursor after the appended emoji and enter insert mode.

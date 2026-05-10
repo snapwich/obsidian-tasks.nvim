@@ -36,12 +36,37 @@ for _, v in ipairs(VALID_SUBCMDS) do
   VALID_SUBCMDS_SET[v] = true
 end
 
+-- ── Resolver helpers ─────────────────────────────────────────────────────────
+
+--- Strip the trailing ' [[basename]]' wikilink that layout.lua appends to
+--- render-buffer task lines when task._src_path is set.
+---
+--- Only strips when the literal suffix matches; returns the original string
+--- otherwise (e.g. when hide.backlinks is true and no wikilink was added).
+---
+--- @param line     string  raw render-buffer task line
+--- @param src_path string  absolute path of the task's source file
+--- @return string  line with wikilink suffix removed, or original if no match
+function M._strip_render_wikilink(line, src_path)
+  local basename = vim.fn.fnamemodify(src_path, ":t:r")
+  local suffix = " [[" .. basename .. "]]"
+  if #line >= #suffix and line:sub(-#suffix) == suffix then
+    return line:sub(1, -(#suffix + 1))
+  end
+  return line
+end
+
 -- ── Resolver ──────────────────────────────────────────────────────────────────
 
 --- Resolve the task at a specific buffer position.
 ---
 --- Checks render lines first (draw.is_render_line); falls back to parsing the
 --- raw buffer line as a task.
+---
+--- For render lines the wikilink suffix appended by layout.lua is stripped
+--- before parsing so that cmd modules can serialize a clean (wikilink-free)
+--- mutated line.  F4 Phase 2 (hash-mismatch weak claim) detects the change
+--- and patches the source file on :w with the clean text.
 ---
 --- @param bufnr integer  buffer number
 --- @param lnum  integer  0-indexed buffer line number
@@ -53,12 +78,17 @@ function M.resolve_task_at(bufnr, lnum)
   local draw = require("obsidian-tasks.render.draw")
   local info = draw.is_render_line(bufnr, lnum)
   if info then
-    -- Parse the render-buffer line so cmd modules can mutate it in-place.
-    -- Mutated render lines are detected by F4 (diff Phase 2) and written back to source on :w.
+    -- Parse the render-buffer line after stripping the wikilink suffix so the
+    -- parsed task is clean.  Cmd modules serialize the mutated task and write it
+    -- back without the wikilink; F4 then patches the source file cleanly.
     local render_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
     local task = nil
     if #render_lines > 0 then
-      task = require("obsidian-tasks.task.parse").parse(render_lines[1])
+      local source_line = render_lines[1]
+      if info.src_path then
+        source_line = M._strip_render_wikilink(source_line, info.src_path)
+      end
+      task = require("obsidian-tasks.task.parse").parse(source_line)
     end
     return {
       kind = "render",
