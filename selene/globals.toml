@@ -1,0 +1,15 @@
+[selene]
+base = "lua51"
+name = "globals"
+
+[vim]
+any = true
+
+[bit]
+any = true
+
+[jit]
+any = true
+
+[MiniTest]
+any = true

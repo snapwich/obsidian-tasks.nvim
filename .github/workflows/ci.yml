@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: "nvim ${{ matrix.nvim-version }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nvim-version: [stable, nightly]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim (${{ matrix.nvim-version }})
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.nvim-version }}
+
+      - name: Install selene
+        run: |
+          SELENE_VER="0.30.1"
+          curl -sL "https://github.com/Kampfkarren/selene/releases/download/${SELENE_VER}/selene-linux-x86_64.zip" -o selene.zip
+          unzip -q selene.zip selene
+          chmod +x selene
+          sudo mv selene /usr/local/bin/
+
+      - name: Install StyLua
+        run: |
+          STYLUA_VER="v2.4.1"
+          curl -sL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VER}/stylua-linux-x86_64.zip" -o stylua.zip
+          unzip -q stylua.zip stylua
+          chmod +x stylua
+          sudo mv stylua /usr/local/bin/
+
+      - name: Cache .deps
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-mini-nvim-${{ hashFiles('tests/minit.lua') }}
+
+      - name: Run CI (lint + test)
+        run: make ci
