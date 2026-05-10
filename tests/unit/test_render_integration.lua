@@ -177,9 +177,11 @@ T["integration: task line ends with wikilink backlink"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── 2. Fence concealment ───────────────────────────────────────────────────────
+-- ── 2. No conceal (T2: conceal removed) ──────────────────────────────────────
+-- Fence lines are now plain text; conceal was removed in T2.  Folding (T4)
+-- will hide them when the query is collapsed.
 
-T["integration: fence lines have conceal_lines extmarks"] = function()
+T["integration: fence lines have NO conceal_lines extmarks"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local extmark_util = require("obsidian-tasks.util.extmark")
@@ -190,25 +192,21 @@ T["integration: fence lines have conceal_lines extmarks"] = function()
 
   local NS = extmark_util.NS
   local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, 0, -1, { details = true })
-  local conceal_count = 0
+  -- No extmark should have a conceal_lines field.
   for _, em in ipairs(ems) do
     local details = em[4]
-    if details and details.conceal_lines ~= nil then
-      eq(details.conceal_lines, "") -- value must be empty string
-      conceal_count = conceal_count + 1
+    if details then
+      MiniTest.expect.equality(details.conceal_lines, nil)
     end
   end
-  -- Exactly 3 fence lines (open, query, close) should be concealed.
-  eq(conceal_count, 3)
 
   draw_mod.clear(bufnr)
   restore_idx()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
-T["integration: concealcursor option not forced on by render"] = function()
-  -- Render must set conceallevel=2 but must NOT change concealcursor.
-  -- Default concealcursor is "" (empty).
+T["integration: conceallevel is NOT changed by render"] = function()
+  -- Render must NOT change conceallevel (conceal was removed in T2).
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local restore_idx = install_mock("obsidian-tasks.index", make_index_stub({}))
@@ -222,11 +220,11 @@ T["integration: concealcursor option not forced on by render"] = function()
     col = 0,
   })
 
+  local before_cl = vim.api.nvim_win_get_option(winid, "conceallevel")
   render.render_buffer(bufnr)
-
-  -- conceallevel must be 2.
-  eq(vim.api.nvim_win_get_option(winid, "conceallevel"), 2)
-  -- concealcursor must remain at default ("" — cursor line reveals text).
+  -- conceallevel must be unchanged.
+  eq(vim.api.nvim_win_get_option(winid, "conceallevel"), before_cl)
+  -- concealcursor also unchanged.
   eq(vim.api.nvim_win_get_option(winid, "concealcursor"), "")
 
   draw_mod.clear(bufnr)

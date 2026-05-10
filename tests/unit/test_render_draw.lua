@@ -7,6 +7,7 @@ local T = MiniTest.new_set()
 -- ── module handles ────────────────────────────────────────────────────────────
 
 local draw_mod = require("obsidian-tasks.render.draw")
+local managed = require("obsidian-tasks.render.managed")
 local extmark_util = require("obsidian-tasks.util.extmark")
 local NS = extmark_util.NS
 
@@ -25,23 +26,11 @@ local function make_buf(lines)
   return bufnr
 end
 
---- Return all extmarks for a buffer in our NS.
+--- Return all draw-NS extmarks for a buffer.
 --- @param bufnr integer
 --- @return table[]  list of { id, row, col, details }
 local function get_extmarks(bufnr)
   return vim.api.nvim_buf_get_extmarks(bufnr, NS, 0, -1, { details = true })
-end
-
---- Find extmarks that have a conceal_lines field.
-local function conceal_line_ems(bufnr)
-  local result = {}
-  for _, em in ipairs(get_extmarks(bufnr)) do
-    local details = em[4]
-    if details and details.conceal_lines ~= nil then
-      result[#result + 1] = em
-    end
-  end
-  return result
 end
 
 --- Find extmarks that have a virt_lines field.
@@ -127,11 +116,26 @@ T["draw: multiple tasks inserted in order"] = function()
   draw_mod.clear(bufnr)
 end
 
--- ── draw: conceallevel ───────────────────────────────────────────────────────
+-- ── draw: no conceal (fence lines are plain text) ─────────────────────────────
+-- Conceal was removed in T2. Fence lines are now visible plain text.
+-- Folding (T4) will hide them when the query is collapsed.
 
-T["draw: sets conceallevel=2 on windows displaying the buffer"] = function()
+T["draw: fence lines have no conceal_lines extmarks"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
-  -- Open buffer in a window so conceallevel can be set.
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
+
+  -- No extmark in the draw NS should have a conceal_lines field.
+  for _, em in ipairs(get_extmarks(bufnr)) do
+    local details = em[4]
+    if details then
+      MiniTest.expect.equality(details.conceal_lines, nil)
+    end
+  end
+  draw_mod.clear(bufnr)
+end
+
+T["draw: conceallevel is NOT set on windows displaying the buffer"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
   local winid = vim.api.nvim_open_win(bufnr, false, {
     relative = "editor",
     width = 80,
@@ -139,50 +143,12 @@ T["draw: sets conceallevel=2 on windows displaying the buffer"] = function()
     row = 0,
     col = 0,
   })
+  local orig_cl = vim.api.nvim_win_get_option(winid, "conceallevel")
   draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
-  eq(vim.api.nvim_win_get_option(winid, "conceallevel"), 2)
+  -- conceallevel must be unchanged (draw no longer sets it).
+  eq(vim.api.nvim_win_get_option(winid, "conceallevel"), orig_cl)
   draw_mod.clear(bufnr)
   vim.api.nvim_win_close(winid, true)
-end
-
--- ── draw: fence concealment extmarks ─────────────────────────────────────────
-
-T["draw: fence lines have conceal_lines extmarks"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
-  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
-
-  local ems = conceal_line_ems(bufnr)
-  -- Exactly 3 fence lines should be concealed.
-  eq(#ems, 3)
-  draw_mod.clear(bufnr)
-end
-
-T["draw: conceal extmarks sit on fence line numbers"] = function()
-  local bufnr = make_buf({ "before", "```tasks", "not done", "```", "after" })
-  -- fence is lines 1..3 (0-indexed)
-  draw_mod.draw(bufnr, fence(1, 3), simple_layout("- [ ] T"))
-
-  local ems = conceal_line_ems(bufnr)
-  local rows = {}
-  for _, em in ipairs(ems) do
-    rows[#rows + 1] = em[2] -- row is index 2 in the extmark tuple
-  end
-  table.sort(rows)
-  eq(rows[1], 1)
-  eq(rows[2], 2)
-  eq(rows[3], 3)
-  draw_mod.clear(bufnr)
-end
-
-T["draw: conceal_lines value is empty string"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
-  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
-
-  local ems = conceal_line_ems(bufnr)
-  for _, em in ipairs(ems) do
-    eq(em[4].conceal_lines, "")
-  end
-  draw_mod.clear(bufnr)
 end
 
 -- ── draw: virt_lines ─────────────────────────────────────────────────────────
@@ -279,6 +245,128 @@ T["draw: buffer unchanged when layout has no task lines"] = function()
   draw_mod.clear(bufnr)
 end
 
+-- ── draw: managed-region extmarks ────────────────────────────────────────────
+
+T["draw: managed fence extmark created for each block"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T", "/v/note.md", 1))
+
+  -- managed.fence_marks should iterate exactly one fence extmark.
+  local count = 0
+  local found_range = nil
+  for _, recorded, _ in managed.fence_marks(bufnr) do
+    count = count + 1
+    found_range = recorded
+  end
+  eq(count, 1)
+  MiniTest.expect.equality(found_range ~= nil, true)
+  eq(found_range[1], 0) -- fence_start_row
+  eq(found_range[2], 2) -- fence_end_row
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: managed task extmark created for each task row"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] Check me", "/vault/tasks.md", 42))
+
+  -- Task was inserted at line 3 (0-indexed).
+  local meta = managed.task_meta_for_row(bufnr, 3)
+  MiniTest.expect.equality(meta ~= nil, true)
+  eq(meta.source_file, "/vault/tasks.md")
+  eq(meta.source_row, 41) -- 0-indexed (42 - 1)
+  eq(meta.task_text, "- [ ] Check me") -- pre-wikilink (no src_path wikilink in this test)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: managed task text strips wikilink suffix"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- task text includes a wikilink (as layout.lua would add when backlinks visible)
+  local rendered_text = "- [ ] My task [[note]]"
+  local hash = vim.fn.sha256(rendered_text):sub(1, 16)
+  local layout = {
+    { kind = "label", text = "▶ tasks · 1 result" },
+    {
+      kind = "task",
+      text = rendered_text,
+      src_path = "/vault/note.md", -- basename = "note"
+      src_line = 7,
+      src_hash = hash,
+    },
+    { kind = "footer", text = "─ 1 result ─" },
+  }
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  local meta = managed.task_meta_for_row(bufnr, 3)
+  MiniTest.expect.equality(meta ~= nil, true)
+  -- Wikilink " [[note]]" should be stripped.
+  eq(meta.task_text, "- [ ] My task")
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: managed region extmark covers all task rows"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local hash_a = vim.fn.sha256("- [ ] A"):sub(1, 16)
+  local hash_b = vim.fn.sha256("- [ ] B"):sub(1, 16)
+  local layout = {
+    { kind = "label", text = "▶ tasks · 2 results" },
+    { kind = "task", text = "- [ ] A", src_path = "/v/a.md", src_line = 1, src_hash = hash_a },
+    { kind = "task", text = "- [ ] B", src_path = "/v/b.md", src_line = 2, src_hash = hash_b },
+    { kind = "footer", text = "─ 2 results ─" },
+  }
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- Tasks inserted at rows 3 and 4.  Region should cover both.
+  local r3 = managed.region_for_row(bufnr, 3)
+  local r4 = managed.region_for_row(bufnr, 4)
+  MiniTest.expect.equality(r3 ~= nil, true)
+  MiniTest.expect.equality(r4 ~= nil, true)
+  -- Both rows should resolve to the same region.
+  eq(r3.mark_id, r4.mark_id)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: no managed region extmark when no task lines"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = {
+    { kind = "label", text = "▶ tasks · 0 results" },
+    { kind = "footer", text = "─ 0 results ─" },
+  }
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- No tasks → no region extmark → region_for_row returns nil for all rows.
+  eq(managed.region_for_row(bufnr, 3), nil)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: multiple tasks — task_meta populated for each row"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local hash_a = vim.fn.sha256("- [ ] Alpha"):sub(1, 16)
+  local hash_b = vim.fn.sha256("- [ ] Beta"):sub(1, 16)
+  local layout = {
+    { kind = "label", text = "▶ tasks · 2 results" },
+    { kind = "task", text = "- [ ] Alpha", src_path = "/v/a.md", src_line = 10, src_hash = hash_a },
+    { kind = "task", text = "- [ ] Beta", src_path = "/v/b.md", src_line = 20, src_hash = hash_b },
+    { kind = "footer", text = "─ 2 results ─" },
+  }
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  local meta_a = managed.task_meta_for_row(bufnr, 3)
+  local meta_b = managed.task_meta_for_row(bufnr, 4)
+  MiniTest.expect.equality(meta_a ~= nil, true)
+  MiniTest.expect.equality(meta_b ~= nil, true)
+  eq(meta_a.source_file, "/v/a.md")
+  eq(meta_a.source_row, 9) -- 0-indexed
+  eq(meta_b.source_file, "/v/b.md")
+  eq(meta_b.source_row, 19) -- 0-indexed
+
+  draw_mod.clear(bufnr)
+end
+
 -- ── clear ─────────────────────────────────────────────────────────────────────
 
 T["clear: removes inserted task lines"] = function()
@@ -293,13 +381,25 @@ T["clear: removes inserted task lines"] = function()
   MiniTest.expect.equality(vim.tbl_contains(lines, "- [ ] Remove me"), false)
 end
 
-T["clear: removes all extmarks in our namespace"] = function()
+T["clear: removes all draw-NS extmarks"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
   draw_mod.clear(bufnr)
 
   local ems = get_extmarks(bufnr)
   eq(#ems, 0)
+end
+
+T["clear: removes all managed extmarks"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T", "/v/note.md", 1))
+  draw_mod.clear(bufnr)
+
+  -- managed side tables must be empty.
+  local counts = managed._debug_counts(bufnr)
+  eq(counts.task_meta_count, 0)
+  eq(counts.fence_mark_count, 0)
+  eq(counts.region_mark_count, 0)
 end
 
 T["clear: no-op on buffer with no render"] = function()
@@ -315,6 +415,31 @@ T["clear: render_state returns nil after clear"] = function()
   draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
   draw_mod.clear(bufnr)
   eq(draw_mod.render_state(bufnr), nil)
+end
+
+-- ── redraw: managed state cleaned up and recreated ────────────────────────────
+
+T["redraw: managed extmarks replaced on re-draw of same block"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = simple_layout("- [ ] Task A", "/v/a.md", 1)
+
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- Verify initial state.
+  local meta_before = managed.task_meta_for_row(bufnr, 3)
+  MiniTest.expect.equality(meta_before ~= nil, true)
+  eq(meta_before.source_file, "/v/a.md")
+
+  -- Re-draw the same block with a different task.
+  local layout2 = simple_layout("- [ ] Task B", "/v/b.md", 5)
+  draw_mod.draw(bufnr, fence(0, 2), layout2)
+
+  -- Old managed state should be gone; new state should reflect the new task.
+  local meta_after = managed.task_meta_for_row(bufnr, 3)
+  MiniTest.expect.equality(meta_after ~= nil, true)
+  eq(meta_after.source_file, "/v/b.md")
+
+  draw_mod.clear(bufnr)
 end
 
 -- ── clear + draw idempotency ──────────────────────────────────────────────────
@@ -559,9 +684,13 @@ T["clear: removes all blocks for buffer"] = function()
   draw_mod.clear(bufnr)
 
   eq(draw_mod.render_state(bufnr), nil)
-  -- All extmarks should be gone.
+  -- All draw-NS extmarks should be gone.
   local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, 0, -1, { details = true })
   eq(#ems, 0)
+  -- All managed extmarks should be gone.
+  local ns = managed.namespace()
+  local managed_ems = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {})
+  eq(#managed_ems, 0)
 end
 
 return T

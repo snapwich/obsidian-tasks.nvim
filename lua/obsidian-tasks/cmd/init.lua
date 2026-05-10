@@ -64,14 +64,20 @@ end
 --- raw buffer line as a task.
 ---
 --- For render lines the wikilink suffix appended by layout.lua is stripped
---- before parsing so that cmd modules can serialize a clean (wikilink-free)
---- mutated line.  F4 Phase 2 (hash-mismatch weak claim) detects the change
---- and patches the source file on :w with the clean text.
+--- before parsing.  The returned record carries src_path and src_line so that
+--- subcommands can locate the source file.  The hash fields (src_hash,
+--- source_text_hash) are intentionally omitted — they were consumed by the F4
+--- edit-through path which has been removed.  T7 will replace this resolver
+--- with a managed.task_meta_for_row-based implementation.
+---
+--- NOTE: cmd subcommands are currently non-functional on rendered task lines
+--- (render kind='render' is returned but subcommands cannot write back without
+--- T7's resolver).  They continue to work on source buffers (kind='source').
 ---
 --- @param bufnr integer  buffer number
 --- @param lnum  integer  0-indexed buffer line number
 --- @return table|nil
----   Render task:  { kind='render', bufnr, lnum, task, src_path, src_line, src_hash, source_text_hash }
+---   Render task:  { kind='render', bufnr, lnum, task, src_path, src_line }
 ---   Source task:  { kind='source', bufnr, lnum, task }
 function M.resolve_task_at(bufnr, lnum)
   -- Check render layer first.
@@ -79,8 +85,7 @@ function M.resolve_task_at(bufnr, lnum)
   local info = draw.is_render_line(bufnr, lnum)
   if info then
     -- Parse the render-buffer line after stripping the wikilink suffix so the
-    -- parsed task is clean.  Cmd modules serialize the mutated task and write it
-    -- back without the wikilink; F4 then patches the source file cleanly.
+    -- parsed task is clean.
     local render_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
     local task = nil
     if #render_lines > 0 then
@@ -97,8 +102,6 @@ function M.resolve_task_at(bufnr, lnum)
       task = task,
       src_path = info.src_path,
       src_line = info.src_line,
-      src_hash = info.src_hash,
-      source_text_hash = info.source_text_hash,
     }
   end
 

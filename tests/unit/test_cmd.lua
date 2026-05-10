@@ -113,6 +113,8 @@ end
 
 T["resolve_task_at: render line returns {kind='render'}"] = function()
   local cmd = require("obsidian-tasks.cmd")
+  -- draw.is_render_line still returns src_hash/source_text_hash (for keymap),
+  -- but resolve_task_at no longer forwards the hash fields (F4 removed).
   local fake_info = {
     src_path = "/vault/note.md",
     src_line = 5,
@@ -134,8 +136,10 @@ T["resolve_task_at: render line returns {kind='render'}"] = function()
   MiniTest.expect.equality(result.kind, "render")
   MiniTest.expect.equality(result.src_path, "/vault/note.md")
   MiniTest.expect.equality(result.src_line, 5)
-  MiniTest.expect.equality(result.src_hash, "abc123")
-  MiniTest.expect.equality(result.source_text_hash, "def456")
+  -- Hash fields removed from resolver return value (were F4-specific).
+  -- T7 will replace this resolver with managed.task_meta_for_row.
+  MiniTest.expect.equality(result.src_hash, nil)
+  MiniTest.expect.equality(result.source_text_hash, nil)
 end
 
 T["resolve_task_at: render line takes precedence over source parse"] = function()
