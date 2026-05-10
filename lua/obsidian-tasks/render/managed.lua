@@ -262,6 +262,33 @@ function M.task_meta_for_row(bufnr, row)
   return nil
 end
 
+-- ── Debug / test helpers ──────────────────────────────────────────────────────
+
+--- Return the number of entries in each per-buffer side table.
+--- Intended for use in tests to verify cleanup invariants without exposing the
+--- raw tables (stale Lua-side entries are a footgun; tests must be able to
+--- catch them even when public accessors return nil via extmark lookup).
+---
+--- @param bufnr integer
+--- @return table  { task_meta_count, fence_mark_count, region_mark_count }
+function M._debug_counts(bufnr)
+  local function count(t)
+    if not t then
+      return 0
+    end
+    local n = 0
+    for _ in pairs(t) do
+      n = n + 1
+    end
+    return n
+  end
+  return {
+    task_meta_count = count(_task_meta[bufnr]),
+    fence_mark_count = count(_fence_marks[bufnr]),
+    region_mark_count = count(_region_marks[bufnr]),
+  }
+end
+
 -- ── Buffer lifecycle ──────────────────────────────────────────────────────────
 
 --- Clear all managed state for a buffer (fence marks, region marks, task meta).

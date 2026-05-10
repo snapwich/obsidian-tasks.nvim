@@ -280,7 +280,13 @@ T["cleanup_region: removes task_meta entries (no stale entries)"] = function()
 
   managed.cleanup_region(bufnr, mid)
 
-  -- After cleanup no managed extmarks should remain in the buffer.
+  -- The internal _task_meta side table must be empty — not merely inaccessible
+  -- via public API. Stale entries are a footgun (spec requirement).
+  local counts = managed._debug_counts(bufnr)
+  eq(counts.task_meta_count, 0)
+  eq(counts.region_mark_count, 0)
+
+  -- Extmarks also gone.
   local ns = managed.namespace()
   local remaining = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {})
   eq(#remaining, 0)
@@ -302,6 +308,10 @@ T["cleanup_block: removes fence extmark from fence_marks iterator"] = function()
   end
   eq(found, false)
 
+  -- Internal side table must also be empty — not just the iterator.
+  local counts = managed._debug_counts(bufnr)
+  eq(counts.fence_mark_count, 0)
+
   managed.clear_buffer(bufnr)
 end
 
@@ -316,12 +326,19 @@ T["clear_buffer: removes all state for that buffer"] = function()
 
   managed.clear_buffer(bufnr)
 
+  -- Internal side tables must be nil — not merely returning nil from accessors.
+  -- Stale entries would grow unboundedly as buffers are created/deleted.
+  local counts = managed._debug_counts(bufnr)
+  eq(counts.task_meta_count, 0)
+  eq(counts.fence_mark_count, 0)
+  eq(counts.region_mark_count, 0)
+
   -- No extmarks left in managed namespace.
   local ns = managed.namespace()
   local remaining = vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {})
   eq(#remaining, 0)
 
-  -- All accessors return nil/empty.
+  -- All public accessors return nil/empty.
   eq(managed.region_for_row(bufnr, 1), nil)
   eq(managed.task_meta_for_row(bufnr, 1), nil)
 
