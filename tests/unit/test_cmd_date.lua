@@ -143,9 +143,11 @@ end
 
 T["date_nl: invalid string returns nil"] = function()
   local date_nl = require("obsidian-tasks.cmp.date_nl")
-  MiniTest.expect.equality(date_nl.parse("next week"), nil)
-  MiniTest.expect.equality(date_nl.parse("yesterday"), nil)
+  -- "next week" and "yesterday" are valid NL forms since F6 upgrade; only
+  -- truly unrecognised inputs should return nil.
   MiniTest.expect.equality(date_nl.parse("not-a-date"), nil)
+  MiniTest.expect.equality(date_nl.parse("mooday"), nil)
+  MiniTest.expect.equality(date_nl.parse("in xyz days"), nil)
 end
 
 T["date_nl: empty string returns nil"] = function()

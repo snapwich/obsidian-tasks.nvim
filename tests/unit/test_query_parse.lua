@@ -165,12 +165,19 @@ for _, field in ipairs(date_fields) do
   end
 end
 
-T["filter: due before today (stub date)"] = function()
-  leaf("due before today", { type = "date", field = "due", operator = "before", value = "today" })
+T["filter: due before today → resolves to ISO date"] = function()
+  local expected_today = os.date("%Y-%m-%d")
+  leaf("due before today", { type = "date", field = "due", operator = "before", value = expected_today })
 end
 
-T["filter: due after tomorrow (stub date)"] = function()
-  leaf("due after tomorrow", { type = "date", field = "due", operator = "after", value = "tomorrow" })
+T["filter: due after tomorrow → resolves to ISO date"] = function()
+  local t = os.date("*t") --[[@as osdate]]
+  t.hour = 0
+  t.min = 0
+  t.sec = 0
+  t.day = t.day + 1
+  local expected_tomorrow = os.date("%Y-%m-%d", os.time(t))
+  leaf("due after tomorrow", { type = "date", field = "due", operator = "after", value = expected_tomorrow })
 end
 
 T["filter: has due date"] = function()

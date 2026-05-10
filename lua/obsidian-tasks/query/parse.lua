@@ -19,16 +19,20 @@
 
 local M = {}
 
--- ── Date parsing stub ───────────────────────────────────────────────────────
--- Accepts YYYY-MM-DD, 'today', 'tomorrow'.
--- Full NL parsing deferred to cmp/date_nl.lua (F6).
--- Returns the trimmed string as-is (parser is forgiving; value preserved).
+local date_nl = require("obsidian-tasks.cmp.date_nl")
+
+-- ── Date parsing ─────────────────────────────────────────────────────────────
+-- Delegates to cmp/date_nl for the full NL set (today, tomorrow, yesterday,
+-- next <weekday>, this <weekday>, in N days/weeks/months, YYYY-MM-DD).
+-- Falls back to returning the trimmed string as-is so unknown values are
+-- preserved rather than silently discarded (the query evaluator validates).
 
 local function parse_date(s)
   if not s then
     return nil
   end
-  return s:match("^%s*(.-)%s*$")
+  local trimmed = s:match("^%s*(.-)%s*$")
+  return date_nl.parse(trimmed) or trimmed
 end
 
 -- ── Field / keyword tables ──────────────────────────────────────────────────
