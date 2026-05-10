@@ -7,7 +7,16 @@ require("mini.test").setup()
 MiniTest.run({
   collect = {
     find_files = function()
-      return vim.fn.globpath("tests/unit", "test_*.lua", true, true)
+      local unit = vim.fn.globpath("tests/unit", "test_*.lua", true, true)
+      local integration = vim.fn.globpath("tests/integration", "test_*.lua", true, true)
+      local all = {}
+      for _, f in ipairs(unit) do
+        all[#all + 1] = f
+      end
+      for _, f in ipairs(integration) do
+        all[#all + 1] = f
+      end
+      return all
     end,
   },
   execute = {
