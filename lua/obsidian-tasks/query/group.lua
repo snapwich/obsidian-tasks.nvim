@@ -68,7 +68,19 @@ local function folder_group(_task, path)
 end
 
 local function root_group(_task, path)
-  return (path or ""):match("/([^/]+)/[^/]+$") or ""
+  -- Top-level subfolder within the vault.
+  -- /vault/sub/note.md → "sub";  /vault/note.md → "" (directly in vault).
+  local parts = vim.split(path or "", "/", { plain = true })
+  local dirs = {}
+  for _, p in ipairs(parts) do
+    if p ~= "" then
+      dirs[#dirs + 1] = p
+    end
+  end
+  if #dirs <= 2 then
+    return ""
+  end
+  return dirs[2]
 end
 
 local function filename_group(_task, path)

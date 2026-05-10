@@ -128,10 +128,22 @@ local function task_text_field(task, path, field)
     return path:match("^(.*)/[^/]*$") or ""
   end
   if field == "root" then
-    -- Top-level folder inside the vault (first path component).
-    -- For /vault/a/b/note.md → "a"; for /vault/note.md → "".
-    local first = path:match("/([^/]+)/[^/]+$")
-    return first or ""
+    -- Top-level subfolder within the vault.
+    -- Assumption: absolute path with one directory component as vault root.
+    -- /vault/a/b/note.md → "a";  /vault/note.md → "" (file directly in vault).
+    local parts = vim.split(path, "/", { plain = true })
+    local dirs = {}
+    for _, p in ipairs(parts) do
+      if p ~= "" then
+        dirs[#dirs + 1] = p
+      end
+    end
+    -- dirs[1]=vault, dirs[2]=first subfolder (if present), last=filename
+    -- If only vault + filename (no subfolder), return "".
+    if #dirs <= 2 then
+      return ""
+    end
+    return dirs[2]
   end
   if field == "filename" then
     return path:match("[^/]+%.%w+$") or path:match("[^/]+$") or ""

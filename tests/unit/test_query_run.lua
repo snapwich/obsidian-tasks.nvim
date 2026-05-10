@@ -293,6 +293,25 @@ filter_tests["folder includes: matches directory portion"] = function()
   eq(matches("folder includes inbox", t, "/vault/inbox/note.md"), true)
 end
 
+filter_tests["root includes: matches first subfolder in vault"] = function()
+  local t = pt("- [ ] My task")
+  -- /vault/sub/note.md → root = "sub"
+  eq(matches("root includes sub", t, "/vault/sub/note.md"), true)
+end
+
+filter_tests["root includes: false when file directly in vault (no subfolder)"] = function()
+  local t = pt("- [ ] My task")
+  -- /vault/note.md → root = "" → does not include "sub"
+  eq(matches("root includes sub", t, "/vault/note.md"), false)
+end
+
+filter_tests["root includes: nested path returns first subfolder only"] = function()
+  local t = pt("- [ ] My task")
+  -- /vault/a/b/note.md → root = "a", not "b"
+  eq(matches("root includes a", t, "/vault/a/b/note.md"), true)
+  eq(matches("root includes b", t, "/vault/a/b/note.md"), false)
+end
+
 -- Tag filters --
 
 filter_tests["tag includes: matches tag substring"] = function()
@@ -369,9 +388,16 @@ filter_tests["or: either true → true"] = function()
   eq(matches("(not done or has due date)", t), true)
 end
 
-filter_tests["or: both false → false"] = function()
+filter_tests["or: first true second false → true"] = function()
   local t = pt("- [x] Done no due ✅ 2024-01-10")
+  -- done=true, has due date=false → OR → true
   eq(matches("(done or has due date)", t), true)
+end
+
+filter_tests["or: both false → false"] = function()
+  -- open task, no due date → done=false, has due date=false → OR → false
+  local t = pt("- [ ] Open no due")
+  eq(matches("(done or has due date)", t), false)
 end
 
 filter_tests["not: negates match"] = function()
@@ -477,6 +503,20 @@ sort_tests["sort by path asc: alphabetical by path"] = function()
   eq(items[1].path, "/vault/a.md")
   eq(items[2].path, "/vault/m.md")
   eq(items[3].path, "/vault/z.md")
+end
+
+sort_tests["sort by root: first subfolder used, not last"] = function()
+  local items = wrap({
+    { task = pt("- [ ] Task"), path = "/vault/b/deep/note.md" },
+    { task = pt("- [ ] Task"), path = "/vault/a/deep/note.md" },
+    { task = pt("- [ ] Task"), path = "/vault/note.md" },
+  })
+  local cmp = sort_mod.make_comparator({ { key = "root", reverse = false } })
+  table.sort(items, cmp)
+  -- "" (no subfolder) < "a" < "b" lexicographically
+  eq(items[1].path, "/vault/note.md") -- root = ""
+  eq(items[2].path, "/vault/a/deep/note.md") -- root = "a"
+  eq(items[3].path, "/vault/b/deep/note.md") -- root = "b"
 end
 
 sort_tests["no sort directives: stable (original idx order)"] = function()
@@ -660,6 +700,27 @@ group_tests["multi-key with tags: tags expand each combo"] = function()
   end
   eq(found_a, true)
   eq(found_b, true)
+end
+
+group_tests["group by root: first subfolder for /vault/sub/note.md"] = function()
+  local t = pt("- [ ] Task")
+  local names = group_mod.resolve(t, "/vault/sub/note.md", { { key = "root", reverse = false } })
+  eq(#names, 1)
+  eq(names[1], "sub")
+end
+
+group_tests["group by root: empty string when file directly in vault"] = function()
+  local t = pt("- [ ] Task")
+  local names = group_mod.resolve(t, "/vault/note.md", { { key = "root", reverse = false } })
+  eq(#names, 1)
+  eq(names[1], "")
+end
+
+group_tests["group by root: deep path returns first subfolder only"] = function()
+  local t = pt("- [ ] Task")
+  local names = group_mod.resolve(t, "/vault/a/b/c/note.md", { { key = "root", reverse = false } })
+  eq(#names, 1)
+  eq(names[1], "a")
 end
 
 group_tests["group by recurrence: returns recurrence string"] = function()
@@ -907,6 +968,33 @@ run_tests["QueryResult.groups each have name and tasks"] = function()
   eq(type(result.groups[1].name), "string")
   eq(type(result.groups[1].tasks), "table")
   eq(#result.groups[1].tasks, 1)
+end
+
+run_tests["limit across groups: total cap applied across group boundaries"] = function()
+  -- 3 groups each with 1 task; limit 2 → only 2 tasks total, third group absent.
+  -- This exercises the cross-group decrement (remaining = remaining - #slice).
+  local path_x = "/vault/x.md"
+  local path_y = "/vault/y.md"
+  local path_z = "/vault/z.md"
+  local task_x = pt("- [ ] Task X")
+  local task_y = pt("- [ ] Task Y")
+  local task_z = pt("- [ ] Task Z")
+  local idx = make_index({
+    { task = task_x, path = path_x },
+    { task = task_y, path = path_y },
+    { task = task_z, path = path_z },
+  })
+  local result = run("group by path\nlimit 2", idx)
+  -- Should have exactly 2 tasks total across all groups.
+  eq(result.total, 2)
+  -- The third group (path_z alphabetically) should be absent or empty.
+  local found_z = false
+  for _, g in ipairs(result.groups) do
+    if g.name == path_z and #g.tasks > 0 then
+      found_z = true
+    end
+  end
+  eq(found_z, false)
 end
 
 T["run"] = run_tests
