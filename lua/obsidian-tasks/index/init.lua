@@ -1,0 +1,185 @@
+-- lua/obsidian-tasks/index/init.lua
+-- In-memory task index.
+--
+-- Internal map shape:
+--   _index[abs_path] = { mtime = <number>, tasks = { Task, ... } }
+--
+-- All public functions are safe to call from normal Neovim context.
+-- Async walks (refresh_all) fire callbacks after the walk completes.
+
+local M = {}
+
+-- ── internal state ────────────────────────────────────────────────────────────
+
+-- Main index: abs_path → { mtime, tasks }
+local _index = {}
+
+-- ── helpers ───────────────────────────────────────────────────────────────────
+
+--- Return the mtime (seconds) for *abs_path*, or nil if stat fails.
+--- @param abs_path string
+--- @return number|nil
+local function get_mtime(abs_path)
+  local stat = vim.uv.fs_stat(abs_path)
+  return stat and stat.mtime.sec
+end
+
+--- Read and parse all task lines from *abs_path* synchronously.
+--- Returns a list of Task objects (may be empty).
+--- @param abs_path string
+--- @return table[]
+local function parse_file(abs_path)
+  local parse = require("obsidian-tasks.task.parse")
+  local opts = require("obsidian-tasks").opts
+  local global_filter = opts and opts.global_filter
+
+  local tasks = {}
+  local ok = pcall(function()
+    local f = io.open(abs_path, "r")
+    if not f then
+      return
+    end
+    for line in f:lines() do
+      local task = parse.parse(line)
+      if task then
+        -- global_filter: post-parse exclusion
+        if global_filter and global_filter ~= "" then
+          if not task.description:find(global_filter, 1, true) then
+            task = nil
+          end
+        end
+        if task then
+          tasks[#tasks + 1] = task
+        end
+      end
+    end
+    f:close()
+  end)
+  if not ok then
+    return {}
+  end
+  return tasks
+end
+
+-- ── public API ────────────────────────────────────────────────────────────────
+
+--- Re-parse a single file and update the index.
+--- No-op if the file's mtime is unchanged since last parse.
+---
+--- Respects ignore rules (via index/ignore.lua) and global_filter.
+---
+--- @param abs_path string  absolute path to the markdown file
+function M.refresh_file(abs_path)
+  local ignore = require("obsidian-tasks.index.ignore")
+
+  -- Ignored files are always dropped.
+  if ignore.is_ignored(abs_path) then
+    _index[abs_path] = nil
+    return
+  end
+
+  local mtime = get_mtime(abs_path)
+
+  -- mtime no-op: if entry exists and mtime hasn't changed, skip.
+  local entry = _index[abs_path]
+  if entry and mtime and entry.mtime == mtime then
+    return
+  end
+
+  local tasks = parse_file(abs_path)
+  _index[abs_path] = { mtime = mtime, tasks = tasks }
+end
+
+--- Full vault walk: re-parse every file via async search.
+---
+--- *on_done* is called (with no arguments) once the walk finishes.
+---
+--- @param workspace  table   workspace object with `.root`
+--- @param on_done    fun()?  optional callback when walk is complete
+function M.refresh_all(workspace, on_done)
+  local scan = require("obsidian-tasks.index.scan")
+  local ignore = require("obsidian-tasks.index.ignore")
+
+  -- Accumulate tasks per path during the walk.
+  local pending = {} -- abs_path → { mtime, tasks = {} }
+
+  scan.walk(workspace, function(task, abs_path, _line_num)
+    if not pending[abs_path] then
+      local mtime = get_mtime(abs_path)
+      pending[abs_path] = { mtime = mtime, tasks = {} }
+    end
+    pending[abs_path].tasks[#pending[abs_path].tasks + 1] = task
+  end, function(_code)
+    -- Merge pending into _index.
+    -- Files that were previously indexed but returned no tasks in the new walk
+    -- are removed only if they were visited (i.e., they appeared in search results
+    -- for *this* workspace root). Files outside this workspace are untouched.
+    for abs_path, entry in pairs(pending) do
+      if not ignore.is_ignored(abs_path) then
+        _index[abs_path] = entry
+      end
+    end
+    if on_done then
+      on_done()
+    end
+  end)
+end
+
+--- Iterate Task objects in the index, optionally filtered by a path predicate.
+---
+--- @param path_filter fun(abs_path: string): boolean | nil
+---   When provided, only tasks from files where `path_filter(abs_path)` is
+---   truthy are yielded.  Pass nil to iterate all indexed tasks.
+--- @return fun(): table|nil, string|nil  iterator returning (task, abs_path)
+function M.tasks_in(path_filter)
+  -- Collect all matching (task, abs_path) pairs first, then return an iterator.
+  local result = {}
+  for abs_path, entry in pairs(_index) do
+    if path_filter == nil or path_filter(abs_path) then
+      for _, task in ipairs(entry.tasks) do
+        result[#result + 1] = { task = task, path = abs_path }
+      end
+    end
+  end
+  local i = 0
+  return function()
+    i = i + 1
+    local item = result[i]
+    if item then
+      return item.task, item.path
+    end
+  end
+end
+
+--- Drop the index entry for *abs_path*.
+--- Next call to refresh_file will re-parse from disk.
+---
+--- @param abs_path string
+function M.invalidate(abs_path)
+  _index[abs_path] = nil
+end
+
+--- Return a list of bufnrs whose render results currently include tasks from
+--- *path*. This is a stub — implementation will be provided by F7 (render).
+--- Shipped here so the public API surface is stable.
+---
+--- @param path string  absolute path
+--- @return integer[]  list of buffer numbers (always empty until F7 fills this)
+function M.reverse_index(_path)
+  return {}
+end
+
+--- Direct access to the internal index for testing.
+--- Not part of the public API — do not use outside tests.
+--- @return table
+function M._raw()
+  return _index
+end
+
+--- Reset the index (for testing).
+--- @return nil
+function M._reset()
+  _index = {}
+end
+
+return M
