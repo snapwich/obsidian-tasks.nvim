@@ -11,7 +11,7 @@ M.opts = {}
 function M.setup(opts)
   opts = opts or {}
   local config = require("obsidian-tasks.config")
-  M.opts = config.validate(opts)
+  M.opts = config.merge(opts)
 end
 
 return M
