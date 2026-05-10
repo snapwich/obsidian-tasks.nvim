@@ -168,12 +168,18 @@ function M.draw(bufnr, fence_range, layout_lines)
       end
 
       -- Per-line task extmark — id stored in em_map for reverse lookup.
-      local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, task_lnum, 0, {})
+      -- right_gravity = false: when text is inserted at the mark's column the
+      -- mark stays to the LEFT (does not drift right).  This does not fully
+      -- prevent drift during nvim_buf_set_lines replacements, which is why
+      -- em_map also stores render_lnum as the authoritative buffer position
+      -- for F4 patch detection (see render/edit.lua M.diff).
+      local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, task_lnum, 0, { right_gravity = false })
       all_eids[#all_eids + 1] = eid
       em_map[eid] = {
         src_path = ll.src_path,
         src_line = ll.src_line,
         src_hash = ll.src_hash,
+        render_lnum = task_lnum, -- 0-indexed buffer line where the task was inserted
       }
 
       last_task_lnum = task_lnum
