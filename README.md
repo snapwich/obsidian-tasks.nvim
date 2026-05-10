@@ -39,6 +39,31 @@ require("obsidian-tasks").setup({
 })
 ```
 
+## blink.cmp setup
+
+obsidian-tasks ships a [blink.cmp](https://github.com/saghen/blink.cmp) source that offers
+field-icon completions, per-field value suggestions (dates, recurrence patterns, …), and
+natural-language date parsing on every task line.
+
+Register the source in your blink.cmp config:
+
+```lua
+require("blink.cmp").setup({
+  sources = {
+    default = { "lsp", "path", "snippets", "buffer", "obsidian-tasks" },
+    providers = {
+      ["obsidian-tasks"] = {
+        module = "obsidian-tasks.cmp.source",
+        name = "ObsidianTasks",
+      },
+    },
+  },
+})
+```
+
+The source activates automatically on task lines (`- [ ] …`) inside obsidian.nvim vault
+buffers. No additional configuration is required beyond `require("obsidian-tasks").setup({})`.
+
 ## Keymaps
 
 No default keymaps are provided. Wire your own under `<leader>t`:

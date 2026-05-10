@@ -53,9 +53,21 @@ local function in_description_position(line, cursor_col)
     end
   end
 
-  -- Any dataview key start in the prefix → cursor is inside a field value.
-  if body_prefix:match(DV_START_PAT) then
-    return false
+  -- Any UNCLOSED dataview key start in the prefix → cursor is inside a field value.
+  -- A closed field (its `]` appears before the cursor) does not count as active;
+  -- the cursor could be positioned after a completed field ready to add another.
+  local dv_pos = 1
+  while dv_pos <= #body_prefix do
+    local s, e = body_prefix:find(DV_START_PAT, dv_pos)
+    if not s then
+      break
+    end
+    local close_pos = body_prefix:find("]", e + 1, true)
+    if not close_pos then
+      -- Unclosed dataview field — cursor is still inside this field's value.
+      return false
+    end
+    dv_pos = e + 1
   end
 
   return true
