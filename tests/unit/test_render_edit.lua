@@ -326,6 +326,51 @@ T["diff: multiple inserted lines all appear as inserts"] = function()
   draw_mod.clear(bufnr)
 end
 
+-- ── diff: row-shift correctness (regression tests for reviewer bugs) ──────────
+
+-- Bug #1: insert ABOVE an existing task → must produce INSERT only; must NOT
+-- patch the task source with the newly inserted text.
+T["diff: insert above existing task produces insert only"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = simple_layout("- [ ] Task A", "/vault/a.md", 10)
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- Task A is at row 3.  Insert a line ABOVE it (at row 3), pushing Task A to row 4.
+  vim.api.nvim_buf_set_lines(bufnr, 3, 3, false, { "- [ ] Above inserted" })
+
+  -- Extended render_range covers both the new row (3) and Task A's new row (4).
+  local result = edit_mod.diff(bufnr, { 3, 4 })
+
+  eq(#result.patches, 0) -- Task A source must NOT be overwritten
+  eq(#result.deletions, 0) -- Task A must NOT be treated as deleted
+  eq(#result.inserts, 1)
+  eq(result.inserts[1].new_text, "- [ ] Above inserted")
+
+  draw_mod.clear(bufnr)
+end
+
+-- Bug #2: delete the FIRST of multiple tasks → must produce ONE deletion for
+-- that task only; must NOT patch the surviving task's source.
+T["diff: deleting first task in two-task block produces one deletion"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = two_task_layout("- [ ] Task A", "/v/a.md", 5, "- [ ] Task B", "/v/b.md", 7)
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- Tasks at rows 3 (A) and 4 (B).  Delete Task A; Task B shifts to row 3.
+  vim.api.nvim_buf_set_lines(bufnr, 3, 4, false, {})
+
+  -- Original render_range covers rows 3-4.
+  local result = edit_mod.diff(bufnr, { 3, 4 })
+
+  eq(#result.patches, 0) -- Task B source must NOT be overwritten
+  eq(#result.deletions, 1) -- Only Task A deleted
+  eq(result.deletions[1].src_path, "/v/a.md")
+  eq(result.deletions[1].src_line, 5)
+  eq(#result.inserts, 0)
+
+  draw_mod.clear(bufnr)
+end
+
 -- ── diff: mixed operations ────────────────────────────────────────────────────
 
 T["diff: edit + insert in same render range"] = function()

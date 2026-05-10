@@ -10,14 +10,34 @@
 -- Source-file writes prefer an open buffer so user undo history is preserved.
 -- Disk writes (readfile/writefile) are used only when the file is not loaded.
 --
--- Design note — why render_lnum beats extmark positions for diff:
---   nvim_buf_set_lines (used to replace a line's content) is internally a
---   char-level delete+insert.  Extmarks at the START of the deleted byte range
---   collapse to the end of the previous line even with right_gravity=false.
---   Because of this, extmark positions are unreliable for PATCH detection
---   after user edits.  Instead, em_map stores render_lnum (the 0-indexed buffer
---   row at draw time).  M.diff looks up task metadata directly by that row and
---   compares the current text hash — no extmark position query needed.
+-- Design note — two-phase diff algorithm:
+--
+--   nvim_buf_set_lines is internally a char-level delete+insert.  For CONTENT
+--   replacements (editing a task's text) the extmark drifts to an adjacent row.
+--   For LINE insertions/deletions, extmarks track correctly with right_gravity=true.
+--
+--   Phase 1 — "strong claim":
+--     For each tracked extmark, query its live position via get_extmark_by_id.
+--     If the current row is within render_range AND the hash at that row matches
+--     the stored src_hash → the task is there unchanged.  Claim that row.
+--
+--   Phase 2 — "weak claim":
+--     Tasks without a strong claim fall back to their draw-time render_lnum.
+--     If render_lnum is within render_range and not already claimed → use it.
+--     Hash mismatch → emit patch.  Row still claimed (prevents spurious insert).
+--
+--   Deletions:  tasks with no valid claim (render_lnum out of range or stolen
+--               by another task's strong claim after a row shift).
+--
+--   Inserts:    rows in render_range not claimed by any task.
+--
+-- This two-phase approach correctly handles:
+--   • in-place content edit   (extmark drifts → weak claim detects text change)
+--   • insert above a task     (extmark tracks new row → strong claim, old row
+--                              is unclaimed → insert)
+--   • delete non-last task    (surviving task's extmark at the deleted row →
+--                              strong claim; deleted task has no valid claim →
+--                              deletion)
 
 local M = {}
 
@@ -35,20 +55,14 @@ end
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 --- Diff render lines in render_range against the draw-time snapshot.
----
---- Algorithm (does NOT rely on extmark positions — see design note above):
----   1. Build lnum_to_meta: render_lnum → { eid, meta } from all tracked extmarks.
----   2. For each line in render_range (capped at buffer end):
----      • Line has a known render_lnum entry → read text, compare hash → patch/no-op.
----      • Line has NO render_lnum entry → user-inserted → emit insert.
----   3. Entries in lnum_to_meta whose render_lnum is beyond buf end or
----      outside the scanned range → emit deletion.
+--- See the module design note for the two-phase algorithm details.
 ---
 --- @param bufnr        integer
 --- @param render_range table   { first, last } 0-indexed inclusive
 --- @return table  { patches, deletions, inserts }
 function M.diff(bufnr, render_range)
   local draw = require("obsidian-tasks.render.draw")
+  local NS = require("obsidian-tasks.util.extmark").NS
 
   local patches = {}
   local deletions = {}
@@ -63,62 +77,89 @@ function M.diff(bufnr, render_range)
     return { patches = patches, deletions = deletions, inserts = inserts }
   end
 
-  -- Build lnum_to_meta keyed by render_lnum (draw-time 0-indexed row).
-  -- render_lnum is stored in em_map by draw.lua and is immune to extmark drift.
-  local lnum_to_meta = {} -- render_lnum → { src_path, src_line, src_hash, eid }
+  local tracked = {} -- eid → { src_path, src_line, src_hash, render_lnum }
   for _, block in pairs(all_state) do
     for eid, meta in pairs(block.em_map or {}) do
-      if meta.render_lnum ~= nil then
-        lnum_to_meta[meta.render_lnum] = {
+      tracked[eid] = meta
+    end
+  end
+
+  -- Snapshot text + hashes for every line in render_range (capped at buffer end).
+  local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
+  local scan_last = math.min(last, buf_line_count - 1)
+
+  local range_texts = {} -- lnum → current text
+  local range_hashes = {} -- lnum → sha256[:16]
+  for lnum = first, scan_last do
+    local buf_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
+    range_texts[lnum] = buf_lines[1] or ""
+    range_hashes[lnum] = vim.fn.sha256(range_texts[lnum]):sub(1, 16)
+  end
+
+  -- Phase 1 — strong claims: extmark's live row is in range AND hash matches.
+  -- Each row can be claimed at most once.
+  local claimed_lnums = {} -- lnum → true
+  local eid_task_row = {} -- eid → resolved row
+
+  for eid, meta in pairs(tracked) do
+    local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, eid, {})
+    local current_row = (pos and #pos >= 2) and pos[1] or nil
+    if
+      current_row ~= nil
+      and current_row >= first
+      and current_row <= scan_last
+      and not claimed_lnums[current_row]
+      and range_hashes[current_row] == meta.src_hash
+    then
+      eid_task_row[eid] = current_row
+      claimed_lnums[current_row] = true
+    end
+  end
+
+  -- Phase 2 — weak claims: fall back to draw-time render_lnum for tasks that
+  -- did not receive a strong claim.
+  for eid, meta in pairs(tracked) do
+    if not eid_task_row[eid] then
+      if
+        meta.render_lnum ~= nil
+        and meta.render_lnum >= first
+        and meta.render_lnum <= scan_last
+        and not claimed_lnums[meta.render_lnum]
+      then
+        -- Weak claim: extmark drifted (e.g., in-place content edit) but the
+        -- draw-time row is still available and unclaimed.
+        eid_task_row[eid] = meta.render_lnum
+        claimed_lnums[meta.render_lnum] = true
+      else
+        -- No valid claim: task was deleted or its row was taken by another task.
+        log.debug("diff: deletion " .. meta.src_path .. ":" .. tostring(meta.src_line))
+        deletions[#deletions + 1] = {
           src_path = meta.src_path,
           src_line = meta.src_line,
-          src_hash = meta.src_hash,
-          eid = eid,
         }
       end
     end
   end
 
-  -- Scan each line in the render range, capped at the actual buffer length.
-  local buf_line_count = vim.api.nvim_buf_line_count(bufnr)
-  local scan_last = math.min(last, buf_line_count - 1)
-
-  local seen_lnums = {} -- render_lnums visited in the scan loop
-
-  for lnum = first, scan_last do
-    local entry = lnum_to_meta[lnum]
-    if entry then
-      -- Line corresponds to a known task render position.
-      seen_lnums[lnum] = true
-      local buf_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
-      local current_text = buf_lines[1] or ""
-      local current_hash = vim.fn.sha256(current_text):sub(1, 16)
-      if current_hash ~= entry.src_hash then
-        log.debug("diff: patch " .. entry.src_path .. ":" .. tostring(entry.src_line))
-        patches[#patches + 1] = {
-          src_path = entry.src_path,
-          src_line = entry.src_line,
-          new_text = current_text,
-        }
-      end
-    else
-      -- No tracked task at this draw-time position → user-inserted line.
-      local buf_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
-      local text = buf_lines[1] or ""
-      inserts[#inserts + 1] = {
-        after_lnum = lnum,
-        new_text = text,
+  -- Emit patches for resolved tasks whose content changed.
+  for eid, task_row in pairs(eid_task_row) do
+    local meta = tracked[eid]
+    if range_hashes[task_row] ~= meta.src_hash then
+      log.debug("diff: patch " .. meta.src_path .. ":" .. tostring(meta.src_line))
+      patches[#patches + 1] = {
+        src_path = meta.src_path,
+        src_line = meta.src_line,
+        new_text = range_texts[task_row],
       }
     end
   end
 
-  -- Any tracked render_lnum not seen (buffer shrank or row outside range) → deletion.
-  for lnum, entry in pairs(lnum_to_meta) do
-    if not seen_lnums[lnum] then
-      log.debug("diff: deletion " .. entry.src_path .. ":" .. tostring(entry.src_line))
-      deletions[#deletions + 1] = {
-        src_path = entry.src_path,
-        src_line = entry.src_line,
+  -- Unclaimed rows in render_range → user-inserted lines.
+  for lnum = first, scan_last do
+    if not claimed_lnums[lnum] then
+      inserts[#inserts + 1] = {
+        after_lnum = lnum,
+        new_text = range_texts[lnum],
       }
     end
   end
@@ -144,10 +185,12 @@ function M.apply_patch(patch)
   else
     -- Disk fallback: read → replace → write.
     local lines = vim.fn.readfile(path)
-    if lines and line >= 1 and line <= #lines then
-      lines[line] = new_text
-      vim.fn.writefile(lines, path)
+    if type(lines) ~= "table" or line < 1 or line > #lines then
+      log.error("apply_patch: cannot write " .. path .. ":" .. tostring(line))
+      return
     end
+    lines[line] = new_text
+    vim.fn.writefile(lines, path)
   end
 end
 
@@ -167,10 +210,12 @@ function M.apply_deletion(deletion)
   else
     -- Disk fallback: read → remove → write.
     local lines = vim.fn.readfile(path)
-    if lines and line >= 1 and line <= #lines then
-      table.remove(lines, line)
-      vim.fn.writefile(lines, path)
+    if type(lines) ~= "table" or line < 1 or line > #lines then
+      log.error("apply_deletion: cannot delete line " .. tostring(line) .. " from " .. path)
+      return
     end
+    table.remove(lines, line)
+    vim.fn.writefile(lines, path)
   end
 end
 
