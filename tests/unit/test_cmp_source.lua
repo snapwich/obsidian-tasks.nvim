@@ -495,4 +495,72 @@ T["enabled: cursor on prose line in multi-line buffer → false"] = function()
   MiniTest.expect.equality(result, false)
 end
 
+-- ── enabled: opts.blink_cmp.enabled ──────────────────────────────────────────
+
+T["enabled: blink_cmp.enabled=false → false even on task line"] = function()
+  local c1 = install_mock("obsidian-tasks.util.obsidian", vault_stub())
+  local c2 = install_mock("obsidian-tasks.render.draw", no_render_stub())
+  -- Stub the plugin module with blink_cmp.enabled = false.
+  local c3 = install_mock("obsidian-tasks", {
+    opts = { blink_cmp = { enabled = false } },
+  })
+  local Source = fresh_source()
+  local inst = Source.new({}, {})
+
+  local bufnr, cleanup = make_named_buf("/vault/note.md", { "- [ ] task" })
+  local result
+  with_cursor(bufnr, 1, function()
+    result = inst:enabled()
+  end)
+  cleanup()
+  c1()
+  c2()
+  c3()
+
+  MiniTest.expect.equality(result, false)
+end
+
+T["enabled: blink_cmp.enabled=true → respects normal conditions"] = function()
+  local c1 = install_mock("obsidian-tasks.util.obsidian", vault_stub())
+  local c2 = install_mock("obsidian-tasks.render.draw", no_render_stub())
+  local c3 = install_mock("obsidian-tasks", {
+    opts = { blink_cmp = { enabled = true } },
+  })
+  local Source = fresh_source()
+  local inst = Source.new({}, {})
+
+  local bufnr, cleanup = make_named_buf("/vault/note.md", { "- [ ] task" })
+  local result
+  with_cursor(bufnr, 1, function()
+    result = inst:enabled()
+  end)
+  cleanup()
+  c1()
+  c2()
+  c3()
+
+  MiniTest.expect.equality(result, true)
+end
+
+T["enabled: blink_cmp opts absent → defaults to enabled"] = function()
+  local c1 = install_mock("obsidian-tasks.util.obsidian", vault_stub())
+  local c2 = install_mock("obsidian-tasks.render.draw", no_render_stub())
+  -- Empty opts (plugin not yet fully set up).
+  local c3 = install_mock("obsidian-tasks", { opts = {} })
+  local Source = fresh_source()
+  local inst = Source.new({}, {})
+
+  local bufnr, cleanup = make_named_buf("/vault/note.md", { "- [ ] task" })
+  local result
+  with_cursor(bufnr, 1, function()
+    result = inst:enabled()
+  end)
+  cleanup()
+  c1()
+  c2()
+  c3()
+
+  MiniTest.expect.equality(result, true)
+end
+
 return T

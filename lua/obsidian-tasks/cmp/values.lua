@@ -199,7 +199,8 @@ end
 
 --- Build date completion items.
 ---
---- Returns the static NL phrase list.  If the typed text can be parsed as an
+--- Uses opts.date_input.suggestions when configured; otherwise falls back to
+--- the built-in NL_DATE_PHRASES list.  If the typed text can be parsed as an
 --- ISO date via cmp/date_nl, an ISO item is prepended (so the user sees their
 --- own input validated and completed first).
 ---
@@ -208,25 +209,31 @@ end
 local function date_items(typed)
   local items = {}
 
+  local ok_date_nl, date_nl = pcall(require, "obsidian-tasks.cmp.date_nl")
+
   -- Freeform ISO parse: if the typed text is a recognisable date, offer it first.
-  if typed and typed ~= "" then
-    local ok, date_nl = pcall(require, "obsidian-tasks.cmp.date_nl")
-    if ok then
-      local iso = date_nl.parse(typed)
-      if iso then
-        items[#items + 1] = {
-          label = iso,
-          insertText = iso,
-          kind = KIND_TEXT,
-          detail = "date",
-          source_name = "obsidian-tasks",
-        }
-      end
+  if typed and typed ~= "" and ok_date_nl then
+    local iso = date_nl.parse(typed)
+    if iso then
+      items[#items + 1] = {
+        label = iso,
+        insertText = iso,
+        kind = KIND_TEXT,
+        detail = "date",
+        source_name = "obsidian-tasks",
+      }
     end
   end
 
-  -- Static NL phrase list.
-  for _, phrase in ipairs(NL_DATE_PHRASES) do
+  -- Respect opts.date_input.suggestions when the plugin has been set up;
+  -- fall back to the built-in NL_DATE_PHRASES list otherwise.
+  local phrases = NL_DATE_PHRASES
+  local ok_ot, ot = pcall(require, "obsidian-tasks")
+  if ok_ot and ot.opts and ot.opts.date_input and ot.opts.date_input.suggestions then
+    phrases = ot.opts.date_input.suggestions
+  end
+
+  for _, phrase in ipairs(phrases) do
     items[#items + 1] = {
       label = phrase,
       insertText = phrase,

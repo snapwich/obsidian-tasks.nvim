@@ -547,4 +547,52 @@ T["return type: always returns table, never nil"] = function()
   end
 end
 
+-- ── opts.date_input.suggestions ───────────────────────────────────────────────
+
+T["date_input.suggestions: custom list is used when configured"] = function()
+  -- Stub the plugin module to expose custom date suggestions.
+  local c1 = install_mock("obsidian-tasks", {
+    opts = {
+      date_input = { suggestions = { "custom-phrase-a", "custom-phrase-b" } },
+    },
+  })
+  local line, col = after_emoji("📅")
+  local mod = fresh_values()
+  local items = mod.completions(ctx(line, col))
+  c1()
+  local labels = label_set(items)
+  MiniTest.expect.equality(labels["custom-phrase-a"] ~= nil, true)
+  MiniTest.expect.equality(labels["custom-phrase-b"] ~= nil, true)
+  -- Default phrases should NOT appear since the list was replaced.
+  MiniTest.expect.equality(labels["next monday"] ~= nil, false)
+end
+
+T["date_input.suggestions: built-in list used when opts not set"] = function()
+  -- Empty opts (plugin not configured) → fall back to NL_DATE_PHRASES.
+  local c1 = install_mock("obsidian-tasks", { opts = {} })
+  local line, col = after_emoji("📅")
+  local mod = fresh_values()
+  local items = mod.completions(ctx(line, col))
+  c1()
+  local labels = label_set(items)
+  -- NL_DATE_PHRASES contains "today" and "tomorrow".
+  MiniTest.expect.equality(labels["today"] ~= nil, true)
+  MiniTest.expect.equality(labels["tomorrow"] ~= nil, true)
+end
+
+T["date_input.suggestions: custom list used for all date fields"] = function()
+  local c1 = install_mock("obsidian-tasks", {
+    opts = {
+      date_input = { suggestions = { "only-phrase" } },
+    },
+  })
+  local mod = fresh_values()
+  -- Check scheduled (⏳) too.
+  local line, col = after_emoji("⏳")
+  local items = mod.completions(ctx(line, col))
+  c1()
+  local labels = label_set(items)
+  MiniTest.expect.equality(labels["only-phrase"] ~= nil, true)
+end
+
 return T

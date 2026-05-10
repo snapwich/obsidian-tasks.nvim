@@ -75,6 +75,7 @@ end
 --- completion.
 ---
 --- Conditions (all must hold):
+---   0. opts.blink_cmp.enabled is not false.
 ---   1. Current buffer is a .md file.
 ---   2. The file is inside an obsidian.nvim vault.
 ---   3. The line under the cursor matches the task-list regex  OR
@@ -82,6 +83,12 @@ end
 ---
 --- @return boolean
 function M:enabled()
+  -- ── 0. Plugin-level blink_cmp opt-out ────────────────────────────────────
+  local ok_ot, ot = pcall(require, "obsidian-tasks")
+  if ok_ot and ot.opts and ot.opts.blink_cmp and ot.opts.blink_cmp.enabled == false then
+    return false
+  end
+
   local bufnr = vim.api.nvim_get_current_buf()
 
   -- ── 1. Markdown buffer ────────────────────────────────────────────────────
