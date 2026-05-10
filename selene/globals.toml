@@ -13,3 +13,6 @@ any = true
 
 [MiniTest]
 any = true
+
+[Obsidian]
+any = true
