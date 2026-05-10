@@ -460,6 +460,93 @@ T["stale-jump: production wiring — backlink in render, task moved, lands on ne
   vim.fn.delete(src_path)
 end
 
+T["stale-jump: production wiring — hide.priority + task moved — still lands on new line"] = function()
+  -- Regression guard for the hide-flag path: when hide.priority is active,
+  -- layout.lua serializes without the priority emoji, so source_text_hash must
+  -- come from task.raw_line (not the post-hide task_text) to match the source
+  -- file.  This test verifies that the full pipeline still finds the moved task.
+  local parse_task = require("obsidian-tasks.task.parse")
+  local layout_mod = require("obsidian-tasks.render.layout")
+
+  -- Task with a priority field in the source file.
+  local task_text = "- [ ] Priority task ⏫ 📅 2024-06-01"
+
+  -- Create temp source file with the task at line 2.
+  local src_path = make_tmpfile({ "# Source", task_text, "other" })
+  local src_line = 2
+
+  local task = parse_task.parse(task_text)
+  MiniTest.expect.equality(task ~= nil, true)
+  task._src_path = src_path
+  task._src_line = src_line
+
+  -- Layout with hide.priority=true: priority emoji omitted from rendered text.
+  local query_result = {
+    groups = { { name = "", tasks = { task } } },
+    total = 1,
+    hide_flags = { priority = true },
+    header_summary = "",
+    errors = {},
+  }
+  local layout_lines = layout_mod.layout(query_result)
+  local task_ll = nil
+  for _, ll in ipairs(layout_lines) do
+    if ll.kind == "task" then
+      task_ll = ll
+      break
+    end
+  end
+  MiniTest.expect.equality(task_ll ~= nil, true)
+  -- source_text_hash must equal sha256 of the raw source line (with priority).
+  eq(task_ll.source_text_hash, vim.fn.sha256(task_text):sub(1, 16))
+
+  -- Draw into a render buffer.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, { 0, 2 }, layout_lines)
+  local task_render_row = 4 -- 1-indexed (task inserted at 0-indexed line 3)
+
+  -- Shift the task in the source file: insert 5 lines before it → task at line 7.
+  vim.fn.writefile({
+    "# Source",
+    "pad 1",
+    "pad 2",
+    "pad 3",
+    "pad 4",
+    "pad 5",
+    task_text, -- now at line 7
+    "other",
+  }, src_path)
+
+  -- Invoke <CR> handler with cursor on the render task line.
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { task_render_row, 0 })
+
+  local m = find_nmap(bufnr, "<CR>")
+  MiniTest.expect.equality(m ~= nil, true)
+  m.callback()
+
+  -- Cursor must land on the moved task at line 7.
+  local jump_row = vim.api.nvim_win_get_cursor(0)[1]
+  eq(jump_row, 7)
+
+  -- Cleanup.
+  vim.api.nvim_win_close(winid, true)
+  local opened = vim.fn.bufnr(src_path)
+  if opened ~= -1 then
+    vim.api.nvim_buf_delete(opened, { force = true })
+  end
+  draw_mod.clear(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+end
+
 -- ── dispatch: fall-through branch ────────────────────────────────────────────
 
 T["handler: non-render line — calls smart_action and feeds keys"] = function()

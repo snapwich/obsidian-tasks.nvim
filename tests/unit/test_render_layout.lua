@@ -336,9 +336,10 @@ T["task line: source_text_hash is 16 hex characters"] = function()
   MiniTest.expect.equality(tl.source_text_hash:match("^[0-9a-f]+$") ~= nil, true)
 end
 
-T["task line: source_text_hash matches sha256 of pre-wikilink text"] = function()
-  -- When a wikilink is appended, source_text_hash must match the raw
-  -- serialized task text (without the wikilink suffix).
+T["task line: source_text_hash matches sha256 of raw_line (pre-wikilink)"] = function()
+  -- source_text_hash must match the task's raw_line (verbatim original text
+  -- from parse.lua) so it matches what readfile returns for the source file.
+  -- When a wikilink is appended, src_hash diverges; source_text_hash must not.
   local raw_text = "- [ ] Task A"
   local task_a = with_src(pt(raw_text), "/vault/my-note.md", 1)
   local result = make_result({
@@ -349,7 +350,7 @@ T["task line: source_text_hash matches sha256 of pre-wikilink text"] = function(
   local tl = lines_of_kind(rendered, "task")[1]
   -- The rendered text includes a wikilink suffix — verify it does.
   MiniTest.expect.equality(tl.text:find("%[%[") ~= nil, true)
-  -- source_text_hash must equal sha256 of the raw (pre-wikilink) text.
+  -- source_text_hash must equal sha256 of the raw_line (pre-wikilink).
   local expected = vim.fn.sha256(raw_text):sub(1, 16)
   eq(tl.source_text_hash, expected)
   -- src_hash and source_text_hash must differ when a wikilink was appended.
@@ -367,6 +368,45 @@ T["task line: source_text_hash equals src_hash when backlinks hidden"] = functio
   local rendered = layout_mod.layout(result)
   local tl = lines_of_kind(rendered, "task")[1]
   eq(tl.source_text_hash, tl.src_hash)
+end
+
+T["task line: source_text_hash matches raw_line when field-hide flag active"] = function()
+  -- With hide.priority, the rendered text omits the priority emoji — but
+  -- source_text_hash must still match sha256(task.raw_line), i.e. the original
+  -- source-file content WITH the priority field included.
+  -- This is the regression caught by the code-reviewer: using the post-hide
+  -- task_text would produce a different hash that never matches any source line.
+  local raw_text = "- [ ] Task B ⏫ 📅 2024-01-15"
+  local task_a = with_src(pt(raw_text), "/vault/note.md", 1)
+  local result = make_result({
+    total = 1,
+    hide_flags = { priority = true },
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result)
+  local tl = lines_of_kind(rendered, "task")[1]
+  -- Rendered text must NOT contain the priority emoji (hide flag applied).
+  MiniTest.expect.equality(tl.text:find("⏫", 1, true) == nil, true)
+  -- source_text_hash must equal sha256 of the ORIGINAL raw_line (with priority).
+  local expected_hash = vim.fn.sha256(raw_text):sub(1, 16)
+  eq(tl.source_text_hash, expected_hash)
+end
+
+T["task line: source_text_hash with hide.tags matches raw_line"] = function()
+  -- Same assertion for hide.tags — tags are stripped from rendered text but
+  -- source_text_hash must still match the original source line.
+  local raw_text = "- [ ] Task C #tag1 #tag2"
+  local task_a = with_src(pt(raw_text), "/vault/note.md", 1)
+  local result = make_result({
+    total = 1,
+    hide_flags = { tags = true },
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result)
+  local tl = lines_of_kind(rendered, "task")[1]
+  -- source_text_hash must equal sha256 of the raw_line (tags included).
+  local expected_hash = vim.fn.sha256(raw_text):sub(1, 16)
+  eq(tl.source_text_hash, expected_hash)
 end
 
 T["task line: text contains serialized task"] = function()

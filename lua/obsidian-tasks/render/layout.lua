@@ -178,9 +178,14 @@ function M.layout(query_result, opts)
       -- Serialize using preserve format (keeps original emoji/dataview style).
       local task_text = serialize_mod.serialize(visible_task, { format = "preserve" })
 
-      -- source_text_hash is computed BEFORE the wikilink is appended so that
-      -- keymap.lua can match this hash against raw source-file lines.
-      local source_text_hash = src_hash(task_text)
+      -- source_text_hash must match the unmodified source-file line so that
+      -- keymap.lua content-match scan can locate the task regardless of which
+      -- fields are hidden.  Use task.raw_line (the verbatim original text
+      -- preserved by parse.lua) rather than task_text (post-hide-flags
+      -- serialized text, which omits hidden fields and therefore diverges from
+      -- the source file when any field-hide flag is active).
+      -- Fall back to task_text only for synthesized tasks that lack raw_line.
+      local source_text_hash = task.raw_line and src_hash(task.raw_line) or src_hash(task_text)
 
       -- Append wikilink backlink unless hidden.
       -- src_path is set by the render orchestrator on each task before calling layout.
