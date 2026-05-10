@@ -40,29 +40,34 @@ end
 ---
 --- Algorithm:
 ---   1. Read all lines from src_path.
----   2. If lines[src_line]'s sha256[:16] matches src_hash → return src_line.
+---   2. If lines[src_line]'s sha256[:16] matches source_text_hash → return src_line.
 ---   3. Otherwise scan every line for a hash match → return first match.
 ---   4. If no match found → emit log.info and return src_line.
 ---
---- @param src_path string
---- @param src_line integer  1-indexed recorded line
---- @param src_hash string   sha256[:16] of the task text at draw time
+--- source_text_hash must be the hash of the task text BEFORE any wikilink was
+--- appended (i.e. matching the raw source-file text).  This is layout.lua's
+--- source_text_hash field, NOT src_hash (which includes the wikilink suffix
+--- when backlinks are visible and would never match a source-file line).
+---
+--- @param src_path          string
+--- @param src_line          integer  1-indexed recorded line
+--- @param source_text_hash  string   sha256[:16] of the pre-wikilink task text
 --- @return integer  1-indexed jump target
-local function resolve_jump_line(src_path, src_line, src_hash)
+local function resolve_jump_line(src_path, src_line, source_text_hash)
   local lines = read_source_lines(src_path)
-  if type(lines) ~= "table" or not src_hash then
+  if type(lines) ~= "table" or not source_text_hash then
     return src_line
   end
 
   -- Fast path: recorded line still has the right content.
   local recorded_text = lines[src_line]
-  if recorded_text and vim.fn.sha256(recorded_text):sub(1, 16) == src_hash then
+  if recorded_text and vim.fn.sha256(recorded_text):sub(1, 16) == source_text_hash then
     return src_line
   end
 
   -- Stale: scan the whole file for a line whose hash matches.
   for i, text in ipairs(lines) do
-    if vim.fn.sha256(text):sub(1, 16) == src_hash then
+    if vim.fn.sha256(text):sub(1, 16) == source_text_hash then
       return i
     end
   end
@@ -88,7 +93,10 @@ local function make_handler(bufnr)
     local meta = draw.is_render_line(bufnr, lnum)
     if meta and meta.src_path then
       -- Resolve the actual jump line via hash-match fallback.
-      local jump_line = resolve_jump_line(meta.src_path, meta.src_line, meta.src_hash)
+      -- source_text_hash is the hash of the pre-wikilink task text and matches
+      -- raw source-file lines; src_hash includes the wikilink suffix and is
+      -- only meaningful for rendered buffer lines (used by edit.lua diff).
+      local jump_line = resolve_jump_line(meta.src_path, meta.src_line, meta.source_text_hash)
       -- Jump to source.  Use :edit (not :e!) to preserve unsaved changes in
       -- the destination buffer if it is already loaded.
       vim.cmd("edit " .. vim.fn.fnameescape(meta.src_path))

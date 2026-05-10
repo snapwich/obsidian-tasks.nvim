@@ -24,7 +24,8 @@ local NS = extmark_util.NS
 --     [fence_first] = {
 --       fence_range    = { first, last },  -- 0-indexed inclusive
 --       inserted_range = { first, last } | nil,
---       em_map         = { [extmark_id] = { src_path, src_line, src_hash } },
+--       em_map         = { [extmark_id] = { src_path, src_line, src_hash,
+--                                           source_text_hash, render_lnum } },
 --       all_eids       = { eid, ... },     -- ALL extmark ids for this block
 --     },
 --     ...
@@ -181,6 +182,7 @@ function M.draw(bufnr, fence_range, layout_lines)
         src_path = ll.src_path,
         src_line = ll.src_line,
         src_hash = ll.src_hash,
+        source_text_hash = ll.source_text_hash, -- sha256[:16] of pre-wikilink text
         render_lnum = task_lnum, -- 0-indexed buffer line where the task was inserted
       }
 
@@ -283,7 +285,7 @@ end
 ---
 --- @param bufnr integer
 --- @param lnum  integer  0-indexed buffer line number
---- @return table|nil  { src_path, src_line, src_hash } or nil
+--- @return table|nil  { src_path, src_line, src_hash, source_text_hash } or nil
 function M.is_render_line(bufnr, lnum)
   local blocks = _state[bufnr]
   if not blocks then
@@ -301,6 +303,7 @@ function M.is_render_line(bufnr, lnum)
           src_path = entry.src_path,
           src_line = entry.src_line,
           src_hash = entry.src_hash,
+          source_text_hash = entry.source_text_hash,
         }
       end
     end

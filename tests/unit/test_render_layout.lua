@@ -323,6 +323,52 @@ T["task line: src_hash is 16 hex characters"] = function()
   MiniTest.expect.equality(tl.src_hash:match("^[0-9a-f]+$") ~= nil, true)
 end
 
+T["task line: source_text_hash is 16 hex characters"] = function()
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/a.md", 1)
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result)
+  local tl = lines_of_kind(rendered, "task")[1]
+  MiniTest.expect.equality(type(tl.source_text_hash), "string")
+  eq(#tl.source_text_hash, 16)
+  MiniTest.expect.equality(tl.source_text_hash:match("^[0-9a-f]+$") ~= nil, true)
+end
+
+T["task line: source_text_hash matches sha256 of pre-wikilink text"] = function()
+  -- When a wikilink is appended, source_text_hash must match the raw
+  -- serialized task text (without the wikilink suffix).
+  local raw_text = "- [ ] Task A"
+  local task_a = with_src(pt(raw_text), "/vault/my-note.md", 1)
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result)
+  local tl = lines_of_kind(rendered, "task")[1]
+  -- The rendered text includes a wikilink suffix — verify it does.
+  MiniTest.expect.equality(tl.text:find("%[%[") ~= nil, true)
+  -- source_text_hash must equal sha256 of the raw (pre-wikilink) text.
+  local expected = vim.fn.sha256(raw_text):sub(1, 16)
+  eq(tl.source_text_hash, expected)
+  -- src_hash and source_text_hash must differ when a wikilink was appended.
+  MiniTest.expect.equality(tl.src_hash ~= tl.source_text_hash, true)
+end
+
+T["task line: source_text_hash equals src_hash when backlinks hidden"] = function()
+  -- When no wikilink is appended, both hashes are identical.
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/note.md", 1)
+  local result = make_result({
+    total = 1,
+    hide_flags = { backlinks = true },
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result)
+  local tl = lines_of_kind(rendered, "task")[1]
+  eq(tl.source_text_hash, tl.src_hash)
+end
+
 T["task line: text contains serialized task"] = function()
   local task_a = with_src(pt("- [ ] Buy milk 📅 2024-01-15"), "/vault/tasks.md", 5)
   local result = make_result({

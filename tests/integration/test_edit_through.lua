@@ -398,24 +398,23 @@ end
 -- sits at a different line than recorded.  Pressing <CR> must find the moved line
 -- via the content-match scan in resolve_jump_line, not the stale src_line.
 --
--- Note on hash: layout.lua computes src_hash from the fully serialized rendered
--- text (which appends a wikilink).  The content-match scan in keymap.lua reads
--- the SOURCE file and compares sha256 of each source line against src_hash — so
--- hashes from the full render pipeline never match source text (different strings).
--- This test uses draw_mod.draw() directly to set src_hash = sha256(source_text),
--- which is the correct hash for content-match to work with the source file.
+-- Note on hashes: layout.lua now emits TWO hashes:
+--   src_hash          = sha256(rendered_text_with_wikilink) — used by edit.lua diff
+--   source_text_hash  = sha256(source_text_before_wikilink) — used by keymap.lua scan
+-- This test has no wikilink, so both hashes are identical and equal task_hash.
 
 T["S6: stale jump — task shifted 5 lines — CR lands on moved line"] = function()
   local draw_mod = require("obsidian-tasks.render.draw")
 
   local task_text = "- [ ] My stale task"
-  -- src_hash must equal sha256 of the SOURCE FILE LINE for the scan to match.
+  -- Both hashes equal sha256(task_text) here because there is no wikilink.
   local task_hash = vim.fn.sha256(task_text):sub(1, 16)
 
   -- Source file: task initially at 1-indexed line 2.
   local src_path = make_tmpfile({ "# Note", task_text })
 
-  -- Draw the task directly, using the source-text hash so keymap content-match works.
+  -- Draw the task directly, supplying BOTH hash fields so the keymap handler
+  -- can use source_text_hash for source-file content-match.
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local winid = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
@@ -433,6 +432,7 @@ T["S6: stale jump — task shifted 5 lines — CR lands on moved line"] = functi
       src_path = src_path,
       src_line = 2,
       src_hash = task_hash,
+      source_text_hash = task_hash, -- no wikilink → identical to src_hash
     },
   })
 
@@ -723,16 +723,16 @@ T["S4/S5-companion: empty render + run_write_pre → no write, no warn"] = funct
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── S6 companion: full render pipeline stale jump → stale line ───────────────
+-- ── S6 companion: full render pipeline stale jump → moved line ───────────────
 --
 -- Companion to S6.  Uses render.render_buffer (production path) so src_hash is
 -- computed by layout.lua from the RENDERED text (task text + wikilink suffix).
--- The source file is externally shifted so the task is at a different line.
--- resolve_jump_line cannot match the rendered hash against source-file lines →
--- falls back to the stale src_line and emits log.info.
--- Locks in this known production limitation.
+-- layout.lua also now computes source_text_hash from the pre-wikilink text,
+-- which matches the raw source-file content.  The source file is externally
+-- shifted so the task is at a different line.  resolve_jump_line uses
+-- source_text_hash for the scan and correctly lands on the moved line.
 
-T["S6-companion: full pipeline stale jump → falls back to stale src_line"] = function()
+T["S6-companion: full pipeline stale jump → lands on moved line"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local parse = require("obsidian-tasks.task.parse")
@@ -746,8 +746,9 @@ T["S6-companion: full pipeline stale jump → falls back to stale src_line"] = f
   local restore_idx =
     install_mock("obsidian-tasks.index", make_index_stub({ { task = task, path = src_path, line_num = 2 } }))
 
-  -- Full render pipeline: layout.lua will append wikilink, compute hash from
-  -- "task_text [[basename]]" — hash does NOT match raw source file content.
+  -- Full render pipeline: layout.lua appends wikilink, sets src_hash from
+  -- rendered text AND sets source_text_hash from pre-wikilink text.
+  -- keymap.lua uses source_text_hash for the content-match scan.
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local winid = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
@@ -774,24 +775,13 @@ T["S6-companion: full pipeline stale jump → falls back to stale src_line"] = f
     end
   end
   MiniTest.expect.equality(cr_cb ~= nil, true)
+  cr_cb()
 
-  local notify_calls = capture_notify(function()
-    cr_cb()
-  end)
-
-  -- Cursor must be at the STALE line (2), not the moved line (7), because the
-  -- rendered hash (with wikilink) cannot match any raw source file line.
+  -- Cursor must be at the MOVED line (7), not the stale src_line (2).
+  -- source_text_hash (pre-wikilink) matches the raw source-file content and
+  -- the scan correctly locates the task at its new position.
   local pos = vim.api.nvim_win_get_cursor(0)
-  eq(pos[1], 2)
-
-  -- log.info must have been emitted about the stale recorded line.
-  local found_info = false
-  for _, call in ipairs(notify_calls) do
-    if call.level == vim.log.levels.INFO and call.msg:find("recorded line", 1, true) then
-      found_info = true
-    end
-  end
-  MiniTest.expect.equality(found_info, true)
+  eq(pos[1], 7)
 
   -- Cleanup.
   local src_bufnr = vim.fn.bufnr(src_path)

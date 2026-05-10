@@ -2,12 +2,19 @@
 -- Pure function: QueryResult → list of render-line records.
 --
 -- Each record has shape:
---   { kind, text, src_path, src_line, src_hash, indent }
+--   { kind, text, src_path, src_line, src_hash, source_text_hash, indent }
 --
 -- kind ∈ 'label' | 'group_header' | 'task' | 'footer' | 'error'
 --
--- Only 'task' records carry src_path / src_line / src_hash.
+-- Only 'task' records carry src_path / src_line / src_hash / source_text_hash.
 -- All other kinds set those to nil.
+--
+-- src_hash          — sha256[:16] of the RENDERED task text (includes wikilink
+--                     when backlinks are visible).  Used by edit.lua diff to
+--                     match buffer lines against their draw-time content.
+-- source_text_hash  — sha256[:16] of the task text BEFORE the wikilink is
+--                     appended.  Matches source-file line content and is used
+--                     by keymap.lua for stale-jump content-match scanning.
 
 local M = {}
 
@@ -171,6 +178,10 @@ function M.layout(query_result, opts)
       -- Serialize using preserve format (keeps original emoji/dataview style).
       local task_text = serialize_mod.serialize(visible_task, { format = "preserve" })
 
+      -- source_text_hash is computed BEFORE the wikilink is appended so that
+      -- keymap.lua can match this hash against raw source-file lines.
+      local source_text_hash = src_hash(task_text)
+
       -- Append wikilink backlink unless hidden.
       -- src_path is set by the render orchestrator on each task before calling layout.
       -- If absent (e.g. in tests or when orchestrator hasn't populated it), skip the wikilink.
@@ -180,6 +191,9 @@ function M.layout(query_result, opts)
         task_text = task_text .. " [[" .. basename .. "]]"
       end
 
+      -- src_hash is the hash of the final RENDERED text (with wikilink when
+      -- present).  edit.lua diff uses this to detect in-place edits in the
+      -- render buffer, where task lines DO include the wikilink.
       local hash = src_hash(task_text)
 
       lines[#lines + 1] = {
@@ -188,6 +202,7 @@ function M.layout(query_result, opts)
         src_path = path,
         src_line = task._src_line,
         src_hash = hash,
+        source_text_hash = source_text_hash,
         indent = task.indent or "",
       }
     end

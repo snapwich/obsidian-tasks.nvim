@@ -163,10 +163,17 @@ T["handler: render line — opens source file and positions cursor"] = function(
   local bufnr = make_buf({ "fake task line", "other line", "third line" })
 
   -- Mock draw.is_render_line: lnum 0 (cursor row 1 - 1) → render meta.
+  -- source_text_hash must match the raw source line (no wikilink); this is
+  -- the same as correct_hash when there is no wikilink in the fixture file.
   local restore_draw = install_mock("obsidian-tasks.render.draw", {
     is_render_line = function(_b, lnum)
       if lnum == 0 then
-        return { src_path = fixture, src_line = src_line, src_hash = correct_hash }
+        return {
+          src_path = fixture,
+          src_line = src_line,
+          src_hash = correct_hash,
+          source_text_hash = correct_hash,
+        }
       end
       return nil
     end,
@@ -226,11 +233,19 @@ end
 --- Run the handler for bufnr with cursor at row 1 (0-indexed lnum 0).
 --- Opens a window, triggers the <CR> callback, then closes the window.
 --- Returns the jump target (1-indexed cursor row in the opened file).
-local function run_handler_get_line(bufnr, src_path, src_line, src_hash)
+---
+--- source_text_hash is the sha256[:16] of the raw source-file task text
+--- (pre-wikilink).  The handler uses this field to match source file lines.
+local function run_handler_get_line(bufnr, src_path, src_line, source_text_hash)
   local restore_draw = install_mock("obsidian-tasks.render.draw", {
     is_render_line = function(_b, lnum)
       if lnum == 0 then
-        return { src_path = src_path, src_line = src_line, src_hash = src_hash }
+        return {
+          src_path = src_path,
+          src_line = src_line,
+          src_hash = source_text_hash, -- no wikilink in test mocks; both hashes identical
+          source_text_hash = source_text_hash,
+        }
       end
       return nil
     end,
@@ -344,6 +359,104 @@ T["stale-jump: no match — falls back to recorded src_line and emits log.info"]
   end
   MiniTest.expect.equality(found_info, true)
 
+  vim.fn.delete(src_path)
+end
+
+-- ── stale-jump: production wiring test ───────────────────────────────────────
+--
+-- End-to-end test using the real layout → draw pipeline (not mocked).
+-- Verifies that when backlinks are visible (wikilink appended to rendered text),
+-- the handler still finds the task in the source file after it has moved, by
+-- using source_text_hash (pre-wikilink) rather than src_hash (rendered text).
+
+T["stale-jump: production wiring — backlink in render, task moved, lands on new line"] = function()
+  local parse_task = require("obsidian-tasks.task.parse")
+  local layout_mod = require("obsidian-tasks.render.layout")
+
+  -- Task text as it appears in the source file (no wikilink).
+  local task_text = "- [ ] Production stale-jump test 📅 2024-03-15"
+
+  -- Create a temp source file with the task at line 2 (1-indexed).
+  local src_path = make_tmpfile({ "# Source", task_text, "trailing line" })
+  local src_line = 2
+
+  -- Parse the task and attach source metadata so layout appends a wikilink.
+  local task = parse_task.parse(task_text)
+  MiniTest.expect.equality(task ~= nil, true)
+  task._src_path = src_path
+  task._src_line = src_line
+
+  -- Build a minimal QueryResult.  backlinks NOT hidden → wikilink appended.
+  local query_result = {
+    groups = { { name = "", tasks = { task } } },
+    total = 1,
+    hide_flags = {},
+    header_summary = "",
+    errors = {},
+  }
+
+  -- Layout: layout.lua computes source_text_hash (pre-wikilink) separately.
+  local layout_lines = layout_mod.layout(query_result)
+  local task_ll = nil
+  for _, ll in ipairs(layout_lines) do
+    if ll.kind == "task" then
+      task_ll = ll
+      break
+    end
+  end
+  MiniTest.expect.equality(task_ll ~= nil, true)
+
+  -- Confirm the two hashes diverge (wikilink suffix makes src_hash different).
+  MiniTest.expect.equality(task_ll.src_hash ~= task_ll.source_text_hash, true)
+  -- source_text_hash must equal sha256 of the raw source text.
+  eq(task_ll.source_text_hash, vim.fn.sha256(task_text):sub(1, 16))
+
+  -- Draw into a render buffer (3-line fence).
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, { 0, 2 }, layout_lines)
+  -- After draw the task was inserted at 0-indexed line 3 (row 4, 1-indexed).
+  local task_render_row = 4 -- 1-indexed, for nvim_win_set_cursor
+
+  -- Shift the task in the source file: insert 5 lines before it → task at line 7.
+  local shifted = {
+    "# Source",
+    "inserted 1",
+    "inserted 2",
+    "inserted 3",
+    "inserted 4",
+    "inserted 5",
+    task_text, -- now at line 7 (1-indexed)
+    "trailing line",
+  }
+  vim.fn.writefile(shifted, src_path)
+
+  -- Open a window, set cursor on the render task line, invoke <CR>.
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { task_render_row, 0 })
+
+  local m = find_nmap(bufnr, "<CR>")
+  MiniTest.expect.equality(m ~= nil, true)
+  m.callback()
+
+  -- Cursor must land on the moved task line (line 7 in the shifted source).
+  local jump_row = vim.api.nvim_win_get_cursor(0)[1]
+  eq(jump_row, 7)
+
+  -- Cleanup.
+  vim.api.nvim_win_close(winid, true)
+  local opened = vim.fn.bufnr(src_path)
+  if opened ~= -1 then
+    vim.api.nvim_buf_delete(opened, { force = true })
+  end
+  draw_mod.clear(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
   vim.fn.delete(src_path)
 end
 
