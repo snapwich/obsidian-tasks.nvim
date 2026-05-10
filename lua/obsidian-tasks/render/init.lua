@@ -108,6 +108,9 @@ end
 --- If the index is empty when the first render runs, an async vault walk is
 --- kicked off and render is retried once the walk completes (non-blocking).
 ---
+--- After rendering, applies manual folds for each block and caches result counts
+--- in foldtext.set_result_count so the foldtext function can report them.
+---
 --- @param bufnr     integer
 --- @param workspace table?  workspace object (required for lazy index init)
 function M.render_buffer(bufnr, workspace)
@@ -116,6 +119,8 @@ function M.render_buffer(bufnr, workspace)
   local query_parse = require("obsidian-tasks.query.parse")
   local query_run = require("obsidian-tasks.query.run")
   local index = require("obsidian-tasks.index")
+  local folds_mod = require("obsidian-tasks.render.folds")
+  local foldtext_mod = require("obsidian-tasks.render.foldtext")
 
   -- ── 0. Guard: buffer must still be valid ───────────────────────────────────
   if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -163,6 +168,8 @@ function M.render_buffer(bufnr, workspace)
   -- `offset` tracks cumulative task lines inserted by prior blocks so we can
   -- adjust fence positions for subsequent blocks.
   local offset = 0
+  -- Accumulate fold descriptors { fence_first, region_end } for post-render fold pass.
+  local fold_blocks = {}
 
   for _, block in ipairs(blocks) do
     -- Convert 1-indexed block positions to 0-indexed, adjusted by offset.
@@ -204,13 +211,16 @@ function M.render_buffer(bufnr, workspace)
     -- Draw the block.
     draw.draw(bufnr, fence_range, layout_lines)
 
-    -- Count tasks inserted for the offset update.
+    -- Count tasks inserted for the offset update and result count cache.
     local n_tasks = 0
     for _, ll in ipairs(layout_lines) do
       if ll.kind == "task" then
         n_tasks = n_tasks + 1
       end
     end
+
+    -- Cache result count so the foldtext function can report it without re-running.
+    foldtext_mod.set_result_count(bufnr, fence_first, n_tasks)
 
     -- Build per-block orchestrator state from draw's recorded state.
     local block_state_map = draw.render_state(bufnr)
@@ -250,6 +260,15 @@ function M.render_buffer(bufnr, workspace)
       end
     end
 
+    -- Determine the end of the managed region (last task line or closing fence).
+    local region_end
+    if block_draw_state and block_draw_state.inserted_range then
+      region_end = block_draw_state.inserted_range[2]
+    else
+      region_end = fence_last
+    end
+    fold_blocks[#fold_blocks + 1] = { fence_first = fence_first, region_end = region_end }
+
     new_buf_state[#new_buf_state + 1] = {
       block_range = { block.fence_start, block.fence_end },
       render_range = block_draw_state and block_draw_state.inserted_range or nil,
@@ -262,7 +281,12 @@ function M.render_buffer(bufnr, workspace)
 
   M._buffer_state[bufnr] = new_buf_state
 
-  -- ── 6. Update reverse index ────────────────────────────────────────────────
+  -- ── 6. Apply manual folds for all rendered blocks ──────────────────────────
+  -- Each block is folded from its opening fence through the end of its managed
+  -- region.  setup_window() is called inside apply_folds for each window.
+  folds_mod.apply_folds(bufnr, fold_blocks)
+
+  -- ── 7. Update reverse index ────────────────────────────────────────────────
   -- Collect the unique set of source paths referenced by this render so
   -- index.reverse_index(path) can return this buffer.
   local paths_set = {}
@@ -292,6 +316,8 @@ function M.clear_buffer(bufnr)
   local draw = require("obsidian-tasks.render.draw")
   draw.clear(bufnr)
   M._buffer_state[bufnr] = nil
+  -- Drop foldtext result-count cache for this buffer.
+  require("obsidian-tasks.render.foldtext").clear_buffer(bufnr)
   -- Keep reverse index consistent: bufnr no longer has any active render.
   require("obsidian-tasks.index").clear_render_paths(bufnr)
 end
