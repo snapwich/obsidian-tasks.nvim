@@ -1,0 +1,157 @@
+-- lua/obsidian-tasks/cmp/source.lua
+-- blink.cmp source for obsidian-tasks field completion.
+--
+-- NOT auto-registered.  Users must add this to their blink.cmp config:
+--
+--   sources.providers['obsidian-tasks'] = {
+--     module = 'obsidian-tasks.cmp.source',
+--     name   = 'ObsidianTasks',
+--   }
+--
+-- Tested against blink.cmp v1.x (2026-05-09 snapshot).
+--
+-- Source contract (blink.cmp.Source):
+--   new(opts, config)               → self
+--   enabled(self)                   → bool
+--   get_trigger_characters(self)    → string[]
+--   get_completions(self, ctx, cb)  → cb({ items, is_incomplete_forward, is_incomplete_backward })
+--   resolve(self, item, cb)         → cb(item)   [pass-through]
+--   execute(self, ctx, item, cb, _) → cb()        [pass-through]
+
+local M = {}
+M.__index = M
+
+-- ── Task-line detection ───────────────────────────────────────────────────────
+
+--- Lua pattern that identifies a task-list item.
+--- Matches lines like "- [ ] …", "* [x] …", "+ [/] …" (any leading whitespace).
+local TASK_LINE_PATTERN = "^%s*[-*+] %[.%]"
+
+--- Return true if *line* looks like a task-list item.
+--- @param line string
+--- @return boolean
+local function is_task_line(line)
+  return line:match(TASK_LINE_PATTERN) ~= nil
+end
+
+-- ── Vault / buffer helpers ────────────────────────────────────────────────────
+
+--- Return true if *bufnr* is a markdown file (name ends with .md).
+--- @param bufnr integer
+--- @return boolean
+local function is_md_buffer(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  return name:match("%.md$") ~= nil
+end
+
+--- Return true if *path* belongs to any configured obsidian.nvim workspace.
+--- Silently returns false when obsidian.nvim is not initialised yet.
+--- @param path string  absolute file path
+--- @return boolean
+local function is_vault_path(path)
+  local ok, ws = pcall(function()
+    return require("obsidian-tasks.util.obsidian").workspace_for_path(path)
+  end)
+  return ok and ws ~= nil
+end
+
+-- ── Source constructor ────────────────────────────────────────────────────────
+
+--- Create a new source instance.
+--- Called by blink.cmp on registration.
+--- @param _opts   table                       per-source options (currently unused)
+--- @param _config table                       full provider config (currently unused)
+--- @return obsidian-tasks.cmp.Source
+function M.new(_opts, _config)
+  return setmetatable({}, M)
+end
+
+-- ── Availability ──────────────────────────────────────────────────────────────
+
+--- Return true iff the current cursor position is eligible for task-field
+--- completion.
+---
+--- Conditions (all must hold):
+---   1. Current buffer is a .md file.
+---   2. The file is inside an obsidian.nvim vault.
+---   3. The line under the cursor matches the task-list regex  OR
+---      is a render-inserted task line (render.draw.is_render_line).
+---
+--- @return boolean
+function M:enabled()
+  local bufnr = vim.api.nvim_get_current_buf()
+
+  -- ── 1. Markdown buffer ────────────────────────────────────────────────────
+  if not is_md_buffer(bufnr) then
+    return false
+  end
+
+  -- ── 2. Vault membership ───────────────────────────────────────────────────
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if not is_vault_path(path) then
+    return false
+  end
+
+  -- ── 3a. Check render-inserted task line first ─────────────────────────────
+  local cursor = vim.api.nvim_win_get_cursor(0) -- {row, col}, 1-indexed row
+  local lnum = cursor[1] - 1 -- convert to 0-indexed
+
+  local ok_draw, draw = pcall(require, "obsidian-tasks.render.draw")
+  if ok_draw and draw.is_render_line(bufnr, lnum) then
+    return true
+  end
+
+  -- ── 3b. Check raw buffer line ─────────────────────────────────────────────
+  local lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
+  local line = lines[1] or ""
+  return is_task_line(line)
+end
+
+-- ── Trigger characters ────────────────────────────────────────────────────────
+
+--- Characters that should trigger the source.
+---   ' '  after status checkbox (e.g. "- [ ] ")
+---   ':'  after dataview key    (e.g. "[due:: ")
+---   '#'  tag prefix
+--- @return string[]
+function M:get_trigger_characters()
+  return { " ", ":", "#" }
+end
+
+-- ── Completions ───────────────────────────────────────────────────────────────
+
+--- Provide completion items.
+--- Currently a stub — T2 (cmp/fields.lua) and T3 (cmp/values.lua) fill this in.
+---
+--- @param _ctx      table    blink.cmp context
+--- @param callback  fun(response: table)
+function M:get_completions(_ctx, callback)
+  callback({
+    items = {},
+    is_incomplete_forward = false,
+    is_incomplete_backward = false,
+  })
+end
+
+-- ── Resolve / execute pass-throughs ──────────────────────────────────────────
+
+--- Resolve additional details for a completion item (pass-through).
+--- @param item     table
+--- @param callback fun(resolved_item: table|nil)
+function M:resolve(item, callback)
+  callback(item)
+end
+
+--- Execute an accepted completion item (pass-through).
+--- @param _ctx      table
+--- @param _item     table
+--- @param callback  fun()
+--- @param _default  fun(ctx?: table, item?: table)
+function M:execute(_ctx, _item, callback, _default)
+  callback()
+end
+
+return M
