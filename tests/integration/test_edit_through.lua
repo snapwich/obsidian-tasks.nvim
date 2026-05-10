@@ -622,12 +622,87 @@ T["delete-non-last: task A deleted, task B source completely unchanged"] = funct
   vim.fn.delete(src_b)
 end
 
--- ── S3 companion: insert outside draw-time range → not detected ───────────────
+-- ── Insert-between: new line between two tasks → detected, anchored above ────
 --
--- Companion to S3.  run_write_pre is called WITHOUT range_override (production
--- path).  The user-inserted line is at row 5, OUTSIDE block.inserted_range={3,4}.
--- edit.diff only scans {3,4} → the new line is invisible → source files and
--- any sink are untouched.  Locks in current production behavior.
+-- Two-task render: task A at row 3, task B at row 4.  inserted_range = {3, 4}.
+-- User inserts "- [ ] Between A and B" at row 4 (before task B).
+-- After the insert:
+--   • task A's extmark stays at row 3 (insert is after it).
+--   • task B's extmark shifts to row 5 (right_gravity=true, insert at row 4).
+-- Dynamic scan_last = max(last=4, A=3, B=5) = 5 → covers all three rows.
+-- Row 3 → task A strong-claimed.  Row 5 → task B strong-claimed.
+-- Row 4 → unclaimed → INSERT; nearest sibling above row 4 is task A.
+-- New task is inserted after task A's src_line in src_a.
+
+T["insert-between: new task between A and B → anchored to task A source"] = function()
+  local render = fresh_render()
+  local draw_mod = require("obsidian-tasks.render.draw")
+  local parse = require("obsidian-tasks.task.parse")
+
+  local src_a = make_tmpfile({ "- [ ] Task A", "tail A" })
+  local src_b = make_tmpfile({ "- [ ] Task B" })
+
+  local task_a = parse.parse("- [ ] Task A")
+  local task_b = parse.parse("- [ ] Task B")
+  assert(task_a ~= nil)
+  assert(task_b ~= nil)
+
+  local restore_idx = install_mock(
+    "obsidian-tasks.index",
+    make_index_stub({
+      { task = task_a, path = src_a, line_num = 1 },
+      { task = task_b, path = src_b, line_num = 1 },
+    })
+  )
+
+  -- Render: task A at row 3, task B at row 4.  inserted_range = {3, 4}.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr)
+
+  -- Insert between the two tasks at row 4 (before task B).
+  -- After this: task A → row 3, new line → row 4, task B's extmark → row 5.
+  vim.api.nvim_buf_set_lines(bufnr, 4, 4, false, { "- [ ] Between A and B" })
+
+  -- run_write_pre without range_override.  Dynamic scan_last extends to row 5
+  -- (task B's extmark).  Rows 3 and 5 are strong-claimed; row 4 is unclaimed.
+  with_capture_file(nil, function()
+    run_write_pre(bufnr)
+  end)
+
+  -- src_a: new task inserted after task A (src_line = 1).
+  local lines_a = vim.fn.readfile(src_a)
+  eq(lines_a[1], "- [ ] Task A")
+  eq(lines_a[2], "- [ ] Between A and B")
+  eq(lines_a[3], "tail A")
+
+  -- src_b: task B completely unchanged (strong-claimed at row 5, no op).
+  local lines_b = vim.fn.readfile(src_b)
+  eq(#lines_b, 1)
+  eq(lines_b[1], "- [ ] Task B")
+
+  -- Buffer stripped to fence.
+  local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(buf_lines[1], "```tasks")
+
+  draw_mod.clear(bufnr)
+  restore_idx()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_a)
+  vim.fn.delete(src_b)
+end
+
+-- ── S3 companion: insert strictly beyond last tracked extmark → v1 limitation ──
+--
+-- Companion to S3.  The insert is at row 5, which is STRICTLY AFTER the last
+-- tracked task (task B at row 4).  No tasks were shifted above their draw-time
+-- rows, so dynamic scan_last = max_tracked_row = 4.  Row 5 is beyond scan_last
+-- and is therefore undetectable.
+--
+-- This is the v1-accepted limitation documented in edit.lua:
+--   "Lines inserted AFTER the last task (rows beyond the furthest tracked
+--    extmark's live position) remain undetectable."
+-- The test locks in this limitation: both source files are unchanged and
+-- capture_file is not created.
 
 T["S3-companion: insert outside draw range → not detected, sources unchanged"] = function()
   local render = fresh_render()
