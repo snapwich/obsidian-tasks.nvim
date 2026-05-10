@@ -11,6 +11,9 @@ for _, f in ipairs(fields_mod.fields) do
   by_key[f.key] = f
 end
 
+-- Tag pattern — must stay in sync with task/parse.lua TAG_PAT.
+local TAG_PAT = "#[%w%-_/]+"
+
 -- Field emission order — matches TS DefaultTaskSerializer.
 -- priority, recurrence, dates (start, scheduled, due, created, done, cancelled),
 -- id, depends_on, on_completion.
@@ -114,13 +117,24 @@ function M.serialize(task, opts)
     end
   end
 
-  -- ── trailing tags: in task.tags but not substring of task.description ──────
-  -- Tags embedded in the description are already present in task.description.
-  -- Tags that appear only after field markers (trailing) need to be re-appended.
+  -- ── trailing tags ─────────────────────────────────────────────────────────
+  -- Build a multiset of tags found inside task.description via the same TAG_PAT
+  -- regex used by parse.lua.  For each entry in task.tags we consume one slot
+  -- from the multiset; any tag that has no remaining embedded slot is trailing.
+  -- This correctly handles:
+  --   • a trailing tag that is a prefix of an embedded tag (#foo vs #foobar)
+  --   • hierarchical tags where the parent appears trailing (#project/api + #project)
+  --   • the same tag appearing both embedded and trailing (duplicate case)
   local desc = task.description or ""
+  local embedded = {}
+  for tag in desc:gmatch(TAG_PAT) do
+    embedded[tag] = (embedded[tag] or 0) + 1
+  end
   local trailing_tags = {}
   for _, tag in ipairs(task.tags or {}) do
-    if not desc:find(tag, 1, true) then
+    if (embedded[tag] or 0) > 0 then
+      embedded[tag] = embedded[tag] - 1
+    else
       table.insert(trailing_tags, tag)
     end
   end

@@ -406,4 +406,27 @@ T["nil fields: not emitted"] = function()
   eq(result, "- [ ] Just a task")
 end
 
+-- ── tag detection: multiset regression tests ──────────────────────────────
+-- Naive substring search (desc:find) fails these three cases; the multiset
+-- approach handles them correctly.
+
+T["tags: trailing tag that is prefix of embedded tag is preserved"] = function()
+  -- #foo is a prefix of #foobar; substring search would erroneously consume #foo
+  -- as "found in description" because find("#foo", ...) matches inside "#foobar".
+  roundtrip("- [ ] Task #foobar 📅 2024-01-01 #foo")
+end
+
+T["tags: trailing parent of hierarchical embedded tag is preserved"] = function()
+  -- #project is a substring of #project/api; Obsidian hierarchical tags are
+  -- first-class and this collision must not silently drop the trailing tag.
+  roundtrip("- [ ] Task #project/api 📅 2024-01-01 #project")
+end
+
+T["tags: duplicate tag — one embedded, one trailing — both preserved"] = function()
+  -- The same tag appears once in the description and once trailing after a field.
+  -- The multiset correctly allows one embedded occurrence and flags the second as
+  -- trailing.
+  roundtrip("- [ ] Task #foo 📅 2024-01-01 #foo")
+end
+
 return T

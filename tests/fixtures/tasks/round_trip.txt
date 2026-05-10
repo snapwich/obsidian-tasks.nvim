@@ -33,3 +33,6 @@
 - [-] Task [cancelled:: 2024-05-05]
 - [ ] Task [priority:: highest] [repeat:: every day] [start:: 2024-01-01] [scheduled:: 2024-01-05] [due:: 2024-01-10] [created:: 2024-01-01] [completion:: 2024-01-10] [cancelled:: 2024-01-11] [id:: abc-123] [dependsOn:: def-456] [onCompletion:: delete]
 - [ ] Task [scheduled:: 2024-01-10] 📅 2024-01-15
+- [ ] Task #foobar 📅 2024-01-01 #foo
+- [ ] Task #project/api 📅 2024-01-01 #project
+- [ ] Task #foo 📅 2024-01-01 #foo
