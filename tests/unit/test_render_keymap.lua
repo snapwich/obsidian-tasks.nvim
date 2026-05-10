@@ -155,7 +155,10 @@ T["handler: render line — opens source file and positions cursor"] = function(
   -- Verify the fixture actually exists so the test is meaningful.
   MiniTest.expect.equality(vim.fn.filereadable(fixture) == 1, true)
 
-  local src_line = 5 -- line 5 in tasks_a.md exists
+  local src_line = 5 -- line 5 in tasks_a.md: "- [ ] Buy milk #task 📅 2024-01-15"
+  -- Compute the correct hash so the handler takes the fast (hash-match) path.
+  local fixture_lines = vim.fn.readfile(fixture)
+  local correct_hash = vim.fn.sha256(fixture_lines[src_line]):sub(1, 16)
 
   local bufnr = make_buf({ "fake task line", "other line", "third line" })
 
@@ -163,7 +166,7 @@ T["handler: render line — opens source file and positions cursor"] = function(
   local restore_draw = install_mock("obsidian-tasks.render.draw", {
     is_render_line = function(_b, lnum)
       if lnum == 0 then
-        return { src_path = fixture, src_line = src_line, src_hash = "deadbeef00000000" }
+        return { src_path = fixture, src_line = src_line, src_hash = correct_hash }
       end
       return nil
     end,
@@ -204,6 +207,144 @@ T["handler: render line — opens source file and positions cursor"] = function(
     vim.api.nvim_buf_delete(fixture_buf, { force = true })
   end
   vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+-- ── stale-jump fallback ───────────────────────────────────────────────────────
+--
+-- Tests for the content-match fallback in make_handler:
+--   hash match   → jump to recorded src_line (fast path)
+--   hash mismatch, task found at new position → jump to found line
+--   hash mismatch, task not found → jump to recorded src_line + log.info
+
+--- Write lines to a temporary file; return its path.
+local function make_tmpfile(lines)
+  local path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile(lines, path)
+  return path
+end
+
+--- Run the handler for bufnr with cursor at row 1 (0-indexed lnum 0).
+--- Opens a window, triggers the <CR> callback, then closes the window.
+--- Returns the jump target (1-indexed cursor row in the opened file).
+local function run_handler_get_line(bufnr, src_path, src_line, src_hash)
+  local restore_draw = install_mock("obsidian-tasks.render.draw", {
+    is_render_line = function(_b, lnum)
+      if lnum == 0 then
+        return { src_path = src_path, src_line = src_line, src_hash = src_hash }
+      end
+      return nil
+    end,
+  })
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  keymap_mod.attach(bufnr)
+  local m = find_nmap(bufnr, "<CR>")
+  m.callback()
+
+  local jump_row = vim.api.nvim_win_get_cursor(0)[1]
+
+  restore_draw()
+  vim.api.nvim_win_close(winid, true)
+
+  -- Close any buffer opened for the source file.
+  local opened = vim.fn.bufnr(src_path)
+  if opened ~= -1 then
+    vim.api.nvim_buf_delete(opened, { force = true })
+  end
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  return jump_row
+end
+
+T["stale-jump: hash match → jumps to recorded src_line"] = function()
+  local task_text = "- [ ] My task"
+  local task_hash = vim.fn.sha256(task_text):sub(1, 16)
+
+  -- Task is at line 3 in the source file.
+  local src_path = make_tmpfile({ "# note", "", task_text, "", "other line" })
+  local bufnr = make_buf({ task_text })
+
+  local jump_row = run_handler_get_line(bufnr, src_path, 3, task_hash)
+
+  eq(jump_row, 3)
+  vim.fn.delete(src_path)
+end
+
+T["stale-jump: hash mismatch — task moved — jumps to new line"] = function()
+  local task_text = "- [ ] My task"
+  local task_hash = vim.fn.sha256(task_text):sub(1, 16)
+
+  -- Task is at line 8 but recorded src_line is 3 (task shifted down by 5).
+  local src_path = make_tmpfile({
+    "# note",
+    "",
+    "- [ ] Different task",
+    "",
+    "padding 5",
+    "padding 6",
+    "padding 7",
+    task_text, -- actual position: line 8
+    "tail",
+    "tail",
+  })
+  local bufnr = make_buf({ task_text })
+
+  -- Pass src_line = 3 (stale); handler must scan and find line 8.
+  local jump_row = run_handler_get_line(bufnr, src_path, 3, task_hash)
+
+  eq(jump_row, 8)
+  vim.fn.delete(src_path)
+end
+
+T["stale-jump: no match — falls back to recorded src_line and emits log.info"] = function()
+  -- Source file has no line matching the hash.
+  local src_path = make_tmpfile({ "# note", "", "line 3", "", "line 5" })
+  local bufnr = make_buf({ "- [ ] Ghost task" })
+
+  -- Capture vim.notify calls (log.info uses vim.notify).
+  local notify_calls = {}
+  local orig_notify = vim.notify
+  vim.notify = function(msg, level, ...)
+    notify_calls[#notify_calls + 1] = { msg = msg, level = level }
+    return orig_notify(msg, level, ...)
+  end
+
+  -- Use a hash that does not match any line in the temp file.
+  local ghost_hash = "0000000000000000"
+  -- Verify no line in the file accidentally matches.
+  local file_lines = vim.fn.readfile(src_path)
+  for _, l in ipairs(file_lines) do
+    MiniTest.expect.equality(vim.fn.sha256(l):sub(1, 16) ~= ghost_hash, true)
+  end
+
+  local jump_row = run_handler_get_line(bufnr, src_path, 3, ghost_hash)
+
+  -- Restore notify.
+  vim.notify = orig_notify
+
+  -- Must fall back to recorded src_line.
+  eq(jump_row, 3)
+
+  -- Must have emitted at least one INFO-level notify containing "recorded line".
+  local found_info = false
+  for _, call in ipairs(notify_calls) do
+    if call.level == vim.log.levels.INFO and call.msg:find("recorded line", 1, true) then
+      found_info = true
+      break
+    end
+  end
+  MiniTest.expect.equality(found_info, true)
+
+  vim.fn.delete(src_path)
 end
 
 -- ── dispatch: fall-through branch ────────────────────────────────────────────
