@@ -1,14 +1,11 @@
 -- lua/obsidian-tasks/cmd/toggle.lua
 -- :ObsidianTask toggle — cycle the status of the task(s) at cursor / in range.
 --
--- Source buffers: edits the buffer line in-place.
--- Render lines:   edit-through pipeline (F4) handles the write-back; this
---                 module only updates the rendered buffer text so the user sees
---                 the change immediately (the actual source write happens on :w).
+-- Uses task/status.next() which respects user-overridden status tables merged
+-- in init.setup() via status.merge(opts.statuses).
 --
--- NOTE: This is a minimal implementation shipped with the dispatcher (F5-T1).
--- The full implementation (done/cancel stamps, opts.statuses merge, render-line
--- write-back) is delivered by ot-4agf.
+-- Source buffers: edits the buffer line in-place via nvim_buf_set_lines.
+-- Render lines:   edit-through pipeline (F4) handles write-back on :w.
 
 local M = {}
 
