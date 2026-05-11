@@ -28,10 +28,12 @@ end
 --
 --   M._buffer_state[bufnr] = {
 --     {
---       block_range  = { fence_start, fence_end },  -- 1-indexed original positions
---       render_range = { first, last } | nil,        -- 0-indexed inserted task lines
---       extmark_ids  = { eid, ... },                 -- task extmark IDs
---       line_map     = { [lnum] = {src_path, src_line, src_hash} },
+--       block_range       = { fence_start, fence_end },  -- 1-indexed source/cleared positions
+--       fence_first       = integer,    -- 0-indexed rendered fence row at last render time (stale after edits)
+--       managed_fence_id  = integer|nil, -- managed-NS extmark ID for the opening fence (live-tracked)
+--       render_range      = { first, last } | nil,  -- 0-indexed inserted task lines (stale after edits)
+--       extmark_ids       = { eid, ... },            -- task extmark IDs (draw NS)
+--       line_map          = { [lnum] = {src_path, src_line, src_hash} },
 --     },
 --     ...
 --   }
@@ -283,7 +285,10 @@ function M.render_buffer(bufnr, workspace)
 
     new_buf_state[#new_buf_state + 1] = {
       block_range = { block.fence_start, block.fence_end },
-      fence_first = fence_first, -- actual 0-indexed fence row in the current buffer
+      fence_first = fence_first, -- 0-indexed rendered fence row (stale if user edits between renders)
+      -- managed_fence_id is the managed-NS extmark that Neovim auto-tracks to
+      -- the live fence position even after source-line insertions/deletions.
+      managed_fence_id = block_draw_state and block_draw_state.managed_fence_id or nil,
       render_range = block_draw_state and block_draw_state.inserted_range or nil,
       extmark_ids = extmark_ids,
       line_map = line_map,
@@ -345,23 +350,75 @@ end
 --- @param workspace table?
 function M.rerender_buffer(bufnr, workspace)
   local folds_mod = require("obsidian-tasks.render.folds")
+  local managed_mod = require("obsidian-tasks.render.managed")
 
-  -- ── 1. Snapshot fold states keyed by source-fence-row ─────────────────────
-  -- block_range[1] is the 1-indexed fence position in the CLEARED buffer (it was
-  -- recorded by render_buffer from find_blocks() after clear_buffer(), so it
-  -- equals the source/cleared position with no offset adjustment required).
-  -- After clear+rerender the new block_range[1] values are identical, so we
-  -- can key fold_states by block_range[1] directly.
-  local fold_states = {} -- block_range[1] (1-indexed, source pos) → "open"|"closed"
+  -- ── 1. Snapshot fold states keyed by post-clear source-fence-row ──────────
+  -- We use LIVE extmark positions for both fences and task regions, so fold
+  -- states remain correct even when source lines have been inserted or deleted
+  -- above existing rendered blocks between renders.
+  --
+  -- Algorithm:
+  --   a) Get all live task-region positions via managed.all_regions() — these
+  --      are the rows that clear_buffer will remove.
+  --   b) For each old block, query its managed_fence_id extmark for the LIVE
+  --      fence row (auto-tracked by Neovim despite intervening edits).
+  --   c) source_fence_start = live_fence_row − (task lines at rows < live_fence) + 1
+  --      This equals the 1-indexed position find_blocks() returns after clear.
+  --   d) Sort blocks by live fence row so that when two blocks map to the same
+  --      source position (e.g. a deleted block's extmark collapsed onto a
+  --      surviving block's fence), the surviving block (higher live row) wins.
+  local fold_states = {} -- source_fence_start (1-indexed, post-clear) → "open"|"closed"
 
   local old_buf_state = M._buffer_state[bufnr]
   if old_buf_state then
-    for _, block_state in ipairs(old_buf_state) do
-      local source_fence_start = block_state.block_range[1] -- 1-indexed cleared/source position
+    local ns = managed_mod.namespace()
 
-      -- Capture fold state at the actual (current-buffer) fence row.
-      local actual_fence_row_0 = block_state.fence_first -- 0-indexed
-      fold_states[source_fence_start] = folds_mod.capture_fold_state(bufnr, actual_fence_row_0)
+    -- Live task-region positions, sorted ascending by start_row.
+    local live_regions = managed_mod.all_regions(bufnr)
+
+    -- Pair each old block with its live fence row (from extmark) or stale fallback.
+    local fence_entries = {}
+    for _, block_state in ipairs(old_buf_state) do
+      local live_fence_row = nil
+      local mfid = block_state.managed_fence_id
+      if mfid then
+        local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, mfid, {})
+        if pos and pos[1] then
+          live_fence_row = pos[1] -- 0-indexed
+        end
+      end
+      -- Fall back to the stale fence_first when managed extmark is unavailable
+      -- (e.g. in unit tests that use a mock draw module without real extmarks).
+      if live_fence_row == nil then
+        live_fence_row = block_state.fence_first
+      end
+      fence_entries[#fence_entries + 1] = { fence_row = live_fence_row, block_state = block_state }
+    end
+
+    -- Sort ascending so higher-row blocks overwrite lower-row blocks when they
+    -- share the same computed source position (surviving block wins over deleted).
+    table.sort(fence_entries, function(a, b)
+      return a.fence_row < b.fence_row
+    end)
+
+    for _, entry in ipairs(fence_entries) do
+      local live_fence_row = entry.fence_row
+
+      -- Count rendered task lines at rows strictly before this fence.
+      -- They will be removed by clear_buffer and must not be counted in
+      -- the source (post-clear) position.
+      local task_lines_before = 0
+      for _, region in ipairs(live_regions) do
+        if region[1] < live_fence_row then
+          task_lines_before = task_lines_before + (region[2] - region[1] + 1)
+        end
+      end
+
+      -- 1-indexed source position = what find_blocks() will return after clear.
+      local source_fence_start = live_fence_row - task_lines_before + 1
+
+      -- Capture at the LIVE fence row (not the stale fence_first stored in state).
+      fold_states[source_fence_start] = folds_mod.capture_fold_state(bufnr, live_fence_row)
     end
   end
 

@@ -285,20 +285,18 @@ function M.clear(bufnr)
     return
   end
 
-  -- Collect blocks with inserted lines; sort in reverse order so removing lines
-  -- from the end of the buffer first preserves earlier blocks' line numbers.
-  local with_lines = {}
-  for _, block in pairs(blocks) do
-    if block.inserted_range then
-      with_lines[#with_lines + 1] = block
-    end
-  end
-  table.sort(with_lines, function(a, b)
-    return a.inserted_range[1] > b.inserted_range[1]
-  end)
-  for _, block in ipairs(with_lines) do
-    local first = block.inserted_range[1]
-    local last = block.inserted_range[2]
+  -- Use LIVE managed-region positions (auto-tracked by Neovim's extmark
+  -- subsystem) instead of stale inserted_range values.  When source lines are
+  -- inserted above a rendered region between renders, inserted_range points to
+  -- the wrong row and would delete the wrong line (e.g. the fence itself).
+  -- managed.all_regions() queries current extmark positions, so it always
+  -- returns the actual current location of task lines.
+  -- Remove from bottom to top (all_regions is sorted ascending; we reverse)
+  -- so earlier line numbers stay valid as later lines are removed.
+  local live_regions = managed.all_regions(bufnr)
+  for i = #live_regions, 1, -1 do
+    local first = live_regions[i][1]
+    local last = live_regions[i][2]
     vim.api.nvim_buf_set_lines(bufnr, first, last + 1, false, {})
   end
 

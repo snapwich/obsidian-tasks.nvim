@@ -68,8 +68,11 @@ end
 
 --- Anchor a fence extmark on fence_start_row and record in known_blocks.
 ---
---- right_gravity = false: the extmark stays at the fence start when lines
---- are inserted at that position (e.g. when re-rendering).
+--- right_gravity = true (default): the extmark moves with the fence when lines
+--- are inserted at or before the fence row.  This is required so that
+--- rerender_buffer can query the LIVE fence position via
+--- nvim_buf_get_extmark_by_id after the user inserts source lines above the
+--- rendered block between renders.
 ---
 --- @param bufnr          integer
 --- @param fence_start_row integer  0-indexed
@@ -79,7 +82,7 @@ function M.add_block(bufnr, fence_start_row, fence_end_row)
   ensure_buf(bufnr)
   local ns = M.namespace()
   local mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns, fence_start_row, 0, {
-    right_gravity = false,
+    right_gravity = true,
   })
   _fence_marks[bufnr][mark_id] = { fence_start_row, fence_end_row }
   return mark_id

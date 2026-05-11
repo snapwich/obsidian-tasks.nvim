@@ -336,4 +336,132 @@ T["rerender_buffer: deleted block cleaned up, remaining block renders correctly"
   eq(post_line_count, 3)
 end
 
+-- ── T5: insert new block ABOVE existing rendered content ─────────────────────
+-- Repro for the buffer-corruption bug: when source lines are inserted above a
+-- rendered region the stale inserted_range pointed to the wrong row and would
+-- delete the opening fence instead of the task line.
+--
+-- After inserting 3 new source lines at the top of a 1-block rendered buffer
+-- and calling rerender_buffer:
+--   • The buffer must not be corrupted (original fence + task must survive).
+--   • The surviving block's pre-insert fold state (open) must be preserved.
+--   • The new block (now at source pos 1) must get the default fold (closed).
+
+T["rerender_buffer: insert block above — no corruption, existing fold state preserved"] = function()
+  render.configure({ default_folded = true })
+  local restore_idx = install_one_task_stub()
+
+  -- Single-block buffer: source at lines 1-3, 1 task inserted at line 4.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local winid = open_in_win(bufnr)
+
+  render.render_buffer(bufnr, nil)
+  -- After render: fence at lines 1-3, task at line 4 → fold 1..4.
+
+  -- Open the fold (we want to verify the open state is preserved after rerender).
+  open_fold_at(bufnr, 1)
+  local pre_fc1 = fold_closed_at(bufnr, 1) -- should be -1 (open)
+
+  -- Insert 3 new source lines at the very top (row 0, 0-indexed).
+  -- This shifts the original block's fence from line 1 to line 4 and the task
+  -- from line 4 to line 7.  The managed fence extmark auto-tracks to line 4;
+  -- the managed region extmark auto-tracks to line 7.
+  vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { "```tasks", "not done", "```" })
+
+  local lines_before_rerender = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  -- Re-render.  Without the fix, draw.clear() would delete line 4 (the fence of
+  -- the original block) instead of line 7 (the rendered task).
+  local ok = pcall(render.rerender_buffer, bufnr, nil)
+
+  -- After rerender:
+  --   New block (C) at source pos 1: fence 1-3, task at line 4  → fold 1..4 (closed)
+  --   Old block (A) at source pos 4: fence 5-7, task at line 8  → fold 5..8 (open)
+  local post_line_count = #vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local post_fc_new = fold_closed_at(bufnr, 1) -- new block: closed
+  local post_fc_old = fold_closed_at(bufnr, 5) -- original block: was open → stays open
+
+  render.clear_buffer(bufnr)
+  restore_idx()
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Preconditions.
+  eq(pre_fc1, -1) -- fold was opened before insert
+  eq(#lines_before_rerender, 7) -- 3 source (C) + 3 source (A) + 1 task (A)
+
+  -- No error during rerender.
+  eq(ok, true)
+
+  -- Buffer has correct size: 3 fence + 1 task (C) + 3 fence + 1 task (A) = 8 lines.
+  eq(post_line_count, 8)
+
+  -- New block gets default fold (closed).
+  eq(post_fc_new, 1)
+
+  -- Original block's open fold is preserved across the rerender.
+  eq(post_fc_old, -1)
+end
+
+-- ── T6: delete non-trailing block while surviving block has rendered tasks ────
+-- After deleting block B's source lines (3 lines) from a 2-block rendered
+-- buffer (1 task each), rerender_buffer must:
+--   • Not error.
+--   • Remove B's rendered task line (via live extmark, not stale position).
+--   • Render only the surviving block A at the correct source position.
+
+T["rerender_buffer: delete non-trailing block, surviving block with tasks renders correctly"] = function()
+  render.configure({ default_folded = true })
+  local restore_idx = install_one_task_stub()
+
+  -- Two-block buffer, each gets 1 task rendered.
+  local bufnr = make_buf({
+    "```tasks", -- block B: source lines 1-3
+    "not done",
+    "```",
+    "```tasks", -- block A: source lines 4-6
+    "not done",
+    "```",
+  })
+  local winid = open_in_win(bufnr)
+
+  render.render_buffer(bufnr, nil)
+  -- Rendered buffer (8 lines):
+  --   lines 1-3: B fence, line 4: B task, lines 5-7: A fence, line 8: A task.
+
+  local fc_b_initial = fold_closed_at(bufnr, 1) -- B closed
+  local fc_a_initial = fold_closed_at(bufnr, 5) -- A closed
+
+  -- Delete block B's 3 source lines (rows 0-2, 0-indexed).
+  -- The managed region extmark for B auto-tracks to row 0 (old row 3 shifts up).
+  -- The managed region extmark for A auto-tracks to row 4 (old row 7 → row 4).
+  vim.api.nvim_buf_set_lines(bufnr, 0, 3, false, {})
+
+  -- Re-render.  Without the live-extmark fix, draw.clear() would use B's stale
+  -- inserted_range=[3,3] and delete A's fence (now at row 0) instead of B's task.
+  local ok = pcall(render.rerender_buffer, bufnr, nil)
+
+  -- After rerender only A survives, at source pos 1, with 1 task.
+  local post_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local post_fc_a = fold_closed_at(bufnr, 1) -- surviving A at line 1
+
+  render.clear_buffer(bufnr)
+  restore_idx()
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Initial render: both blocks folded.
+  eq(fc_b_initial, 1)
+  eq(fc_a_initial, 5)
+
+  -- No error.
+  eq(ok, true)
+
+  -- Surviving block A: fence (3 lines) + task (1 line) = 4 lines total.
+  eq(#post_lines, 4)
+
+  -- A is rendered and folded at line 1.
+  eq(post_fc_a, 1)
+end
+
 return T
