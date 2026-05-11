@@ -78,6 +78,10 @@ function M.apply_folds(bufnr, block_list)
   for _, winid in ipairs(wins) do
     vim.api.nvim_win_call(winid, function()
       M.setup_window(winid)
+      -- Delete ALL existing manual folds before re-applying.  Without this,
+      -- stale folds from a prior render survive line deletions/insertions and
+      -- accumulate as nested / overlapping folds that confuse foldclosed().
+      pcall(vim.cmd, "normal! zE")
       for _, block in ipairs(block_list) do
         -- Convert 0-indexed rows to 1-indexed line numbers.
         local start_1 = block.fence_first + 1

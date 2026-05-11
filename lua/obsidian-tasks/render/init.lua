@@ -347,28 +347,21 @@ function M.rerender_buffer(bufnr, workspace)
   local folds_mod = require("obsidian-tasks.render.folds")
 
   -- ── 1. Snapshot fold states keyed by source-fence-row ─────────────────────
-  -- "source-fence-row" = the row the fence will be at in the cleared buffer
-  -- (i.e., after rendered task lines have been removed).
-  -- We compute it by subtracting the cumulative rendered-line count for all
-  -- prior blocks.  The result is the 1-indexed fence_start that find_blocks()
-  -- will return after the clear, matching block_range[1] in the new state.
-  local fold_states = {} -- source_fence_start (1-indexed) → "open"|"closed"
+  -- block_range[1] is the 1-indexed fence position in the CLEARED buffer (it was
+  -- recorded by render_buffer from find_blocks() after clear_buffer(), so it
+  -- equals the source/cleared position with no offset adjustment required).
+  -- After clear+rerender the new block_range[1] values are identical, so we
+  -- can key fold_states by block_range[1] directly.
+  local fold_states = {} -- block_range[1] (1-indexed, source pos) → "open"|"closed"
 
   local old_buf_state = M._buffer_state[bufnr]
   if old_buf_state then
-    local cumulative_rendered = 0
     for _, block_state in ipairs(old_buf_state) do
-      local original_fence_start = block_state.block_range[1] -- 1-indexed (WITH rendered lines)
-      local source_fence_start = original_fence_start - cumulative_rendered -- 1-indexed (cleared buffer)
+      local source_fence_start = block_state.block_range[1] -- 1-indexed cleared/source position
 
       -- Capture fold state at the actual (current-buffer) fence row.
       local actual_fence_row_0 = block_state.fence_first -- 0-indexed
       fold_states[source_fence_start] = folds_mod.capture_fold_state(bufnr, actual_fence_row_0)
-
-      -- Advance cumulative rendered-line count.
-      if block_state.render_range then
-        cumulative_rendered = cumulative_rendered + (block_state.render_range[2] - block_state.render_range[1] + 1)
-      end
     end
   end
 
