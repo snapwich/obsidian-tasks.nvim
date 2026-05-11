@@ -40,7 +40,7 @@ All options are optional — the empty call above gives you sensible defaults.
 
 ### Full opts schema
 
-```lua
+````lua
 require("obsidian-tasks").setup({
   -- Only parse/render tasks whose description contains this string.
   -- nil means no filter (show all tasks).
@@ -48,6 +48,15 @@ require("obsidian-tasks").setup({
 
   -- Automatically render task extmarks when a vault markdown buffer is opened.
   auto_render = true,              -- boolean
+
+  -- Fold each ```tasks block by default when a dashboard file is opened.
+  -- The foldtext shows a query summary and result count, e.g. "📋 not done  (3)".
+  -- Press `i` (or `zo`) to expand a fold; press `zc` to collapse it again.
+  default_folded = true,           -- boolean
+
+  -- Install buffer-local leader keymaps (<leader>tt, <leader>te, etc.) on
+  -- dashboard buffers.  Set false to manage keymaps yourself.
+  setup_keymaps = true,            -- boolean
 
   -- Watch vault files for changes and refresh the in-memory index automatically.
   watcher = true,                  -- boolean
@@ -97,7 +106,92 @@ require("obsidian-tasks").setup({
   -- Files larger than this (bytes) are skipped by the vault scanner.
   max_file_bytes = 1048576,        -- positive integer (default 1 MiB)
 })
+````
+
+## Rendering
+
+Dashboard files contain ` ```tasks ` query blocks. When a dashboard buffer is opened,
+obsidian-tasks renders matching tasks as **real buffer text** below each fence and wraps
+each block in a **manual fold** so the dashboard stays compact.
+
+### Default-folded layout
+
+With `default_folded = true` (the default), every query block opens collapsed:
+
 ```
+📋 not done  (3)
+```
+
+The foldtext shows a summary of the query filter and the result count. Expand a fold to
+see the rendered task lines:
+
+| Key         | Action                                   |
+| ----------- | ---------------------------------------- |
+| `i`         | Open fold and enter insert mode on query |
+| `zo` / `zO` | Open fold (stay in normal mode)          |
+| `zc`        | Close fold                               |
+| `zR`        | Open all folds in the buffer             |
+| `zM`        | Close all folds in the buffer            |
+
+### Rendered regions are read-only
+
+Rendered task lines below the fence are managed by the plugin. **Direct edits are
+reverted** on the next event-loop tick. To mutate a task, use the leader keymaps or
+jump to the source file with `<CR>`.
+
+### Save semantics (BufWriteCmd)
+
+Saving a dashboard buffer (`:w`) writes **only the source content** — query blocks and
+prose — to disk. Rendered task lines are never written to the file. Reopening the file
+produces the same visual state.
+
+## Keymaps
+
+### Dashboard buffer keymaps (auto-installed when `setup_keymaps = true`)
+
+These are installed automatically on every rendered dashboard buffer:
+
+| Keymap        | Action                                              |
+| ------------- | --------------------------------------------------- |
+| `<CR>` / `gf` | Jump to the source file at the task's original line |
+| `<leader>tt`  | Toggle done/not-done                                |
+| `<leader>te`  | Edit task description (vim.ui.input prompt)         |
+| `<leader>tp`  | Cycle priority (none → highest → … → lowest → none) |
+| `<leader>td`  | Set/edit due date (YYYY-MM-DD prompt)               |
+| `<leader>tT`  | Edit tags (comma-separated prompt)                  |
+| `<leader>tg`  | Jump to source (same as `<CR>`)                     |
+| `<leader>tD`  | Delete task (confirm prompt, removes source line)   |
+| `<leader>tr`  | Force re-render all query regions in this buffer    |
+
+Set `setup_keymaps = false` in your `setup()` call to opt out of auto-installed keymaps.
+`<CR>` and `gf` are always installed regardless of this setting.
+
+### Global keymaps (not shipped — wire your own)
+
+For source buffers (regular task files) you may want:
+
+```lua
+vim.keymap.set("n", "<leader>tt", "<cmd>ObsidianTask toggle<cr>",    { desc = "Toggle task status" })
+vim.keymap.set("n", "<leader>td", "<cmd>ObsidianTask done<cr>",      { desc = "Mark task done" })
+vim.keymap.set("n", "<leader>tc", "<cmd>ObsidianTask cancel<cr>",    { desc = "Cancel task" })
+vim.keymap.set("n", "<leader>tD", "<cmd>ObsidianTask due<cr>",       { desc = "Set due date" })
+vim.keymap.set("n", "<leader>ts", "<cmd>ObsidianTask scheduled<cr>", { desc = "Set scheduled date" })
+vim.keymap.set("n", "<leader>tn", "<cmd>ObsidianTask new<cr>",       { desc = "New task" })
+vim.keymap.set("n", "<leader>tr", "<cmd>ObsidianTask refresh<cr>",   { desc = "Refresh task queries" })
+```
+
+## Commands
+
+| Command                   | Description                                                   |
+| ------------------------- | ------------------------------------------------------------- |
+| `:ObsidianTask toggle`    | Cycle the status of the task under the cursor                 |
+| `:ObsidianTask done`      | Mark task done and stamp done date                            |
+| `:ObsidianTask cancel`    | Mark task cancelled                                           |
+| `:ObsidianTask due`       | Set / edit the due date (📅)                                  |
+| `:ObsidianTask scheduled` | Set / edit the scheduled date (⏳)                            |
+| `:ObsidianTask new`       | Create a new task (appends to `capture_file` or current file) |
+| `:ObsidianTask refresh`   | Re-render all open query blocks                               |
+| `:ObsidianTask edit`      | Jump to the source line of a rendered task                    |
 
 ## blink.cmp Registration
 
@@ -127,43 +221,21 @@ buffers. No additional configuration is required beyond `require("obsidian-tasks
 To disable the source without removing it from blink, set `blink_cmp = { enabled = false }` in
 your `setup()` call.
 
-## Keymaps
-
-No default keymaps are shipped — wire your own. Suggested bindings under `<leader>t`:
-
-```lua
-vim.keymap.set("n", "<leader>tt", "<cmd>ObsidianTask toggle<cr>",    { desc = "Toggle task status" })
-vim.keymap.set("n", "<leader>td", "<cmd>ObsidianTask done<cr>",      { desc = "Mark task done" })
-vim.keymap.set("n", "<leader>tc", "<cmd>ObsidianTask cancel<cr>",    { desc = "Cancel task" })
-vim.keymap.set("n", "<leader>tD", "<cmd>ObsidianTask due<cr>",       { desc = "Set due date" })
-vim.keymap.set("n", "<leader>ts", "<cmd>ObsidianTask scheduled<cr>", { desc = "Set scheduled date" })
-vim.keymap.set("n", "<leader>tn", "<cmd>ObsidianTask new<cr>",       { desc = "New task" })
-vim.keymap.set("n", "<leader>tr", "<cmd>ObsidianTask refresh<cr>",   { desc = "Refresh task queries" })
-```
-
-## Commands
-
-| Command                   | Description                                                   |
-| ------------------------- | ------------------------------------------------------------- |
-| `:ObsidianTask toggle`    | Cycle the status of the task under the cursor                 |
-| `:ObsidianTask done`      | Mark task done and stamp done date                            |
-| `:ObsidianTask cancel`    | Mark task cancelled                                           |
-| `:ObsidianTask due`       | Set / edit the due date (📅)                                  |
-| `:ObsidianTask scheduled` | Set / edit the scheduled date (⏳)                            |
-| `:ObsidianTask new`       | Create a new task (appends to `capture_file` or current file) |
-| `:ObsidianTask refresh`   | Re-render all open query blocks                               |
-| `:ObsidianTask edit`      | Jump to the source line of a rendered task                    |
-
 ## Troubleshooting
 
-### Render extmarks not appearing
+### Rendered tasks not appearing
 
 1. Confirm obsidian.nvim is set up and the file is inside a configured workspace.
    Run `:lua print(require("obsidian").get_client())` — it should return a client table, not nil.
-2. Check `conceallevel`: extmarks rely on Neovim's conceal feature.
-   Add `vim.opt.conceallevel = 2` (or `1`) to your config.
-3. Try `:ObsidianTask refresh` to force a re-render.
-4. Increase `log_level = "debug"` in `setup()` and check `:messages` for errors.
+2. Try `:ObsidianTask refresh` to force a re-render.
+3. Increase `log_level = "debug"` in `setup()` and check `:messages` for errors.
+4. Check that your dashboard file contains a ` ```tasks ` fence block with a valid query.
+
+### Query block appears collapsed with "(0)" count
+
+Expand the fold with `zo` or `zO` to see whether tasks are rendered. If the count
+is truly 0, check that your filter matches existing tasks. Try an empty query (just
+` ```tasks ` and ` ``` `) to see all tasks.
 
 ### File watcher not refreshing (Linux)
 
@@ -209,10 +281,12 @@ Queries against an empty result set are not re-evaluated when new files are adde
 **What works in v1:**
 
 - Emoji-field and Dataview-field task parsing and serialization
-- Extmark-based task rendering with edit-through support
+- Real-text task rendering in dashboard buffers with manual fold per query block
+- BufWriteCmd save handler — only source content (queries + prose) written to disk
 - In-memory vault index with libuv file watcher
 - Query blocks: filter, sort, group, limit, hide
 - Status cycling with customizable statuses
+- Leader keymaps for task mutation directly from the dashboard
 - blink.cmp source: field-icon completion, value suggestions, NL date parsing
 - `:ObsidianTask` command suite
 

@@ -10,8 +10,8 @@
 -- All other kinds set those to nil.
 --
 -- src_hash          — sha256[:16] of the RENDERED task text (includes wikilink
---                     when backlinks are visible).  Used by edit.lua diff to
---                     match buffer lines against their draw-time content.
+--                     when backlinks are visible).  Stored in draw.lua em_map
+--                     for per-task metadata lookup.
 -- source_text_hash  — sha256[:16] of the task text BEFORE the wikilink is
 --                     appended.  Matches source-file line content and is used
 --                     by keymap.lua for stale-jump content-match scanning.

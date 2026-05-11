@@ -8,7 +8,7 @@
 -- so the original cancellation date is preserved, and no error is raised.
 --
 -- Source buffers: edits the buffer line in-place via nvim_buf_set_lines.
--- Render lines:   edit-through pipeline (F4) handles write-back on :w.
+-- Render lines:   mutates source file directly via managed task_meta resolver.
 
 local M = {}
 

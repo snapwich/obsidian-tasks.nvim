@@ -120,7 +120,7 @@ function M.run(ast, index)
   local group_map = {} -- name → { tasks = [] }
 
   for _, item in ipairs(filtered) do
-    -- Attach source metadata so layout.lua can build wikilinks and F4 can jump.
+    -- Attach source metadata so layout.lua can build wikilinks and the resolver can jump.
     -- We stamp directly onto the task object; index entries are per-file so
     -- mutation is safe.  Duplicated tasks (multi-group) share the same path/line.
     item.task._src_path = item.path
