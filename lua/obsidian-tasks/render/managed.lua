@@ -11,9 +11,11 @@
 -- Side tables (Lua-side, per-buffer, keyed by extmark id):
 --
 --   _task_meta[bufnr][mark_id] = {
---     source_file = '/abs/path.md',
---     source_row  = 42,            -- 0-indexed
---     task_text   = '- [ ] thing', -- canonical text for drift detection
+--     source_file   = '/abs/path.md',
+--     source_row    = 42,                       -- 0-indexed
+--     task_text     = '- [ ] thing',            -- source-line text, for drift detection
+--     rendered_text = '- [ ] thing [[note]]',   -- buffer-line text (with wikilink),
+--                                               -- for read-only revert + status-edit detection
 --   }
 --
 --   _fence_marks[bufnr][mark_id] = { start_row, end_row }  -- 0-indexed inclusive
@@ -234,7 +236,7 @@ end
 ---
 --- @param bufnr integer
 --- @param row   integer  0-indexed
---- @param meta  table    { source_file, source_row, task_text }
+--- @param meta  table    { source_file, source_row, task_text, rendered_text }
 --- @return integer  task_mark_id
 function M.add_task(bufnr, row, meta)
   ensure_buf(bufnr)
@@ -248,7 +250,7 @@ end
 ---
 --- @param bufnr integer
 --- @param row   integer  0-indexed
---- @return table|nil  { source_file, source_row, task_text }
+--- @return table|nil  { source_file, source_row, task_text, rendered_text }
 function M.task_meta_for_row(bufnr, row)
   if not _task_meta[bufnr] then
     return nil

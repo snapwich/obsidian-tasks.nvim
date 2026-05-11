@@ -50,6 +50,18 @@ local _attached = {} -- [bufnr] = true
 -- inserted/deleted above managed rows (to keep the snapshot in sync).
 local _region_snapshot = {} -- [bufnr] = table[]
 
+-- Snapshot of per-task meta keyed by the row position at the time of the last
+-- render: _meta_snapshot[bufnr][row] = { source_file, source_row, task_text, rendered_text }.
+--
+-- Captured by attach() (called at end of every render_buffer) so the classify-
+-- and-commit pass can look up canonical-rendered-text and source coordinates
+-- by row without depending on the live extmark position, which Neovim shifts
+-- when the user replaces or pastes over a managed row.
+--
+-- Shifted in tandem with _region_snapshot when prose is inserted/deleted above
+-- managed rows so keys stay aligned with the live row numbers.
+local _meta_snapshot = {} -- [bufnr] = { [row] = task_meta }
+
 -- Rerender function injected by render/init.lua at attach time.
 -- Stored as a closure that captures the real module table M so that test mocks
 -- replacing package.loaded["obsidian-tasks.render.init"] cannot intercept it.
@@ -98,6 +110,107 @@ end
 --- @param bufnr integer
 local do_revert
 
+--- Detect whether *current* equals *canonical* except for a single character
+--- change between the [ and ] of the first checkbox occurrence in either string.
+--- If so, and the new char is a known status symbol, return that symbol;
+--- otherwise return nil.
+---
+--- @param canonical string  the rendered-text the plugin wrote to this row
+--- @param current   string  the buffer's current content for this row
+--- @return string|nil  the new status symbol, or nil if not a recognized status edit
+local function recognize_status_edit(canonical, current)
+  if canonical == nil or current == nil or #canonical ~= #current then
+    return nil
+  end
+  -- Find the [ in the canonical line.  Tasks have the shape `<indent>- [<sym>] …`
+  -- so the status char sits at byte position `bracket+1` (1-indexed).
+  local bracket = canonical:find("%[")
+  if bracket == nil then
+    return nil
+  end
+  local sym_pos = bracket + 1
+  -- The closing bracket must sit at sym_pos+1 (single char between brackets).
+  if canonical:sub(sym_pos + 1, sym_pos + 1) ~= "]" then
+    return nil
+  end
+  if current:sub(sym_pos + 1, sym_pos + 1) ~= "]" then
+    return nil
+  end
+  -- All chars except the status char must be identical.
+  if canonical:sub(1, sym_pos - 1) ~= current:sub(1, sym_pos - 1) then
+    return nil
+  end
+  if canonical:sub(sym_pos + 1) ~= current:sub(sym_pos + 1) then
+    return nil
+  end
+  local new_sym = current:sub(sym_pos, sym_pos)
+  -- The new symbol must be in the configured status set.
+  local status_mod = require("obsidian-tasks.task.status")
+  if not status_mod.by_symbol[new_sym] then
+    return nil
+  end
+  -- Also: don't treat a no-op (same symbol) as an edit.
+  if new_sym == canonical:sub(sym_pos, sym_pos) then
+    return nil
+  end
+  return new_sym
+end
+
+--- Walk every managed row, classify each as canonical / status edit / other,
+--- and propagate recognized status edits to the source file.
+---
+--- Rows whose content matches their canonical rendered_text contribute nothing.
+--- Rows whose only diff is a status symbol change to a known status symbol get
+--- committed to source via the resolver pipeline (same path as <leader>tt).
+--- Rows with any other diff fall through; the subsequent rerender restores them.
+---
+--- @param bufnr integer
+local function classify_and_commit(bufnr)
+  local snapshot = _region_snapshot[bufnr] or {}
+  local meta_by_row = _meta_snapshot[bufnr] or {}
+  local cmd = require("obsidian-tasks.cmd")
+  local task_parse = require("obsidian-tasks.task.parse")
+  local serialize = require("obsidian-tasks.task.serialize")
+  local log = require("obsidian-tasks.log")
+
+  for _, region in ipairs(snapshot) do
+    for row = region[1], region[2] do
+      local cur_lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+      local current = cur_lines[1]
+      local meta = meta_by_row[row]
+      if current ~= nil and meta ~= nil and meta.rendered_text ~= nil then
+        local new_sym = recognize_status_edit(meta.rendered_text, current)
+        if new_sym ~= nil then
+          -- Drift check + source-buffer write.  We have meta.task_text (the
+          -- source line at render time) and meta.source_file/source_row; use
+          -- cmd.resolver helpers indirectly via a synthetic resolve call that
+          -- bypasses managed.task_meta_for_row (its extmark may have moved
+          -- after the user's line replacement).
+          local current_src = cmd._read_source_line(meta.source_file, meta.source_row)
+          if current_src == nil then
+            log.warn("obsidian-tasks: cannot read source file — run <leader>tr to refresh")
+          elseif current_src ~= meta.task_text then
+            log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+          else
+            local src_bufnr = cmd._get_or_load_buf(meta.source_file)
+            local task = task_parse.parse(meta.task_text)
+            if task then
+              task.status_symbol = new_sym
+              local ok_write, err = pcall(function()
+                local new_line = serialize.serialize(task)
+                vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, { new_line })
+              end)
+              if not ok_write then
+                log.warn("revert: status commit failed: " .. tostring(err))
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 do_revert = function(bufnr)
   _scheduled[bufnr] = nil
 
@@ -113,6 +226,18 @@ do_revert = function(bufnr)
   if #wins > 0 then
     cursor_save = vim.api.nvim_win_get_cursor(wins[1])
   end
+
+  -- Pass 1: propagate any recognized status edits to source BEFORE we wipe
+  -- the managed rows.  After this pass, source files reflect any valid status
+  -- changes the user typed directly on rendered rows.  Other edits do nothing
+  -- in this pass — the subsequent rerender will visually restore them.
+  --
+  -- Run with on_lines suppressed: writes to the source buffer must not feed
+  -- back into the dashboard's on_lines listener.  (The source buffer is a
+  -- different buffer in any case, so the suppress is defensive — but cheap.)
+  M.suppress(bufnr)
+  pcall(classify_and_commit, bufnr)
+  M.unsuppress(bufnr)
 
   -- undojoin merges the revert into the preceding user change so pressing
   -- <u> undoes the user's original edit rather than the revert separately.
@@ -245,6 +370,17 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
         end
       end
       _region_snapshot[bufnr] = new_snapshot
+      -- Shift _meta_snapshot keys in tandem so row → meta lookups stay aligned.
+      local old_meta = _meta_snapshot[bufnr] or {}
+      local new_meta = {}
+      for row, meta in pairs(old_meta) do
+        if row >= last_line then
+          new_meta[row + delta] = meta
+        else
+          new_meta[row] = meta
+        end
+      end
+      _meta_snapshot[bufnr] = new_meta
     end
     return
   end
@@ -280,6 +416,21 @@ function M.attach(bufnr, workspace, rerender_fn)
   -- and snapshot (managed regions are re-set by each render_buffer call).
   _workspace[bufnr] = workspace
   _region_snapshot[bufnr] = managed.all_regions(bufnr)
+
+  -- Snapshot per-row task meta so classify_and_commit (do_revert pass 1) can
+  -- look up canonical text + source coords by attach-time row, independent of
+  -- where Neovim moves the extmark after the user's edit.
+  local meta_snap = {}
+  for _, region in ipairs(_region_snapshot[bufnr]) do
+    for row = region[1], region[2] do
+      local meta = managed.task_meta_for_row(bufnr, row)
+      if meta then
+        meta_snap[row] = meta
+      end
+    end
+  end
+  _meta_snapshot[bufnr] = meta_snap
+
   if rerender_fn ~= nil then
     _rerender_fn[bufnr] = rerender_fn
   end
@@ -325,6 +476,7 @@ function M._cleanup(bufnr)
   _workspace[bufnr] = nil
   _attached[bufnr] = nil
   _region_snapshot[bufnr] = nil
+  _meta_snapshot[bufnr] = nil
   _rerender_fn[bufnr] = nil
 end
 

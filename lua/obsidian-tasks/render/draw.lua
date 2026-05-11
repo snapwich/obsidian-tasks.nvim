@@ -209,10 +209,13 @@ function M.draw(bufnr, fence_range, layout_lines)
       }
 
       -- Per-task extmark in managed namespace (consumed by T6/T7).
+      -- rendered_text is the canonical buffer line including wikilink suffix;
+      -- the read-only revert / status-edit detector compares against it.
       managed.add_task(bufnr, task_lnum, {
         source_file = ll.src_path,
         source_row = (ll.src_line or 1) - 1, -- convert 1-indexed → 0-indexed
         task_text = strip_wikilink(ll.text, ll.src_path),
+        rendered_text = ll.text,
       })
 
       last_task_lnum = task_lnum

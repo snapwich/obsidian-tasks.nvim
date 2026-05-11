@@ -78,6 +78,12 @@ local function get_or_load_buf(file_path)
   return src_bufnr
 end
 
+-- Expose the internal helpers so other modules (notably render/revert.lua's
+-- status-edit commit pass) can perform drift checks + source buffer loads
+-- without going through resolve_task_at, which depends on live extmarks.
+M._read_source_line = read_source_line
+M._get_or_load_buf = get_or_load_buf
+
 -- ── Resolver ──────────────────────────────────────────────────────────────────
 
 --- Resolve the task at a specific buffer position.

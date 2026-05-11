@@ -137,11 +137,22 @@ edit the underlying query:
 | `zR`        | Open all folds in the buffer             |
 | `zM`        | Close all folds in the buffer            |
 
-### Rendered regions are read-only
+### Rendered regions are read-only — except for the checkbox
 
 Rendered task lines below the fence are managed by the plugin. **Direct edits are
 reverted** on the next event-loop tick. To mutate a task, use the leader keymaps or
 jump to the source file with `<CR>`.
+
+**Exception: the status character.** Typing a configured status symbol over the
+character between `[` and `]` of a rendered task line commits the change to the
+source file (same end-state as pressing `<leader>tt`). For example, `r x` over
+the space in `- [ ] task` writes `- [x] task` to the source. Any other change to
+the row reverts, so a single keystroke is all you can change at once. The new
+symbol must be in your configured `statuses` set; unknown chars revert.
+
+Note on undo: pressing `u` in the dashboard after a status edit reverts the
+visual line back to `[ ]` but does not undo the source-file change. To undo the
+status change, navigate to the source buffer and undo there.
 
 ### Save semantics (BufWriteCmd)
 

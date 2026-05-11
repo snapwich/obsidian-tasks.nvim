@@ -34,7 +34,7 @@ end
 --       managed_fence_id  = integer|nil, -- managed-NS extmark ID for the opening fence (live-tracked)
 --       render_range      = { first, last } | nil,  -- 0-indexed inserted task lines (stale after edits)
 --       extmark_ids       = { eid, ... },            -- task extmark IDs (draw NS)
---       line_map          = { [lnum] = {src_path, src_line, src_hash} },
+--       line_map          = { [lnum] = {src_path, src_line, src_hash, rendered_text} },
 --     },
 --     ...
 --   }
@@ -268,6 +268,9 @@ function M.render_buffer(bufnr, workspace)
           end
         end
         -- Populate line_map from inserted_range + layout_lines task order.
+        -- `rendered_text` is the canonical buffer line we just wrote; the
+        -- revert/commit path compares it against the live row to detect status
+        -- edits and reject any other modification.
         if block_draw_state and block_draw_state.inserted_range then
           local insert_start = block_draw_state.inserted_range[1]
           local task_idx = 0
@@ -278,6 +281,7 @@ function M.render_buffer(bufnr, workspace)
                 src_path = ll.src_path,
                 src_line = ll.src_line,
                 src_hash = ll.src_hash,
+                rendered_text = ll.text,
               }
               task_idx = task_idx + 1
             end
