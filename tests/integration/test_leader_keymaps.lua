@@ -403,7 +403,7 @@ end
 
 -- ── setup_keymaps = false ─────────────────────────────────────────────────────
 
-T["setup_keymaps=false: leader keymaps not installed, <CR> still installed"] = function()
+T["setup_keymaps=false: no buffer-local keymaps are installed"] = function()
   local dash_bufnr = make_buf({ "text" })
   local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = false } })
 
@@ -411,11 +411,13 @@ T["setup_keymaps=false: leader keymaps not installed, <CR> still installed"] = f
 
   restore_ot()
 
-  -- <CR> always installed.
-  eq(find_nmap(dash_bufnr, "<CR>") ~= nil, true)
-  -- Leader keymaps must be absent.
+  -- Plugin no longer installs <CR>/gf (obsidian.nvim ftplugin races our handler).
+  eq(find_nmap(dash_bufnr, "<CR>"), nil)
+  eq(find_nmap(dash_bufnr, "gf"), nil)
+  -- Leader keymaps must be absent when setup_keymaps = false.
   eq(find_nmap(dash_bufnr, "<leader>tt"), nil)
   eq(find_nmap(dash_bufnr, "<leader>tp"), nil)
+  eq(find_nmap(dash_bufnr, "<leader>tg"), nil)
   eq(find_nmap(dash_bufnr, "<leader>tr"), nil)
   eq(find_nmap(dash_bufnr, "<leader>tD"), nil)
 

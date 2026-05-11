@@ -2,16 +2,13 @@
 -- Buffer-local keymaps for rendered dashboard buffers.
 --
 -- M.attach(bufnr): install buffer-local normal-mode mappings.
---   Always installed:
---     <CR>  — whole-line jump to source row recorded in task_meta (any column).
---     gf    — same as <CR>.
 --   Installed when setup_keymaps = true (default):
 --     <leader>tt — toggle task done/not-done
 --     <leader>te — edit task description (vim.ui.input prompt)
 --     <leader>tp — cycle priority: none → highest → high → medium → low → lowest → none
 --     <leader>td — set due date (vim.ui.input prompt for YYYY-MM-DD)
 --     <leader>tT — edit tags (vim.ui.input, comma-separated)
---     <leader>tg — jump to source (same as <CR>)
+--     <leader>tg — jump to source (from anywhere on a rendered task row)
 --     <leader>tD — delete task (vim.fn.confirm, then remove source line)
 --     <leader>tr — force re-render all regions in this buffer
 --
@@ -19,6 +16,13 @@
 --
 -- attach is called from render/draw.lua on first draw for a buffer.
 -- detach is called from render/draw.lua clear (full-buffer clear only).
+--
+-- Note on jumping with <CR>: we deliberately do NOT override <CR> / gf.  In
+-- early F9 prototypes we did, but obsidian.nvim's ftplugin re-registers its
+-- own smart_action <CR> after our render fires, racing our handler.  Instead,
+-- press <CR> with the cursor on the trailing `[[wikilink]]` of a rendered row
+-- (obsidian.nvim's smart_action follows the link) or use <leader>tg to jump
+-- from anywhere on the row.
 
 local M = {}
 
@@ -107,11 +111,14 @@ local function do_rerender(bufnr)
   render.rerender_buffer(bufnr, ws)
 end
 
--- ── Jump handler (<CR> / gf / <leader>tg) ────────────────────────────────────
+-- ── Jump handler (<leader>tg) ────────────────────────────────────────────────
 
---- Build the jump handler closed over *bufnr*.
+--- Build the <leader>tg jump handler closed over *bufnr*.
 --- Uses managed.task_meta_for_row — trusts the extmark position.
 --- For stale positions the user runs <leader>tr to refresh.
+--- Emits an info notice when invoked on a row without task_meta (i.e. not a
+--- rendered task line) and stays put — no fall-through to obsidian's
+--- smart_action, since the user explicitly chose <leader>tg.
 --- @param bufnr integer
 --- @return fun()
 local function make_jump_handler(bufnr)
@@ -121,30 +128,23 @@ local function make_jump_handler(bufnr)
     local lnum = cursor[1] - 1 -- 0-indexed
 
     local meta = managed.task_meta_for_row(bufnr, lnum)
-    if meta and meta.source_file then
-      -- Jump to source.  :edit preserves unsaved changes if already loaded.
-      vim.cmd("edit " .. vim.fn.fnameescape(meta.source_file))
-      -- source_row is 0-indexed; nvim_win_set_cursor expects 1-indexed.
-      local target_row = meta.source_row + 1
-
-      -- Drift notification only (still jump — extmark is trusted).
-      local current = read_source_line(meta.source_file, meta.source_row)
-      if current ~= nil and current ~= meta.task_text then
-        log.info("obsidian-tasks: source position may be stale — run <leader>tr to refresh")
-      end
-
-      vim.api.nvim_win_set_cursor(0, { target_row, 0 })
-    else
-      -- Fall through: delegate to obsidian.actions.smart_action().
-      local ok, actions = pcall(require, "obsidian.actions")
-      if ok and type(actions.smart_action) == "function" then
-        local result = actions.smart_action()
-        if type(result) == "string" then
-          local keys = vim.api.nvim_replace_termcodes(result, true, false, true)
-          vim.api.nvim_feedkeys(keys, "n", false)
-        end
-      end
+    if not (meta and meta.source_file) then
+      log.info("obsidian-tasks: no rendered task on this line")
+      return
     end
+
+    -- Jump to source.  :edit preserves unsaved changes if already loaded.
+    vim.cmd("edit " .. vim.fn.fnameescape(meta.source_file))
+    -- source_row is 0-indexed; nvim_win_set_cursor expects 1-indexed.
+    local target_row = meta.source_row + 1
+
+    -- Drift notification only (still jump — extmark is trusted).
+    local current = read_source_line(meta.source_file, meta.source_row)
+    if current ~= nil and current ~= meta.task_text then
+      log.info("obsidian-tasks: source position may be stale — run <leader>tr to refresh")
+    end
+
+    vim.api.nvim_win_set_cursor(0, { target_row, 0 })
   end
 end
 
@@ -402,18 +402,13 @@ function M.attach(bufnr)
     return
   end
 
-  -- ── Jump keymaps (always installed) ─────────────────────────────────────────
-  local jump_handler = make_jump_handler(bufnr)
-  local jump_opts = {
-    buffer = bufnr,
-    noremap = true,
-    silent = true,
-    desc = "obsidian-tasks: jump to source or smart action",
-  }
-  vim.keymap.set("n", "<CR>", jump_handler, jump_opts)
-  vim.keymap.set("n", "gf", jump_handler, jump_opts)
-
   -- ── Leader keymaps (opt-out via setup_keymaps = false) ──────────────────────
+  -- We deliberately do NOT install a buffer-local <CR> / gf override here.
+  -- obsidian.nvim's ftplugin re-registers its smart_action <CR> after our
+  -- render fires, racing our handler and causing intermittent checkbox toggles
+  -- in place of jumps.  Use <leader>tg below for jump-from-anywhere, or place
+  -- the cursor on the trailing [[wikilink]] and press <CR> — obsidian.nvim's
+  -- smart_action will follow it.
   if not should_setup_keymaps() then
     return
   end
@@ -441,9 +436,6 @@ end
 --- Safe to call when no mappings exist (no-op).
 --- @param bufnr integer
 function M.detach(bufnr)
-  -- Remove jump keymaps.
-  pcall(vim.keymap.del, "n", "<CR>", { buffer = bufnr })
-  pcall(vim.keymap.del, "n", "gf", { buffer = bufnr })
   -- Remove leader keymaps (all are no-ops if not installed).
   for _, lhs in ipairs(LEADER_LHS) do
     pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })

@@ -64,9 +64,13 @@ local function fresh_render()
 end
 
 --- Return keymap callback for *lhs* in buffer *bufnr*, or nil.
+--- Expands <leader> to vim.g.mapleader (defaults to backslash) so tests can
+--- look up leader-prefixed mappings without knowing the user's leader char.
 local function find_callback(bufnr, lhs)
+  local leader = vim.g.mapleader or "\\"
+  local expanded = lhs:gsub("<[Ll]eader>", leader)
   for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
-    if m.lhs == lhs then
+    if m.lhs == lhs or m.lhs == expanded then
       return m.callback
     end
   end
@@ -233,9 +237,9 @@ T["integration: conceallevel is NOT changed by render"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── 3. CR on render task line → jump to source ────────────────────────────────
+-- ── 3. <leader>tg on render task line → jump to source ───────────────────────
 
-T["integration: CR on render task line jumps to source file at correct line"] = function()
+T["integration: <leader>tg on render task line jumps to source file at correct line"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local parse = require("obsidian-tasks.task.parse")
@@ -265,7 +269,7 @@ T["integration: CR on render task line jumps to source file at correct line"] = 
   -- The task line was inserted right after the closing fence (0-indexed line 3 → 1-indexed row 4).
   vim.api.nvim_win_set_cursor(winid, { 4, 0 })
 
-  local cb = find_callback(bufnr, "<CR>")
+  local cb = find_callback(bufnr, "<leader>tg")
   MiniTest.expect.equality(cb ~= nil, true)
   cb()
 
@@ -290,47 +294,36 @@ T["integration: CR on render task line jumps to source file at correct line"] = 
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── 4. CR on non-render line → smart_action fall-through ──────────────────────
+-- ── 4. <CR> is NOT installed by the plugin ────────────────────────────────────
+-- Earlier F9 prototypes overrode <CR>/gf, but the override raced obsidian.nvim's
+-- ftplugin which re-registers smart_action <CR> after our render fires.  The
+-- override now lives entirely in obsidian.nvim — press <CR> on the trailing
+-- wikilink (smart_action follows it) or use <leader>tg from anywhere on the row.
 
-T["integration: CR on non-render line invokes smart_action fall-through"] = function()
+T["integration: render does NOT install a buffer-local <CR> override"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
-  local restore_idx = install_mock("obsidian-tasks.index", make_index_stub({}))
+  local parse = require("obsidian-tasks.task.parse")
 
-  local smart_action_called = false
-  local restore_obsidian = install_mock("obsidian.actions", {
-    smart_action = function()
-      smart_action_called = true
-      return nil
-    end,
-  })
+  local t = parse.parse("- [ ] Stub")
+  local stub = make_index_stub({ { task = t, path = "/vault/x.md", line_num = 1 } })
+  local restore_idx = install_mock("obsidian-tasks.index", stub)
 
-  -- Buffer with a tasks block (empty result → 3 fence lines only, no task lines).
-  local bufnr = make_buf({ "prefix line", "```tasks", "not done", "```", "suffix line" })
-  local winid = vim.api.nvim_open_win(bufnr, true, {
-    relative = "editor",
-    width = 80,
-    height = 10,
-    row = 0,
-    col = 0,
-  })
-  vim.api.nvim_set_current_win(winid)
-
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
   render.render_buffer(bufnr)
 
-  -- Position cursor on "prefix line" (row 1) — definitely not a render task line.
-  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+  -- No <CR> or gf in the buffer-local keymap list.
+  local has_cr = false
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
+    if m.lhs == "<CR>" or m.lhs == "\r" or m.lhs == "gf" then
+      has_cr = true
+      break
+    end
+  end
+  MiniTest.expect.equality(has_cr, false)
 
-  local cb = find_callback(bufnr, "<CR>")
-  MiniTest.expect.equality(cb ~= nil, true)
-  cb()
-
-  MiniTest.expect.equality(smart_action_called, true)
-
-  restore_obsidian()
   restore_idx()
   draw_mod.clear(bufnr)
-  vim.api.nvim_win_close(winid, true)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 

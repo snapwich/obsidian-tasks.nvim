@@ -87,29 +87,15 @@ local function capture_notify(f)
 end
 
 -- ── attach / detach ───────────────────────────────────────────────────────────
+--
+-- The plugin no longer overrides <CR> or gf — obsidian.nvim's ftplugin races
+-- our handler.  <leader>tg is the explicit jump-from-anywhere keymap.
 
-T["attach: sets buffer-local <CR> mapping"] = function()
+T["attach: does NOT install <CR> or gf"] = function()
   local bufnr = make_buf({ "test" })
   keymap_mod.attach(bufnr)
-  MiniTest.expect.equality(find_nmap(bufnr, "<CR>") ~= nil, true)
-  keymap_mod.detach(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["attach: sets buffer-local gf mapping"] = function()
-  local bufnr = make_buf({ "test" })
-  keymap_mod.attach(bufnr)
-  MiniTest.expect.equality(find_nmap(bufnr, "gf") ~= nil, true)
-  keymap_mod.detach(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["attach: <CR> mapping has callback (not rhs string)"] = function()
-  local bufnr = make_buf({ "test" })
-  keymap_mod.attach(bufnr)
-  local m = find_nmap(bufnr, "<CR>")
-  MiniTest.expect.equality(m ~= nil, true)
-  MiniTest.expect.equality(m.callback ~= nil, true)
+  eq(find_nmap(bufnr, "<CR>"), nil)
+  eq(find_nmap(bufnr, "gf"), nil)
   keymap_mod.detach(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
@@ -122,6 +108,7 @@ T["attach: leader keymaps installed by default"] = function()
   restore()
   MiniTest.expect.equality(find_nmap(bufnr, "<leader>tt") ~= nil, true)
   MiniTest.expect.equality(find_nmap(bufnr, "<leader>tp") ~= nil, true)
+  MiniTest.expect.equality(find_nmap(bufnr, "<leader>tg") ~= nil, true)
   MiniTest.expect.equality(find_nmap(bufnr, "<leader>tr") ~= nil, true)
   keymap_mod.detach(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -132,29 +119,12 @@ T["attach: leader keymaps NOT installed when setup_keymaps=false"] = function()
   local restore = install_mock("obsidian-tasks", { opts = { setup_keymaps = false } })
   keymap_mod.attach(bufnr)
   restore()
-  -- <CR> always installed.
-  MiniTest.expect.equality(find_nmap(bufnr, "<CR>") ~= nil, true)
-  -- Leader keymaps should be absent.
+  -- Leader keymaps must be absent.
   eq(find_nmap(bufnr, "<leader>tt"), nil)
   eq(find_nmap(bufnr, "<leader>tp"), nil)
+  eq(find_nmap(bufnr, "<leader>tg"), nil)
   eq(find_nmap(bufnr, "<leader>tr"), nil)
   keymap_mod.detach(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["detach: removes <CR> mapping"] = function()
-  local bufnr = make_buf({ "test" })
-  keymap_mod.attach(bufnr)
-  keymap_mod.detach(bufnr)
-  eq(find_nmap(bufnr, "<CR>"), nil)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["detach: removes gf mapping"] = function()
-  local bufnr = make_buf({ "test" })
-  keymap_mod.attach(bufnr)
-  keymap_mod.detach(bufnr)
-  eq(find_nmap(bufnr, "gf"), nil)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
@@ -165,6 +135,7 @@ T["detach: removes leader keymaps"] = function()
   restore()
   keymap_mod.detach(bufnr)
   eq(find_nmap(bufnr, "<leader>tt"), nil)
+  eq(find_nmap(bufnr, "<leader>tg"), nil)
   eq(find_nmap(bufnr, "<leader>tr"), nil)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
@@ -193,14 +164,14 @@ T["attach: idempotent — calling twice does not error"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── CR/gf handler: render line jump via task_meta ─────────────────────────────
+-- ── <leader>tg handler: render line jump via task_meta ───────────────────────
 --
 -- The new model trusts the extmark row.  No hash scan, no stale-jump fallback.
 -- Drift emits log.info but still jumps.
 
---- Run the <CR> handler for bufnr with cursor at 1-indexed row.
+--- Run the <leader>tg handler for bufnr with cursor at 1-indexed row.
 --- Returns {jumped_to_file, cursor_row} where jumped_to_file is the bufname.
-local function run_cr_handler(bufnr, cursor_row_1idx)
+local function run_tg_handler(bufnr, cursor_row_1idx)
   local winid = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
     width = 80,
@@ -211,7 +182,7 @@ local function run_cr_handler(bufnr, cursor_row_1idx)
   vim.api.nvim_set_current_win(winid)
   vim.api.nvim_win_set_cursor(winid, { cursor_row_1idx, 0 })
 
-  local m = find_nmap(bufnr, "<CR>")
+  local m = find_nmap(bufnr, "<leader>tg")
   MiniTest.expect.equality(m ~= nil, true)
   m.callback()
 
@@ -222,7 +193,7 @@ local function run_cr_handler(bufnr, cursor_row_1idx)
   return jumped_to, cur_row
 end
 
-T["CR handler: render line — jumps to source_file at source_row"] = function()
+T["<leader>tg handler: render line — jumps to source_file at source_row"] = function()
   local task_text = "- [ ] Jump test task"
   local src_path = make_tmpfile({ "header", task_text, "footer" })
   -- source_row=1 (0-indexed) → jump to row 2 (1-indexed)
@@ -233,9 +204,11 @@ T["CR handler: render line — jumps to source_file at source_row"] = function()
       return { source_file = src_path, source_row = 1, task_text = task_text }
     end,
   })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   keymap_mod.attach(bufnr)
+  restore_ot()
 
-  local jumped_to, cur_row = run_cr_handler(bufnr, 1)
+  local jumped_to, cur_row = run_tg_handler(bufnr, 1)
 
   restore_managed()
   keymap_mod.detach(bufnr)
@@ -252,8 +225,7 @@ T["CR handler: render line — jumps to source_file at source_row"] = function()
   eq(cur_row, 2)
 end
 
-T["CR handler: jumps regardless of cursor column (whole-line trigger)"] = function()
-  -- cursor column 5 — should still jump.
+T["<leader>tg handler: jumps regardless of cursor column (whole-line trigger)"] = function()
   local task_text = "- [ ] Any column jump"
   local src_path = make_tmpfile({ task_text })
 
@@ -263,7 +235,9 @@ T["CR handler: jumps regardless of cursor column (whole-line trigger)"] = functi
       return { source_file = src_path, source_row = 0, task_text = task_text }
     end,
   })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   keymap_mod.attach(bufnr)
+  restore_ot()
 
   local winid = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
@@ -275,8 +249,7 @@ T["CR handler: jumps regardless of cursor column (whole-line trigger)"] = functi
   vim.api.nvim_set_current_win(winid)
   vim.api.nvim_win_set_cursor(winid, { 1, 5 }) -- column 5, not 0
 
-  local m = find_nmap(bufnr, "<CR>")
-  m.callback()
+  find_nmap(bufnr, "<leader>tg").callback()
 
   local jumped_to = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
   vim.api.nvim_win_close(winid, true)
@@ -293,7 +266,7 @@ T["CR handler: jumps regardless of cursor column (whole-line trigger)"] = functi
   MiniTest.expect.equality(jumped_to:find(vim.fn.fnamemodify(src_path, ":t"), 1, true) ~= nil, true)
 end
 
-T["CR handler: drift — still jumps but emits log.info"] = function()
+T["<leader>tg handler: drift — still jumps but emits log.info"] = function()
   -- Source file has a different line than meta.task_text → drift detected.
   local src_path = make_tmpfile({ "- [x] Toggled by external editor" })
   local task_text = "- [ ] Original task"
@@ -304,9 +277,10 @@ T["CR handler: drift — still jumps but emits log.info"] = function()
       return { source_file = src_path, source_row = 0, task_text = task_text }
     end,
   })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   keymap_mod.attach(bufnr)
+  restore_ot()
 
-  -- Capture jumped_to INSIDE the window (before close) so current buf is correct.
   local jumped_to = nil
   local notify_calls = capture_notify(function()
     local winid = vim.api.nvim_open_win(bufnr, true, {
@@ -318,8 +292,7 @@ T["CR handler: drift — still jumps but emits log.info"] = function()
     })
     vim.api.nvim_set_current_win(winid)
     vim.api.nvim_win_set_cursor(winid, { 1, 0 })
-    find_nmap(bufnr, "<CR>").callback()
-    -- Read current buf before closing the window.
+    find_nmap(bufnr, "<leader>tg").callback()
     jumped_to = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
     vim.api.nvim_win_close(winid, true)
   end)
@@ -349,7 +322,7 @@ T["CR handler: drift — still jumps but emits log.info"] = function()
   MiniTest.expect.equality(found_info, true)
 end
 
-T["CR handler: non-render line — calls smart_action and feeds keys"] = function()
+T["<leader>tg handler: no task on row — emits info, stays put"] = function()
   local bufnr = make_buf({ "some normal text" })
 
   local restore_managed = install_mock("obsidian-tasks.render.managed", {
@@ -357,20 +330,9 @@ T["CR handler: non-render line — calls smart_action and feeds keys"] = functio
       return nil
     end,
   })
-
-  local smart_action_called = false
-  local restore_obsidian = install_mock("obsidian.actions", {
-    smart_action = function()
-      smart_action_called = true
-      return "j"
-    end,
-  })
-
-  local feedkeys_calls = {}
-  local orig_feedkeys = vim.api.nvim_feedkeys
-  vim.api.nvim_feedkeys = function(keys, mode, escape)
-    feedkeys_calls[#feedkeys_calls + 1] = { keys = keys, mode = mode, escape = escape }
-  end
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+  keymap_mod.attach(bufnr)
+  restore_ot()
 
   local winid = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
@@ -381,89 +343,25 @@ T["CR handler: non-render line — calls smart_action and feeds keys"] = functio
   })
   vim.api.nvim_set_current_win(winid)
   vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+  local before_buf = vim.api.nvim_get_current_buf()
 
-  keymap_mod.attach(bufnr)
-  find_nmap(bufnr, "<CR>").callback()
-
-  MiniTest.expect.equality(smart_action_called, true)
-  MiniTest.expect.equality(#feedkeys_calls >= 1, true)
-
-  vim.api.nvim_feedkeys = orig_feedkeys
-  restore_managed()
-  restore_obsidian()
-  vim.api.nvim_win_close(winid, true)
-  keymap_mod.detach(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["CR handler: non-render line — no error when obsidian.actions unavailable"] = function()
-  local bufnr = make_buf({ "text" })
-
-  local restore_managed = install_mock("obsidian-tasks.render.managed", {
-    task_meta_for_row = function()
-      return nil
-    end,
-  })
-  local orig = package.loaded["obsidian.actions"]
-  package.loaded["obsidian.actions"] = nil
-
-  local winid = vim.api.nvim_open_win(bufnr, true, {
-    relative = "editor",
-    width = 80,
-    height = 10,
-    row = 0,
-    col = 0,
-  })
-  vim.api.nvim_set_current_win(winid)
-  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
-
-  keymap_mod.attach(bufnr)
-  MiniTest.expect.no_error(function()
-    find_nmap(bufnr, "<CR>").callback()
+  local notify_calls = capture_notify(function()
+    find_nmap(bufnr, "<leader>tg").callback()
   end)
 
-  package.loaded["obsidian.actions"] = orig
-  restore_managed()
-  vim.api.nvim_win_close(winid, true)
-  keymap_mod.detach(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
--- ── gf uses same jump logic ───────────────────────────────────────────────────
-
-T["gf: non-render line — falls through to smart_action"] = function()
-  local bufnr = make_buf({ "text" })
-
-  local restore_managed = install_mock("obsidian-tasks.render.managed", {
-    task_meta_for_row = function()
-      return nil
-    end,
-  })
-  local smart_called = false
-  local restore_obsidian = install_mock("obsidian.actions", {
-    smart_action = function()
-      smart_called = true
-      return nil
-    end,
-  })
-
-  local winid = vim.api.nvim_open_win(bufnr, true, {
-    relative = "editor",
-    width = 80,
-    height = 10,
-    row = 0,
-    col = 0,
-  })
-  vim.api.nvim_set_current_win(winid)
-  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
-
-  keymap_mod.attach(bufnr)
-  find_nmap(bufnr, "gf").callback()
-
-  MiniTest.expect.equality(smart_called, true)
+  -- No jump — current buffer unchanged.
+  eq(vim.api.nvim_get_current_buf(), before_buf)
+  -- Emitted an INFO notice.
+  local found_info = false
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.INFO and tostring(c.msg):find("no rendered task", 1, true) then
+      found_info = true
+      break
+    end
+  end
+  eq(found_info, true)
 
   restore_managed()
-  restore_obsidian()
   vim.api.nvim_win_close(winid, true)
   keymap_mod.detach(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -1379,10 +1277,14 @@ T["draw wiring: draw attaches keymap on first draw for buffer"] = function()
     { kind = "footer", text = "─ 1 result ─" },
   }
 
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   draw_mod.draw(bufnr, { 0, 2 }, layout)
+  restore_ot()
 
-  MiniTest.expect.equality(find_nmap(bufnr, "<CR>") ~= nil, true)
-  MiniTest.expect.equality(find_nmap(bufnr, "gf") ~= nil, true)
+  -- <leader>tg is the jump keymap (CR/gf are NOT installed by this plugin).
+  MiniTest.expect.equality(find_nmap(bufnr, "<leader>tg") ~= nil, true)
+  eq(find_nmap(bufnr, "<CR>"), nil)
+  eq(find_nmap(bufnr, "gf"), nil)
 
   draw_mod.clear(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -1397,11 +1299,12 @@ T["draw wiring: clear detaches keymap"] = function()
     { kind = "footer", text = "─ 1 result ─" },
   }
 
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   draw_mod.draw(bufnr, { 0, 2 }, layout)
   draw_mod.clear(bufnr)
+  restore_ot()
 
-  eq(find_nmap(bufnr, "<CR>"), nil)
-  eq(find_nmap(bufnr, "gf"), nil)
+  eq(find_nmap(bufnr, "<leader>tg"), nil)
 
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
@@ -1415,12 +1318,13 @@ T["draw wiring: re-draw after clear re-attaches keymap"] = function()
     { kind = "footer", text = "─ 1 result ─" },
   }
 
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   draw_mod.draw(bufnr, { 0, 2 }, layout)
   draw_mod.clear(bufnr)
   draw_mod.draw(bufnr, { 0, 2 }, layout)
+  restore_ot()
 
-  MiniTest.expect.equality(find_nmap(bufnr, "<CR>") ~= nil, true)
-  MiniTest.expect.equality(find_nmap(bufnr, "gf") ~= nil, true)
+  MiniTest.expect.equality(find_nmap(bufnr, "<leader>tg") ~= nil, true)
 
   draw_mod.clear(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -1441,21 +1345,23 @@ T["draw wiring: second draw of same buffer does not error"] = function()
     { kind = "footer", text = "─ 1 result ─" },
   }
 
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   MiniTest.expect.no_error(function()
     draw_mod.draw(bufnr, { 0, 2 }, layout_a)
     draw_mod.draw(bufnr, { 5, 7 }, layout_b)
   end)
+  restore_ot()
 
-  MiniTest.expect.equality(find_nmap(bufnr, "<CR>") ~= nil, true)
+  MiniTest.expect.equality(find_nmap(bufnr, "<leader>tg") ~= nil, true)
 
   draw_mod.clear(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── End-to-end: draw → task_meta → CR jump ───────────────────────────────────
+-- ── End-to-end: draw → task_meta → <leader>tg jump ──────────────────────────
 
-T["E2E: draw populates task_meta; CR jumps to correct source row"] = function()
-  -- Build a real layout, draw it, then invoke CR and verify the jump.
+T["E2E: draw populates task_meta; <leader>tg jumps to correct source row"] = function()
+  -- Build a real layout, draw it, then invoke <leader>tg and verify the jump.
   local layout_mod = require("obsidian-tasks.render.layout")
   local parse_task = require("obsidian-tasks.task.parse")
 
@@ -1479,12 +1385,14 @@ T["E2E: draw populates task_meta; CR jumps to correct source row"] = function()
 
   -- Draw into a render buffer.
   local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
   draw_mod.draw(bufnr, { 0, 2 }, layout_lines)
+  restore_ot()
 
   -- The task line is inserted at row 3 (0-indexed), row 4 (1-indexed).
   local task_render_row_1idx = 4
 
-  -- Open a window, set cursor on the rendered task row, fire CR.
+  -- Open a window, set cursor on the rendered task row, fire <leader>tg.
   local winid = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
     width = 80,
@@ -1495,7 +1403,7 @@ T["E2E: draw populates task_meta; CR jumps to correct source row"] = function()
   vim.api.nvim_set_current_win(winid)
   vim.api.nvim_win_set_cursor(winid, { task_render_row_1idx, 0 })
 
-  local m = find_nmap(bufnr, "<CR>")
+  local m = find_nmap(bufnr, "<leader>tg")
   MiniTest.expect.equality(m ~= nil, true)
   m.callback()
 

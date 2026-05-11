@@ -140,8 +140,9 @@ edit the underlying query:
 ### Rendered regions are read-only — except for the checkbox
 
 Rendered task lines below the fence are managed by the plugin. **Direct edits are
-reverted** on the next event-loop tick. To mutate a task, use the leader keymaps or
-jump to the source file with `<CR>`.
+reverted** on the next event-loop tick. To mutate a task, use the leader keymaps,
+or press `<CR>` with the cursor on the trailing `[[wikilink]]` to follow it (handled
+by obsidian.nvim), or use `<leader>tg` to jump from anywhere on the row.
 
 **Exception: the status character.** Typing a configured status symbol over the
 character between `[` and `]` of a rendered task line commits the change to the
@@ -166,20 +167,24 @@ produces the same visual state.
 
 These are installed automatically on every rendered dashboard buffer:
 
-| Keymap        | Action                                              |
-| ------------- | --------------------------------------------------- |
-| `<CR>` / `gf` | Jump to the source file at the task's original line |
-| `<leader>tt`  | Toggle done/not-done                                |
-| `<leader>te`  | Edit task description (vim.ui.input prompt)         |
-| `<leader>tp`  | Cycle priority (none → highest → … → lowest → none) |
-| `<leader>td`  | Set/edit due date (YYYY-MM-DD prompt)               |
-| `<leader>tT`  | Edit tags (comma-separated prompt)                  |
-| `<leader>tg`  | Jump to source (same as `<CR>`)                     |
-| `<leader>tD`  | Delete task (confirm prompt, removes source line)   |
-| `<leader>tr`  | Force re-render all query regions in this buffer    |
+| Keymap       | Action                                              |
+| ------------ | --------------------------------------------------- |
+| `<leader>tt` | Toggle done/not-done                                |
+| `<leader>te` | Edit task description (vim.ui.input prompt)         |
+| `<leader>tp` | Cycle priority (none → highest → … → lowest → none) |
+| `<leader>td` | Set/edit due date (YYYY-MM-DD prompt)               |
+| `<leader>tT` | Edit tags (comma-separated prompt)                  |
+| `<leader>tg` | Jump to source from anywhere on a rendered task row |
+| `<leader>tD` | Delete task (confirm prompt, removes source line)   |
+| `<leader>tr` | Force re-render all query regions in this buffer    |
 
-Set `setup_keymaps = false` in your `setup()` call to opt out of auto-installed keymaps.
-`<CR>` and `gf` are always installed regardless of this setting.
+Set `setup_keymaps = false` in your `setup()` call to opt out of these keymaps.
+
+**Note on `<CR>` and `gf`:** the plugin does _not_ override these. obsidian.nvim's
+ftplugin re-registers its `smart_action` `<CR>` after each render, racing any
+buffer-local handler we'd install. Press `<CR>` with the cursor on the trailing
+`[[wikilink]]` of a rendered task — obsidian.nvim will follow it — or use
+`<leader>tg` to jump from any column on the row.
 
 ### Global keymaps (not shipped — wire your own)
 
