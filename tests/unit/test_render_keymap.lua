@@ -896,6 +896,478 @@ T["<leader>tD: user cancels — no mutation"] = function()
   vim.fn.delete(src_path)
 end
 
+-- ── <leader>te — edit description ────────────────────────────────────────────
+
+T["<leader>te: happy path — replaces description in source buffer"] = function()
+  local task_text = "- [ ] Old description"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local restore_render = install_mock("obsidian-tasks.render", { rerender_buffer = function() end })
+
+  -- Stub vim.ui.input to call callback synchronously with new description.
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback("New description")
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>te").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Read mutated line from the source buffer opened by get_or_load_buf.
+  local src_buf = vim.fn.bufnr(src_path, false)
+  local mutated = nil
+  if src_buf ~= -1 then
+    local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
+    mutated = lines[1]
+    vim.api.nvim_buf_delete(src_buf, { force = true })
+  end
+  vim.fn.delete(src_path)
+
+  eq(mutated ~= nil, true)
+  -- New description must appear; old one must not.
+  eq(mutated:find("New description", 1, true) ~= nil, true)
+  eq(mutated:find("Old description", 1, true) == nil, true)
+end
+
+T["<leader>te: cancel (input=nil) — no mutation"] = function()
+  local task_text = "- [ ] No change task"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local rerender_called = false
+  local restore_render = install_mock("obsidian-tasks.render", {
+    rerender_buffer = function()
+      rerender_called = true
+    end,
+  })
+
+  -- Stub vim.ui.input to cancel (nil).
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback(nil)
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>te").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+
+  -- Source file must be unchanged.
+  local src_lines = vim.fn.readfile(src_path)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  eq(rerender_called, false)
+  eq(src_lines[1], task_text)
+end
+
+-- ── <leader>td — due date ─────────────────────────────────────────────────────
+
+T["<leader>td: valid date → dispatches {due, date}"] = function()
+  local task_text = "- [ ] Task with no due"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+
+  local dispatched_fargs = nil
+  local restore_cmd = install_mock("obsidian-tasks.cmd", {
+    dispatch = function(opts)
+      dispatched_fargs = opts.fargs
+    end,
+  })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local restore_render = install_mock("obsidian-tasks.render", { rerender_buffer = function() end })
+
+  -- Stub vim.ui.input to provide a valid ISO date.
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback("2026-12-31")
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>td").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_cmd()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  eq(dispatched_fargs ~= nil, true)
+  eq(dispatched_fargs[1], "due")
+  eq(dispatched_fargs[2], "2026-12-31")
+end
+
+T["<leader>td: invalid date → log.error, no dispatch"] = function()
+  local task_text = "- [ ] Task for invalid date"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+
+  local dispatch_called = false
+  local restore_cmd = install_mock("obsidian-tasks.cmd", {
+    dispatch = function()
+      dispatch_called = true
+    end,
+  })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local restore_render = install_mock("obsidian-tasks.render", { rerender_buffer = function() end })
+
+  -- Stub vim.ui.input to provide a non-parseable date.
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback("not-a-date")
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  local notify_calls = capture_notify(function()
+    find_nmap(bufnr, "<leader>td").callback()
+  end)
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_cmd()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  eq(dispatch_called, false)
+  local found_error = false
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.ERROR and c.msg:find("invalid date", 1, true) then
+      found_error = true
+      break
+    end
+  end
+  eq(found_error, true)
+end
+
+T["<leader>td: cancel (input=nil) — no dispatch"] = function()
+  local task_text = "- [ ] Task for cancel date"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+
+  local dispatch_called = false
+  local restore_cmd = install_mock("obsidian-tasks.cmd", {
+    dispatch = function()
+      dispatch_called = true
+    end,
+  })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local restore_render = install_mock("obsidian-tasks.render", { rerender_buffer = function() end })
+
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback(nil) -- user cancels
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>td").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_cmd()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  eq(dispatch_called, false)
+end
+
+-- ── <leader>tT — edit tags ────────────────────────────────────────────────────
+
+T["<leader>tT: auto-prefixes # and updates source buffer"] = function()
+  -- Input "foo, #bar" → tags become {"#foo", "#bar"}.
+  local task_text = "- [ ] Tag task"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local restore_render = install_mock("obsidian-tasks.render", { rerender_buffer = function() end })
+
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback("foo, #bar")
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>tT").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  local src_buf = vim.fn.bufnr(src_path, false)
+  local mutated = nil
+  if src_buf ~= -1 then
+    local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
+    mutated = lines[1]
+    vim.api.nvim_buf_delete(src_buf, { force = true })
+  end
+  vim.fn.delete(src_path)
+
+  eq(mutated ~= nil, true)
+  -- Both tags must appear with # prefix.
+  eq(mutated:find("#foo", 1, true) ~= nil, true)
+  eq(mutated:find("#bar", 1, true) ~= nil, true)
+end
+
+T["<leader>tT: cancel (input=nil) — no mutation"] = function()
+  local task_text = "- [ ] Task for cancel tags #existing"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+
+  local rerender_called = false
+  local restore_render = install_mock("obsidian-tasks.render", {
+    rerender_buffer = function()
+      rerender_called = true
+    end,
+  })
+
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback(nil)
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>tT").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+
+  local src_lines = vim.fn.readfile(src_path)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  eq(rerender_called, false)
+  eq(src_lines[1], task_text)
+end
+
+T["<leader>tT: empty input — clears all tags from task"] = function()
+  -- Tags that appear AFTER a field marker are "trailing" and live in task.tags
+  -- only (not in task.description).  Setting task.tags = {} then serializing
+  -- removes them cleanly.  Tags embedded in the description text are NOT
+  -- affected by task.tags, so we must use a trailing tag for this test.
+  local task_text = "- [ ] My task \xf0\x9f\x93\x85 2024-01-01 #old"
+  local src_path = make_tmpfile({ task_text })
+
+  local bufnr = make_buf({ task_text })
+  local restore_managed = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
+    end,
+  })
+  local restore_ot = install_mock("obsidian-tasks", { opts = { setup_keymaps = true } })
+  local restore_index = install_mock("obsidian-tasks.index", { refresh_file = function() end })
+  local restore_render = install_mock("obsidian-tasks.render", { rerender_buffer = function() end })
+
+  local orig_input = vim.ui.input
+  vim.ui.input = function(_opts, callback)
+    callback("") -- user clears input
+  end
+
+  keymap_mod.attach(bufnr)
+
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+  })
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { 1, 0 })
+
+  find_nmap(bufnr, "<leader>tT").callback()
+
+  vim.ui.input = orig_input
+  restore_managed()
+  restore_ot()
+  restore_index()
+  restore_render()
+  vim.api.nvim_win_close(winid, true)
+  keymap_mod.detach(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  local src_buf = vim.fn.bufnr(src_path, false)
+  local mutated = nil
+  if src_buf ~= -1 then
+    local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
+    mutated = lines[1]
+    vim.api.nvim_buf_delete(src_buf, { force = true })
+  end
+  vim.fn.delete(src_path)
+
+  eq(mutated ~= nil, true)
+  -- The trailing tag must be absent after clearing.
+  eq(mutated:find("#old", 1, true) == nil, true)
+  -- The date field must still be present (only tags were cleared).
+  eq(mutated:find("2024-01-01", 1, true) ~= nil, true)
+end
+
 -- ── draw.lua wiring ───────────────────────────────────────────────────────────
 
 T["draw wiring: draw attaches keymap on first draw for buffer"] = function()
