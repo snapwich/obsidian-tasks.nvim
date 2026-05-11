@@ -278,9 +278,10 @@ T["refresh: calls render.refresh_buffer with current bufnr"] = function()
   local bufnr = make_buf({ "- [ ] Task" })
   local buf_cleanup = mock_current_buf(bufnr)
 
+  -- refresh cmd now calls rerender_buffer (fold-state-preserving).
   local called_bufnr = nil
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       called_bufnr = b
     end,
   })
@@ -306,9 +307,10 @@ T["refresh: forwards resolved workspace to refresh_buffer"] = function()
   local bufnr = make_buf({ "```tasks", "```" })
   local buf_cleanup = mock_current_buf(bufnr)
 
+  -- refresh cmd now calls rerender_buffer (fold-state-preserving).
   local called_ws = "UNSET"
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    refresh_buffer = function(_b, ws)
+    rerender_buffer = function(_b, ws)
       called_ws = ws
     end,
   })
@@ -333,9 +335,10 @@ T["refresh: passes nil workspace when obsidian not ready (safe fallback)"] = fun
   local bufnr = make_buf({ "- [ ] Task" })
   local buf_cleanup = mock_current_buf(bufnr)
 
+  -- refresh cmd now calls rerender_buffer (fold-state-preserving).
   local called_ws = "UNSET"
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    refresh_buffer = function(_b, ws)
+    rerender_buffer = function(_b, ws)
       called_ws = ws
     end,
   })
@@ -356,7 +359,7 @@ T["refresh: passes nil workspace when obsidian not ready (safe fallback)"] = fun
 
   -- Must not propagate the error.
   MiniTest.expect.equality(ok, true, "refresh must not raise on obsidian error: " .. tostring(err))
-  -- Must call refresh_buffer with nil workspace (graceful degradation).
+  -- Must call rerender_buffer with nil workspace (graceful degradation).
   MiniTest.expect.equality(called_ws, nil)
 end
 
@@ -364,8 +367,9 @@ T["refresh: safe when render.refresh_buffer is a no-op (no error raised)"] = fun
   local bufnr = make_buf({ "plain text, no tasks block" })
   local buf_cleanup = mock_current_buf(bufnr)
 
+  -- refresh cmd now calls rerender_buffer.
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    refresh_buffer = function() end,
+    rerender_buffer = function() end,
   })
   local oa_cleanup = install_mock("obsidian-tasks.util.obsidian", {
     workspace_for_path = function()
@@ -389,9 +393,10 @@ T["refresh: ignores args and range (whole-buffer operation)"] = function()
   local bufnr = make_buf({ "```tasks", "```" })
   local buf_cleanup = mock_current_buf(bufnr)
 
+  -- refresh cmd now calls rerender_buffer.
   local call_count = 0
   local render_cleanup = install_mock("obsidian-tasks.render", {
-    refresh_buffer = function()
+    rerender_buffer = function()
       call_count = call_count + 1
     end,
   })

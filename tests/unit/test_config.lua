@@ -9,6 +9,7 @@ local config = require("obsidian-tasks.config")
 T["defaults round-trip: merge({}) returns defaults"] = function()
   local merged = config.merge({})
   MiniTest.expect.equality(merged.auto_render, true)
+  MiniTest.expect.equality(merged.default_folded, true)
   MiniTest.expect.equality(merged.watcher, true)
   MiniTest.expect.equality(merged.watcher_debounce_ms, 300)
   MiniTest.expect.equality(merged.done_date_format, "%Y-%m-%d")
@@ -69,7 +70,38 @@ T["deep-merge: date_input partial override preserves other date_input keys"] = f
   MiniTest.expect.equality(#merged.date_input.suggestions > 0, true)
 end
 
+-- ── default_folded ───────────────────────────────────────────────────────────
+
+T["default_folded: defaults to true"] = function()
+  local merged = config.merge({})
+  MiniTest.expect.equality(merged.default_folded, true)
+end
+
+T["default_folded: can be overridden to false"] = function()
+  local merged = config.merge({ default_folded = false })
+  MiniTest.expect.equality(merged.default_folded, false)
+end
+
+T["default_folded: true is accepted"] = function()
+  MiniTest.expect.no_error(function()
+    config.merge({ default_folded = true })
+  end)
+end
+
 -- ── validation errors ────────────────────────────────────────────────────────
+
+T["validate: default_folded must be boolean"] = function()
+  MiniTest.expect.error(function()
+    config.merge({ default_folded = "yes" })
+  end, "default_folded")
+  MiniTest.expect.error(function()
+    config.merge({ default_folded = 1 })
+  end, "default_folded")
+  -- Tables and functions are also invalid.
+  MiniTest.expect.error(function()
+    config.merge({ default_folded = {} })
+  end, "default_folded")
+end
 
 T["validate: auto_render must be boolean"] = function()
   MiniTest.expect.error(function()

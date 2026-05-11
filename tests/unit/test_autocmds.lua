@@ -50,6 +50,7 @@ local function make_render_mock(initial_state)
     _buffer_state = initial_state or {},
     render_calls = {},
     refresh_calls = {},
+    rerender_calls = {},
     clear_calls = {},
     _has_tasks = true,
   }
@@ -67,10 +68,16 @@ local function make_render_mock(initial_state)
     m.refresh_calls[#m.refresh_calls + 1] = { bufnr = bufnr, ws = ws }
   end
 
+  function m.rerender_buffer(bufnr, ws)
+    m.rerender_calls[#m.rerender_calls + 1] = { bufnr = bufnr, ws = ws }
+  end
+
   function m.clear_buffer(bufnr)
     m.clear_calls[#m.clear_calls + 1] = { bufnr = bufnr }
     m._buffer_state[bufnr] = nil
   end
+
+  function m.configure(_opts) end
 
   return m
 end
@@ -306,8 +313,9 @@ T["BufWritePost: refreshes buffer with active render"] = function()
 
   vim.api.nvim_exec_autocmds("BufWritePost", { buffer = bufnr })
 
-  eq(#render.refresh_calls, 1)
-  eq(render.refresh_calls[1].bufnr, bufnr)
+  -- BufWritePost now calls rerender_buffer (fold-state-preserving re-render).
+  eq(#render.rerender_calls, 1)
+  eq(render.rerender_calls[1].bufnr, bufnr)
 
   vim.api.nvim_buf_delete(bufnr, { force = true })
   r1()
@@ -330,7 +338,7 @@ T["BufWritePost: skips buffer without active render"] = function()
 
   vim.api.nvim_exec_autocmds("BufWritePost", { buffer = bufnr })
 
-  eq(#render.refresh_calls, 0)
+  eq(#render.rerender_calls, 0)
 
   vim.api.nvim_buf_delete(bufnr, { force = true })
   r1()
@@ -352,7 +360,7 @@ T["BufWritePost: skips when workspace is nil (non-vault file)"] = function()
 
   vim.api.nvim_exec_autocmds("BufWritePost", { buffer = bufnr })
 
-  eq(#render.refresh_calls, 0)
+  eq(#render.rerender_calls, 0)
 
   vim.api.nvim_buf_delete(bufnr, { force = true })
   r1()
@@ -384,9 +392,9 @@ T["FocusGained: refreshes visible vault md buffers with active render"] = functi
   -- Restore original buffer before assertions.
   vim.api.nvim_set_current_buf(orig_buf)
 
-  -- Test buffer must have been refreshed.
+  -- FocusGained now calls rerender_buffer (fold-state-preserving re-render).
   local found = false
-  for _, c in ipairs(render.refresh_calls) do
+  for _, c in ipairs(render.rerender_calls) do
     if c.bufnr == bufnr then
       found = true
     end
@@ -419,9 +427,9 @@ T["FocusGained: skips buffer without active render"] = function()
 
   vim.api.nvim_set_current_buf(orig_buf)
 
-  -- No refresh should have been called for our buffer.
+  -- No rerender should have been called for our buffer.
   local found = false
-  for _, c in ipairs(render.refresh_calls) do
+  for _, c in ipairs(render.rerender_calls) do
     if c.bufnr == bufnr then
       found = true
     end
@@ -454,7 +462,7 @@ T["FocusGained: skips non-vault buffer even with active render"] = function()
   vim.api.nvim_set_current_buf(orig_buf)
 
   local found = false
-  for _, c in ipairs(render.refresh_calls) do
+  for _, c in ipairs(render.rerender_calls) do
     if c.bufnr == bufnr then
       found = true
     end

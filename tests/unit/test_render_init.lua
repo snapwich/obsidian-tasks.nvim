@@ -684,4 +684,120 @@ T["refresh_buffer: re-renders buffer producing same draw call structure"] = func
   restore_idx()
 end
 
+-- ── configure / default_folded ────────────────────────────────────────────────
+
+T["configure: stores opts in M._opts"] = function()
+  local render = get_render_mod()
+  render.configure({ default_folded = false, watcher = true })
+  MiniTest.expect.equality(render._opts.default_folded, false)
+  MiniTest.expect.equality(render._opts.watcher, true)
+end
+
+T["configure: default_folded defaults to true when not configured"] = function()
+  local render = get_render_mod()
+  -- Fresh module has default _opts = { default_folded = true }
+  MiniTest.expect.equality(render._opts.default_folded, true)
+end
+
+T["render_buffer: skips apply_folds when default_folded = false"] = function()
+  local render = get_render_mod()
+  render.configure({ default_folded = false })
+
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local restore_idx = install_index_stub(make_index_stub({}))
+
+  -- Mock the folds module to track whether apply_folds was called.
+  local folds_apply_called = false
+  local orig_folds = package.loaded["obsidian-tasks.render.folds"]
+  package.loaded["obsidian-tasks.render.folds"] = {
+    apply_folds = function(_bufnr, _block_list)
+      folds_apply_called = true
+    end,
+    capture_fold_state = function(_bufnr, _fence_lnum)
+      return "open"
+    end,
+    open_fold = function(_bufnr, _lnum_1) end,
+  }
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr)
+
+  package.loaded["obsidian-tasks.render.folds"] = orig_folds
+  restore_draw()
+  restore_idx()
+
+  -- apply_folds must NOT have been called when default_folded = false.
+  MiniTest.expect.equality(folds_apply_called, false)
+end
+
+T["render_buffer: calls apply_folds when default_folded = true (default)"] = function()
+  local render = get_render_mod()
+  render.configure({ default_folded = true })
+
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local restore_idx = install_index_stub(make_index_stub({}))
+
+  -- Mock the folds module to track whether apply_folds was called.
+  local folds_apply_called = false
+  local orig_folds = package.loaded["obsidian-tasks.render.folds"]
+  package.loaded["obsidian-tasks.render.folds"] = {
+    apply_folds = function(_bufnr, _block_list)
+      folds_apply_called = true
+    end,
+    capture_fold_state = function(_bufnr, _fence_lnum)
+      return "open"
+    end,
+    open_fold = function(_bufnr, _lnum_1) end,
+  }
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr)
+
+  package.loaded["obsidian-tasks.render.folds"] = orig_folds
+  restore_draw()
+  restore_idx()
+
+  -- apply_folds MUST have been called when default_folded = true.
+  MiniTest.expect.equality(folds_apply_called, true)
+end
+
+T["rerender_buffer: calls clear_buffer then render_buffer"] = function()
+  local render = get_render_mod()
+  render.configure({ default_folded = true })
+
+  local draw_mock = make_draw_mock()
+  local restore_draw = install_draw_mock(draw_mock)
+  local restore_idx = install_index_stub(make_index_stub({}))
+
+  -- Mock folds module to avoid window operations in headless tests.
+  local orig_folds = package.loaded["obsidian-tasks.render.folds"]
+  package.loaded["obsidian-tasks.render.folds"] = {
+    apply_folds = function() end,
+    capture_fold_state = function()
+      return "open"
+    end,
+    open_fold = function() end,
+  }
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+
+  -- First render.
+  render.render_buffer(bufnr)
+  local first_draw_count = #draw_mock.draw_calls
+
+  -- rerender_buffer: clears then re-renders.
+  render.rerender_buffer(bufnr)
+  local second_draw_count = #draw_mock.draw_calls - first_draw_count
+
+  package.loaded["obsidian-tasks.render.folds"] = orig_folds
+  restore_draw()
+  restore_idx()
+
+  -- Both renders should produce the same number of draw calls (1 for 1 block).
+  eq(first_draw_count, 1)
+  eq(second_draw_count, 1)
+end
+
 return T
