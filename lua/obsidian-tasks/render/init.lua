@@ -135,6 +135,7 @@ function M.render_buffer(bufnr, workspace)
   local index = require("obsidian-tasks.index")
   local folds_mod = require("obsidian-tasks.render.folds")
   local foldtext_mod = require("obsidian-tasks.render.foldtext")
+  local revert = require("obsidian-tasks.render.revert")
 
   -- ── 0. Guard: buffer must still be valid ───────────────────────────────────
   if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -145,6 +146,12 @@ function M.render_buffer(bufnr, workspace)
   if not M.has_tasks_block(bufnr) then
     return
   end
+
+  -- Suppress on_lines callbacks for the duration of this render so our own
+  -- buffer mutations don't trigger spurious reverts.  Placed after the cheap
+  -- guard checks so we only touch the suppress counter when we will actually
+  -- mutate the buffer.
+  revert.suppress(bufnr)
 
   -- ── 2. Lazy index init ─────────────────────────────────────────────────────
   -- If the index appears empty and we have a workspace, kick off a one-shot
@@ -174,6 +181,9 @@ function M.render_buffer(bufnr, workspace)
   -- ── 4. Find all blocks (positions in now-cleared buffer) ───────────────────
   local blocks = M.find_blocks(bufnr)
   if #blocks == 0 then
+    -- No complete (paired) blocks found (e.g. unclosed fence).  Unsuppress
+    -- before returning so the counter stays balanced.
+    revert.unsuppress(bufnr)
     return
   end
 
@@ -319,6 +329,15 @@ function M.render_buffer(bufnr, workspace)
     end
   end
   index.set_render_paths(bufnr, paths_set)
+
+  -- ── 8. Attach read-only revert listener (idempotent) ──────────────────────
+  -- Must be called AFTER managed regions are established so the listener has
+  -- valid region extmarks to check against.  Updates the stored workspace on
+  -- subsequent calls so rerender_buffer always uses the current workspace.
+  revert.attach(bufnr, workspace)
+
+  -- Allow on_lines callbacks again now that render is complete.
+  revert.unsuppress(bufnr)
 end
 
 --- Refresh a buffer: clear all renders then re-render from scratch.
@@ -454,6 +473,12 @@ end
 ---
 --- @param bufnr integer
 function M.clear_buffer(bufnr)
+  -- Suppress on_lines callbacks while we remove rendered lines so the listener
+  -- does not detect managed-region row deletions as user edits and schedule a
+  -- spurious revert.
+  local revert = require("obsidian-tasks.render.revert")
+  revert.suppress(bufnr)
+
   local draw = require("obsidian-tasks.render.draw")
   draw.clear(bufnr)
   M._buffer_state[bufnr] = nil
@@ -461,6 +486,8 @@ function M.clear_buffer(bufnr)
   require("obsidian-tasks.render.foldtext").clear_buffer(bufnr)
   -- Keep reverse index consistent: bufnr no longer has any active render.
   require("obsidian-tasks.index").clear_render_paths(bufnr)
+
+  revert.unsuppress(bufnr)
 end
 
 return M
