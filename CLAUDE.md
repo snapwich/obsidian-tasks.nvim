@@ -19,6 +19,7 @@ log.lua               vim.notify wrapper
 
 task/
   fields.lua          emoji + dataview field spec (single source of truth)
+
   parse.lua           line → Task
   serialize.lua       Task → line
   status.lua          default statuses + cycle (Todo/Done/InProgress/Cancelled/OnHold)
@@ -65,3 +66,7 @@ We subscribe to `User:ObsidianNoteWritePre` (not raw `BufWritePre`) so our rende
 
 Append to this file only when a future agent would otherwise miss a non-obvious
 project-specific pattern. Do NOT document things derivable by reading the code.
+
+# Notes
+
+nvim --headless ... -c q is not reliably terminating in this project when foldtext expressions are set. Prefer nvim --headless ... -c 'qa!' or run via a script with an explicit vim.cmd('quitall!') after assertions.\_
