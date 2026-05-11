@@ -161,9 +161,10 @@ end
 -- ════════════════════════════════════════════════════════════════════════════
 
 T["edit: render line → jumps to src_path at src_line"] = function()
-  local fake_meta = { src_path = "/vault/note.md", src_line = 7, src_hash = "h", source_text_hash = "s" }
-  local draw_cleanup = install_mock("obsidian-tasks.render.draw", {
-    is_render_line = function()
+  -- managed.task_meta_for_row returns {source_file, source_row (0-indexed), task_text}
+  local fake_meta = { source_file = "/vault/note.md", source_row = 6, task_text = "- [ ] Rendered task" }
+  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
       return fake_meta
     end,
   })
@@ -173,7 +174,7 @@ T["edit: render line → jumps to src_path at src_line"] = function()
 
   require("obsidian-tasks.cmd.edit").run({}, { line1 = 1, line2 = 1 })
 
-  draw_cleanup()
+  managed_cleanup()
   buf_cleanup()
   jump_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -181,7 +182,7 @@ T["edit: render line → jumps to src_path at src_line"] = function()
   -- Should have jumped to the source file.
   MiniTest.expect.equality(captured.edit_path ~= nil, true)
   MiniTest.expect.equality(captured.edit_path:find("note%.md") ~= nil, true)
-  -- Cursor should be set to {src_line, 0}.
+  -- Cursor: source_row=6 (0-indexed) → row 7 (1-indexed), col 0.
   MiniTest.expect.equality(captured.cursor_pos ~= nil, true)
   MiniTest.expect.equality(captured.cursor_pos[1], 7)
   MiniTest.expect.equality(captured.cursor_pos[2], 0)
@@ -214,11 +215,11 @@ T["edit: non-render line → emits log.info, no jump"] = function()
   MiniTest.expect.equality(found_info, true)
 end
 
-T["edit: render line with src_path=nil → no jump (safety guard)"] = function()
-  -- is_render_line may return a partial record without src_path in edge cases.
-  local draw_cleanup = install_mock("obsidian-tasks.render.draw", {
-    is_render_line = function()
-      return { src_path = nil, src_line = 1 }
+T["edit: render line with source_file=nil → no jump (safety guard)"] = function()
+  -- managed.task_meta_for_row may return a record without source_file in edge cases.
+  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = nil, source_row = 0, task_text = "" }
     end,
   })
   local bufnr = make_buf({ "- [ ] Some line" })
@@ -229,12 +230,12 @@ T["edit: render line with src_path=nil → no jump (safety guard)"] = function()
     require("obsidian-tasks.cmd.edit").run({}, { line1 = 1, line2 = 1 })
   end)
 
-  draw_cleanup()
+  managed_cleanup()
   buf_cleanup()
   jump_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  -- No jump should happen when src_path is nil.
+  -- No jump should happen when source_file is nil.
   MiniTest.expect.equality(captured.edit_path, nil)
   -- Should emit an info notice instead.
   local found_info = false
@@ -247,10 +248,10 @@ T["edit: render line with src_path=nil → no jump (safety guard)"] = function()
 end
 
 T["edit: uses range.line1 for lnum (not cursor row)"] = function()
-  -- Ensure is_render_line is called with 0-indexed lnum derived from range.line1.
+  -- Ensure managed.task_meta_for_row is called with 0-indexed lnum derived from range.line1.
   local called_lnum = nil
-  local draw_cleanup = install_mock("obsidian-tasks.render.draw", {
-    is_render_line = function(_bufnr, lnum)
+  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function(_bufnr, lnum)
       called_lnum = lnum
       return nil
     end,
@@ -262,7 +263,7 @@ T["edit: uses range.line1 for lnum (not cursor row)"] = function()
     require("obsidian-tasks.cmd.edit").run({}, { line1 = 2, line2 = 2 })
   end)
 
-  draw_cleanup()
+  managed_cleanup()
   buf_cleanup()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 

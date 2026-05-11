@@ -109,54 +109,98 @@ T["resolve_task_at: lnum beyond buffer returns nil"] = function()
   MiniTest.expect.equality(result, nil)
 end
 
--- ── resolve_task_at: render buffer ───────────────────────────────────────────
+-- ── resolve_task_at: render buffer (T7: uses managed.task_meta_for_row) ──────
 
-T["resolve_task_at: render line returns {kind='render'}"] = function()
+T["resolve_task_at: render line returns {kind='render'} pointing at source"] = function()
   local cmd = require("obsidian-tasks.cmd")
-  -- draw.is_render_line still returns src_hash/source_text_hash (for keymap),
-  -- but resolve_task_at no longer forwards the hash fields (F4 removed).
-  local fake_info = {
-    src_path = "/vault/note.md",
-    src_line = 5,
-    src_hash = "abc123",
-    source_text_hash = "def456",
-  }
-  local cleanup = install_mock("obsidian-tasks.render.draw", {
-    is_render_line = function()
-      return fake_info
+  local task_text = "- [ ] Rendered task"
+  -- Create a real source file so the resolver can do drift check.
+  local src_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ task_text }, src_path)
+
+  local cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
     end,
   })
 
-  local bufnr = make_buf({ "- [ ] Rendered task" })
+  local bufnr = make_buf({ task_text })
   local result = cmd.resolve_task_at(bufnr, 0)
   cleanup()
+
+  -- Clean up source buffer opened by resolver.
+  local src_bufnr = vim.fn.bufnr(src_path, false)
+  if src_bufnr ~= -1 then
+    vim.api.nvim_buf_delete(src_bufnr, { force = true })
+  end
   vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
 
   MiniTest.expect.equality(result ~= nil, true)
   MiniTest.expect.equality(result.kind, "render")
-  MiniTest.expect.equality(result.src_path, "/vault/note.md")
-  MiniTest.expect.equality(result.src_line, 5)
-  -- Hash fields removed from resolver return value (were F4-specific).
-  -- T7 will replace this resolver with managed.task_meta_for_row.
-  MiniTest.expect.equality(result.src_hash, nil)
-  MiniTest.expect.equality(result.source_text_hash, nil)
+  -- Resolver points at the SOURCE buffer (not the render buffer).
+  MiniTest.expect.equality(result.src_path, src_path)
+  MiniTest.expect.equality(result.src_line, 1) -- 1-indexed (source_row=0 → 1)
+  MiniTest.expect.equality(result.task ~= nil, true)
+  MiniTest.expect.equality(result.task.status_symbol, " ")
 end
 
 T["resolve_task_at: render line takes precedence over source parse"] = function()
   local cmd = require("obsidian-tasks.cmd")
-  -- is_render_line returns info even if the line text is also a valid task.
-  local cleanup = install_mock("obsidian-tasks.render.draw", {
-    is_render_line = function()
-      return { src_path = "/x.md", src_line = 1, src_hash = "h", source_text_hash = "s" }
+  local task_text = "- [x] Done task"
+  local src_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ task_text }, src_path)
+
+  -- managed.task_meta_for_row returns a meta → resolver treats as render line.
+  local cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = task_text }
     end,
   })
 
-  local bufnr = make_buf({ "- [x] Done task" })
+  local bufnr = make_buf({ task_text })
   local result = cmd.resolve_task_at(bufnr, 0)
   cleanup()
+
+  local src_bufnr = vim.fn.bufnr(src_path, false)
+  if src_bufnr ~= -1 then
+    vim.api.nvim_buf_delete(src_bufnr, { force = true })
+  end
   vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
 
   MiniTest.expect.equality(result.kind, "render")
+end
+
+T["resolve_task_at: render line drift → returns nil with warn"] = function()
+  local cmd = require("obsidian-tasks.cmd")
+  -- Source file has a DIFFERENT line → drift detected.
+  local src_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [x] Changed externally" }, src_path)
+
+  local cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = "- [ ] Original task" }
+    end,
+  })
+
+  local bufnr = make_buf({ "- [ ] Original task" })
+  local notify_calls = capture_notify(function()
+    local result = cmd.resolve_task_at(bufnr, 0)
+    MiniTest.expect.equality(result, nil)
+  end)
+  cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  local found_warn = false
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.WARN and c.msg:find("drift", 1, true) then
+      found_warn = true
+      break
+    end
+  end
+  MiniTest.expect.equality(found_warn, true)
 end
 
 -- ── bulk_range ────────────────────────────────────────────────────────────────

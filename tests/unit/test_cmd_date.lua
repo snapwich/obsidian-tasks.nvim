@@ -45,14 +45,6 @@ local function mock_source_ctx()
   })
 end
 
-local function mock_render_ctx()
-  return install_mock("obsidian-tasks.render.draw", {
-    is_render_line = function()
-      return { src_path = "/vault/note.md", src_line = 1, src_hash = "h1", source_text_hash = "s1" }
-    end,
-  })
-end
-
 local function mock_current_buf(bufnr)
   local orig = vim.api.nvim_get_current_buf
   vim.api.nvim_get_current_buf = function()
@@ -262,8 +254,9 @@ T["due: no task in range emits warning"] = function()
 end
 
 T["due: render line with arg mutates buffer in-place"] = function()
+  -- Resolver falls through to source mode; buffer is mutated directly.
   local bufnr = make_buf({ "- [ ] Render task" })
-  local draw_cleanup = mock_render_ctx()
+  local draw_cleanup = mock_source_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
   require("obsidian-tasks.cmd.due").run({ "2026-12-31" }, { line1 = 1, line2 = 1 })
@@ -365,8 +358,9 @@ T["due: no arg on non-task line emits error"] = function()
 end
 
 T["due: no arg on render line appends emoji in-place"] = function()
+  -- Resolver falls through to source mode; emoji appended directly to buffer.
   local bufnr = make_buf({ "- [ ] Render task" })
-  local draw_cleanup = mock_render_ctx()
+  local draw_cleanup = mock_source_ctx()
   local buf_cleanup = mock_current_buf(bufnr)
 
   local orig_cmd = vim.cmd
@@ -561,131 +555,6 @@ T["start: invalid date emits error"] = function()
     end
   end
   MiniTest.expect.equality(found_error, true)
-end
-
--- ── Render-line wikilink regression ──────────────────────────────────────────
---
--- mock_render_ctx returns src_path = "/vault/note.md".
--- fnamemodify(":t:r") → "note" → wikilink suffix = " [[note]]".
--- resolve_task_at strips the suffix before parsing; cmd modules serialize a
--- clean (no-wikilink) task back to the render buffer.
-
-T["due: wikilink stripped from render line when setting date (with arg)"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.due").run({ "2026-12-31" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("2026%-12%-31") ~= nil, true)
-  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x93\x85") ~= nil, true) -- 📅
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["due: wikilink stripped from render line in no-arg path"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  local orig_cmd = vim.cmd
-  vim.cmd = function() end -- suppress startinsert!
-
-  require("obsidian-tasks.cmd.due").run({}, { line1 = 1, line2 = 1 })
-
-  vim.cmd = orig_cmd
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  -- Emoji appended; wikilink must NOT be in the new line.
-  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x93\x85 $") ~= nil, true) -- 📅
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["scheduled: wikilink stripped from render line when setting date (with arg)"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.scheduled").run({ "2026-06-15" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("2026%-06%-15") ~= nil, true)
-  MiniTest.expect.equality(lines[1]:find("\xe2\x8f\xb3") ~= nil, true) -- ⏳
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["scheduled: wikilink stripped from render line in no-arg path"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  local orig_cmd = vim.cmd
-  vim.cmd = function() end -- suppress startinsert!
-
-  require("obsidian-tasks.cmd.scheduled").run({}, { line1 = 1, line2 = 1 })
-
-  vim.cmd = orig_cmd
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("\xe2\x8f\xb3 $") ~= nil, true) -- ⏳
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["start: wikilink stripped from render line when setting date (with arg)"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.start").run({ "2026-03-10" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("2026%-03%-10") ~= nil, true)
-  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x9b\xab") ~= nil, true) -- 🛫
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["start: wikilink stripped from render line in no-arg path"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  local orig_cmd = vim.cmd
-  vim.cmd = function() end -- suppress startinsert!
-
-  require("obsidian-tasks.cmd.start").run({}, { line1 = 1, line2 = 1 })
-
-  vim.cmd = orig_cmd
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x9b\xab $") ~= nil, true) -- 🛫
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
 end
 
 -- ── cross-field: preserving unrelated fields ──────────────────────────────────

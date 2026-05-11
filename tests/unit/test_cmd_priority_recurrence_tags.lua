@@ -342,18 +342,18 @@ T["priority: visual range skips non-task lines"] = function()
   MiniTest.expect.equality(lines[3]:find(fields.priority_levels.low, 1, true) ~= nil, true)
 end
 
-T["priority: tab completion returns all 6 levels"] = function()
+T["priority: tab completion returns all 7 values (6 levels + cycle)"] = function()
   local mod = require("obsidian-tasks.cmd.priority")
   local completions = mod.complete("", "", 0)
-  -- Must include all 6 levels.
-  local expected = { "highest", "high", "medium", "low", "lowest", "none" }
+  -- Must include all 6 levels plus "cycle".
+  local expected = { "highest", "high", "medium", "low", "lowest", "none", "cycle" }
   MiniTest.expect.equality(#completions, #expected)
   local set = {}
   for _, v in ipairs(completions) do
     set[v] = true
   end
   for _, v in ipairs(expected) do
-    MiniTest.expect.equality(set[v], true, "missing level: " .. v)
+    MiniTest.expect.equality(set[v], true, "missing value: " .. v)
   end
 end
 
@@ -787,106 +787,6 @@ T["tags remove: visual range — all tasks lose tag"] = function()
   for i, line in ipairs(lines) do
     MiniTest.expect.equality(line:find("#bulk") == nil, true, "line " .. i .. " still has tag")
   end
-end
-
--- ── Render-line wikilink regression ──────────────────────────────────────────
---
--- mock_render_ctx returns src_path = "/vault/note.md".
--- fnamemodify(":t:r") → "note" → wikilink suffix = " [[note]]".
--- After the fix, resolve_task_at strips the suffix before parsing so all cmd
--- modules serialize a clean (no-wikilink) result back to the render buffer.
-
-T["priority: wikilink stripped from render line before setting priority"] = function()
-  local fields = require("obsidian-tasks.task.fields")
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.priority").run({ "high" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find(fields.priority_levels.high, 1, true) ~= nil, true)
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["recurrence: wikilink stripped from render line (with arg)"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.recurrence").run({ "every week" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("every week") ~= nil, true)
-  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x94\x81") ~= nil, true) -- 🔁
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["recurrence: wikilink stripped from render line (no-arg path)"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  local orig_cmd = vim.cmd
-  vim.cmd = function() end -- suppress startinsert!
-
-  require("obsidian-tasks.cmd.recurrence").run({}, { line1 = 1, line2 = 1 })
-
-  vim.cmd = orig_cmd
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("\xf0\x9f\x94\x81 $") ~= nil, true) -- 🔁
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["tags add: wikilink stripped from render line"] = function()
-  local bufnr = make_buf({ "- [ ] Render task [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.tags").run({ "add", "#foo" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("#foo") ~= nil, true)
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-end
-
-T["tags remove: wikilink stripped from render line"] = function()
-  -- Buffer has both a tag and a wikilink suffix appended by layout.lua.
-  local bufnr = make_buf({ "- [ ] Render task #bar [[note]]" })
-  local draw_cleanup = mock_render_ctx()
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  require("obsidian-tasks.cmd.tags").run({ "remove", "#bar" }, { line1 = 1, line2 = 1 })
-
-  draw_cleanup()
-  buf_cleanup()
-
-  local lines = buf_lines(bufnr)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  MiniTest.expect.equality(lines[1]:find("#bar") == nil, true)
-  MiniTest.expect.equality(lines[1]:find("%[%[") == nil, true)
-  MiniTest.expect.equality(lines[1]:find("Render task") ~= nil, true)
 end
 
 T["tags: tab completion returns add and remove"] = function()

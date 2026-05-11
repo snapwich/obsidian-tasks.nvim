@@ -27,26 +27,31 @@ for _, v in ipairs(VALID_LEVELS) do
   VALID_LEVELS_SET[v] = true
 end
 
--- Cycle order: nil/none → highest → high → medium → low → lowest → nil (wrap)
-local CYCLE_ORDER = { "highest", "high", "medium", "low", "lowest" }
-
 local CYCLE_NEXT = {}
-CYCLE_NEXT[nil] = "highest"
 CYCLE_NEXT["highest"] = "high"
 CYCLE_NEXT["high"] = "medium"
 CYCLE_NEXT["medium"] = "low"
 CYCLE_NEXT["low"] = "lowest"
-CYCLE_NEXT["lowest"] = nil -- wraps back to none
+-- "lowest" wraps to nil (none); handled explicitly in next_priority().
 
 --- Return the next priority level in the cycle.
 --- @param current string|nil  current priority level name (or nil for none)
 --- @return string|nil  next level name (nil means "none")
 local function next_priority(current)
-  if CYCLE_NEXT[current] == nil and current ~= nil and current ~= "lowest" then
-    -- Unknown value: treat as none → start cycle at highest.
+  if current == nil then
+    -- none → start cycle at highest
     return "highest"
   end
-  return CYCLE_NEXT[current]
+  if current == "lowest" then
+    -- lowest → wraps back to none
+    return nil
+  end
+  local n = CYCLE_NEXT[current]
+  if n == nil then
+    -- Unknown value: treat as none → highest
+    return "highest"
+  end
+  return n
 end
 
 --- Apply the priority mutation to a single resolved task entry.
@@ -82,19 +87,13 @@ function M.run(args, range)
 
   local level = args and args[1]
   if not level or level == "" then
-    log.error(
-      "ObsidianTask priority: missing level. Valid: " .. table.concat(VALID_LEVELS, " ") .. " cycle"
-    )
+    log.error("ObsidianTask priority: missing level. Valid: " .. table.concat(VALID_LEVELS, " ") .. " cycle")
     return
   end
 
   if level ~= "cycle" and not VALID_LEVELS_SET[level] then
     log.error(
-      "ObsidianTask priority: invalid level '"
-        .. level
-        .. "'. Valid: "
-        .. table.concat(VALID_LEVELS, " ")
-        .. " cycle"
+      "ObsidianTask priority: invalid level '" .. level .. "'. Valid: " .. table.concat(VALID_LEVELS, " ") .. " cycle"
     )
     return
   end
