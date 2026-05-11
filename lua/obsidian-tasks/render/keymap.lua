@@ -1,107 +1,139 @@
 -- lua/obsidian-tasks/render/keymap.lua
--- Buffer-local <CR> and gf mappings for render buffers.
+-- Buffer-local keymaps for rendered dashboard buffers.
 --
--- M.attach(bufnr): install buffer-local normal-mode mappings for <CR> and gf.
---   • On a render task line: jump to source file at recorded line, with
---     stale-jump fallback: if the recorded line's hash no longer matches,
---     the source file is scanned for the task and the cursor lands on the
---     moved position.  When no match exists at all the recorded line is used
---     and log.info is emitted to inform the user.
---   • On a non-render line: fall through to obsidian.actions.smart_action().
--- M.detach(bufnr): remove the buffer-local mappings.
+-- M.attach(bufnr): install buffer-local normal-mode mappings.
+--   Always installed:
+--     <CR>  — whole-line jump to source row recorded in task_meta (any column).
+--     gf    — same as <CR>.
+--   Installed when setup_keymaps = true (default):
+--     <leader>tt — toggle task done/not-done
+--     <leader>te — edit task description (vim.ui.input prompt)
+--     <leader>tp — cycle priority: none → highest → high → medium → low → lowest → none
+--     <leader>td — set due date (vim.ui.input prompt for YYYY-MM-DD)
+--     <leader>tT — edit tags (vim.ui.input, comma-separated)
+--     <leader>tg — jump to source (same as <CR>)
+--     <leader>tD — delete task (vim.fn.confirm, then remove source line)
+--     <leader>tr — force re-render all regions in this buffer
 --
--- attach is called from render/draw.draw on first draw for a buffer;
--- detach is called from render/draw.clear (full-buffer clear only).
+-- M.detach(bufnr): remove all buffer-local mappings above.
 --
--- draw is lazy-required inside the handler to avoid a circular dependency:
---   draw.lua → keymap.lua (attach/detach)
---   keymap.lua handler → draw.lua (is_render_line)
+-- attach is called from render/draw.lua on first draw for a buffer.
+-- detach is called from render/draw.lua clear (full-buffer clear only).
 
 local M = {}
 
---- Read all lines from a source file.
---- Prefers a loaded buffer (avoids reading a stale disk copy) and falls back
---- to readfile when the file is not open.
---- @param  src_path string
---- @return table|nil  1-indexed list of line strings, or nil on failure
-local function read_source_lines(src_path)
-  local src_bufnr = vim.fn.bufnr(src_path, false)
-  if src_bufnr > -1 then
-    return vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
+local log = require("obsidian-tasks.log")
+
+-- ── Internal helpers ──────────────────────────────────────────────────────────
+
+--- Resolve workspace for a buffer path (nil on any error).
+--- @param path string
+--- @return table|nil
+local function safe_workspace(path)
+  local ok, result = pcall(function()
+    return require("obsidian-tasks.util.obsidian").workspace_for_path(path)
+  end)
+  return ok and result or nil
+end
+
+--- Read a single source line (0-indexed row).
+--- Prefers loaded buffer; falls back to readfile.
+--- @param source_file string
+--- @param source_row  integer  0-indexed
+--- @return string|nil
+local function read_source_line(source_file, source_row)
+  local src_bufnr = vim.fn.bufnr(source_file, false)
+  if src_bufnr > -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
+    local lines = vim.api.nvim_buf_get_lines(src_bufnr, source_row, source_row + 1, false)
+    return lines[1]
   end
-  local result = vim.fn.readfile(src_path)
-  if type(result) == "table" then
-    return result
+  local ok, lines = pcall(vim.fn.readfile, source_file)
+  if ok and type(lines) == "table" then
+    return lines[source_row + 1]
   end
   return nil
 end
 
---- Resolve the 1-indexed jump target line in a source file.
----
---- Algorithm:
----   1. Read all lines from src_path.
----   2. If lines[src_line]'s sha256[:16] matches source_text_hash → return src_line.
----   3. Otherwise scan every line for a hash match → return first match.
----   4. If no match found → emit log.info and return src_line.
----
---- source_text_hash must be the hash of the task text BEFORE any wikilink was
---- appended (i.e. matching the raw source-file text).  This is layout.lua's
---- source_text_hash field, NOT src_hash (which includes the wikilink suffix
---- when backlinks are visible and would never match a source-file line).
----
---- @param src_path          string
---- @param src_line          integer  1-indexed recorded line
---- @param source_text_hash  string   sha256[:16] of the pre-wikilink task text
---- @return integer  1-indexed jump target
-local function resolve_jump_line(src_path, src_line, source_text_hash)
-  local lines = read_source_lines(src_path)
-  if type(lines) ~= "table" or not source_text_hash then
-    return src_line
+--- Get or load source buffer (prefer already-loaded).
+--- @param source_file string
+--- @return integer  bufnr
+local function get_or_load_buf(source_file)
+  local src_bufnr = vim.fn.bufnr(source_file, false)
+  if src_bufnr == -1 then
+    src_bufnr = vim.fn.bufadd(source_file)
+    vim.fn.bufload(src_bufnr)
   end
-
-  -- Fast path: recorded line still has the right content.
-  local recorded_text = lines[src_line]
-  if recorded_text and vim.fn.sha256(recorded_text):sub(1, 16) == source_text_hash then
-    return src_line
-  end
-
-  -- Stale: scan the whole file for a line whose hash matches.
-  for i, text in ipairs(lines) do
-    if vim.fn.sha256(text):sub(1, 16) == source_text_hash then
-      return i
-    end
-  end
-
-  -- No match: task may have been deleted; fall back and inform the user.
-  require("obsidian-tasks.log").info("task may have moved — recorded line " .. tostring(src_line))
-  return src_line
+  return src_bufnr
 end
 
---- Build the <CR>/<gf> handler closed over *bufnr*.
+--- Check for source drift: if current source line ≠ meta.task_text, warn and
+--- return false.  Always returns true when drift cannot be determined (file
+--- temporarily unreadable) — the subsequent operation will fail naturally.
+--- @param meta table  { source_file, source_row, task_text }
+--- @return boolean  true = no drift (safe to mutate)
+local function no_drift(meta)
+  local current = read_source_line(meta.source_file, meta.source_row)
+  if current == nil then
+    -- Cannot verify — emit info and proceed (fail-safe).
+    log.info("obsidian-tasks: source file temporarily unreadable — run <leader>tr if stale")
+    return true
+  end
+  if current ~= meta.task_text then
+    log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+    return false
+  end
+  return true
+end
+
+--- Write source buffer to disk and refresh the task index.
+--- @param source_file string
+local function persist_source(source_file)
+  local src_bufnr = vim.fn.bufnr(source_file, false)
+  if src_bufnr > -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
+    local lines = vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
+    vim.fn.writefile(lines, source_file)
+    vim.bo[src_bufnr].modified = false
+  end
+  -- Update the task index so re-render reflects the mutation.
+  require("obsidian-tasks.index").refresh_file(source_file)
+end
+
+--- Re-render the dashboard buffer.
+--- @param bufnr integer
+local function do_rerender(bufnr)
+  local render = require("obsidian-tasks.render")
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  local ws = safe_workspace(path)
+  render.rerender_buffer(bufnr, ws)
+end
+
+-- ── Jump handler (<CR> / gf / <leader>tg) ────────────────────────────────────
+
+--- Build the jump handler closed over *bufnr*.
+--- Uses managed.task_meta_for_row — trusts the extmark position.
+--- For stale positions the user runs <leader>tr to refresh.
 --- @param bufnr integer
 --- @return fun()
-local function make_handler(bufnr)
+local function make_jump_handler(bufnr)
   return function()
-    -- Lazy-require draw to avoid circular dependency at module load time.
-    local draw = require("obsidian-tasks.render.draw")
-
-    -- nvim_win_get_cursor returns {row, col} with row 1-indexed.
-    -- draw.is_render_line uses 0-indexed row.
+    local managed = require("obsidian-tasks.render.managed")
     local cursor = vim.api.nvim_win_get_cursor(0)
-    local lnum = cursor[1] - 1
+    local lnum = cursor[1] - 1 -- 0-indexed
 
-    local meta = draw.is_render_line(bufnr, lnum)
-    if meta and meta.src_path then
-      -- Resolve the actual jump line via hash-match fallback.
-      -- source_text_hash is the hash of the pre-wikilink task text and matches
-      -- raw source-file lines; src_hash includes the wikilink suffix and is
-      -- only meaningful for rendered buffer lines (used by edit.lua diff).
-      local jump_line = resolve_jump_line(meta.src_path, meta.src_line, meta.source_text_hash)
-      -- Jump to source.  Use :edit (not :e!) to preserve unsaved changes in
-      -- the destination buffer if it is already loaded.
-      vim.cmd("edit " .. vim.fn.fnameescape(meta.src_path))
-      -- src_line is 1-indexed (ripgrep line_number convention).
-      vim.api.nvim_win_set_cursor(0, { jump_line, 0 })
+    local meta = managed.task_meta_for_row(bufnr, lnum)
+    if meta and meta.source_file then
+      -- Jump to source.  :edit preserves unsaved changes if already loaded.
+      vim.cmd("edit " .. vim.fn.fnameescape(meta.source_file))
+      -- source_row is 0-indexed; nvim_win_set_cursor expects 1-indexed.
+      local target_row = meta.source_row + 1
+
+      -- Drift notification only (still jump — extmark is trusted).
+      local current = read_source_line(meta.source_file, meta.source_row)
+      if current ~= nil and current ~= meta.task_text then
+        log.info("obsidian-tasks: source position may be stale — run <leader>tr to refresh")
+      end
+
+      vim.api.nvim_win_set_cursor(0, { target_row, 0 })
     else
       -- Fall through: delegate to obsidian.actions.smart_action().
       local ok, actions = pcall(require, "obsidian.actions")
@@ -116,30 +148,306 @@ local function make_handler(bufnr)
   end
 end
 
---- Attach buffer-local <CR> and gf mappings to *bufnr*.
+-- ── Mutation helpers ──────────────────────────────────────────────────────────
+
+--- Get meta for cursor row; emit "no task" notice and return nil if absent.
+--- @param bufnr integer
+--- @return table|nil  meta or nil
+local function get_meta_at_cursor(bufnr)
+  local managed = require("obsidian-tasks.render.managed")
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local lnum = cursor[1] - 1
+  local meta = managed.task_meta_for_row(bufnr, lnum)
+  if not meta then
+    log.info("obsidian-tasks: no task on this line")
+    return nil
+  end
+  return meta
+end
+
+--- Run an :ObsidianTask subcommand via dispatch, then persist+rerender.
+--- The cursor must be positioned on the rendered task line before calling.
+--- @param bufnr   integer  dashboard buffer
+--- @param fargs   table    e.g. {"toggle"} or {"priority", "cycle"}
+--- @param source_file string  path used for persist_source
+local function dispatch_and_refresh(bufnr, fargs, source_file)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local lnum = cursor[1] - 1 -- 0-indexed
+  require("obsidian-tasks.cmd").dispatch({
+    fargs = fargs,
+    line1 = lnum + 1,
+    line2 = lnum + 1,
+  })
+  persist_source(source_file)
+  do_rerender(bufnr)
+end
+
+-- ── Leader keymap handlers ────────────────────────────────────────────────────
+
+--- <leader>tt — toggle done/not-done.
+--- @param bufnr integer
+--- @return fun()
+local function make_toggle_handler(bufnr)
+  return function()
+    local meta = get_meta_at_cursor(bufnr)
+    if not meta then
+      return
+    end
+    if not no_drift(meta) then
+      return
+    end
+    dispatch_and_refresh(bufnr, { "toggle" }, meta.source_file)
+  end
+end
+
+--- <leader>te — edit task description via vim.ui.input.
+--- @param bufnr integer
+--- @return fun()
+local function make_edit_desc_handler(bufnr)
+  return function()
+    local meta = get_meta_at_cursor(bufnr)
+    if not meta then
+      return
+    end
+    if not no_drift(meta) then
+      return
+    end
+
+    local parse = require("obsidian-tasks.task.parse")
+    local serialize = require("obsidian-tasks.task.serialize")
+    local task = parse.parse(meta.task_text)
+    if not task then
+      log.warn("obsidian-tasks: could not parse task")
+      return
+    end
+
+    vim.ui.input({ prompt = "Edit description: ", default = task.description or "" }, function(input)
+      if input == nil then
+        return
+      end -- cancelled
+      task.description = input
+      local new_line = serialize.serialize(task)
+      local src_bufnr = get_or_load_buf(meta.source_file)
+      vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, { new_line })
+      persist_source(meta.source_file)
+      do_rerender(bufnr)
+    end)
+  end
+end
+
+--- <leader>tp — cycle priority.
+--- @param bufnr integer
+--- @return fun()
+local function make_cycle_priority_handler(bufnr)
+  return function()
+    local meta = get_meta_at_cursor(bufnr)
+    if not meta then
+      return
+    end
+    if not no_drift(meta) then
+      return
+    end
+    dispatch_and_refresh(bufnr, { "priority", "cycle" }, meta.source_file)
+  end
+end
+
+--- <leader>td — set/edit due date.
+--- @param bufnr integer
+--- @return fun()
+local function make_due_date_handler(bufnr)
+  return function()
+    local meta = get_meta_at_cursor(bufnr)
+    if not meta then
+      return
+    end
+    if not no_drift(meta) then
+      return
+    end
+
+    -- Show current due date as default.
+    local parse = require("obsidian-tasks.task.parse")
+    local task = parse.parse(meta.task_text)
+    local default_date = (task and task.fields.due) or ""
+
+    vim.ui.input({ prompt = "Due date (YYYY-MM-DD): ", default = default_date }, function(input)
+      if input == nil or input == "" then
+        return
+      end -- cancelled or empty
+      -- Validate / parse via the date_nl parser.
+      local date = require("obsidian-tasks.cmp.date_nl").parse(input)
+      if not date then
+        log.error("obsidian-tasks: invalid date '" .. input .. "' — use YYYY-MM-DD, 'today', or 'tomorrow'")
+        return
+      end
+      dispatch_and_refresh(bufnr, { "due", date }, meta.source_file)
+    end)
+  end
+end
+
+--- <leader>tT — edit tags (comma-separated, replaces all existing tags).
+--- @param bufnr integer
+--- @return fun()
+local function make_edit_tags_handler(bufnr)
+  return function()
+    local meta = get_meta_at_cursor(bufnr)
+    if not meta then
+      return
+    end
+    if not no_drift(meta) then
+      return
+    end
+
+    local parse = require("obsidian-tasks.task.parse")
+    local serialize = require("obsidian-tasks.task.serialize")
+    local task = parse.parse(meta.task_text)
+    if not task then
+      log.warn("obsidian-tasks: could not parse task")
+      return
+    end
+
+    -- Join existing tags for display.
+    local current_tags = table.concat(task.tags or {}, ", ")
+
+    vim.ui.input({ prompt = "Tags (comma-separated, e.g. #foo, #bar): ", default = current_tags }, function(input)
+      if input == nil then
+        return
+      end -- cancelled
+      -- Parse new tags: split on commas, trim, prefix '#' when missing.
+      local new_tags = {}
+      for part in (input .. ","):gmatch("([^,]+),") do
+        local trimmed = vim.trim(part)
+        if trimmed ~= "" then
+          if not trimmed:find("^#") then
+            trimmed = "#" .. trimmed
+          end
+          new_tags[#new_tags + 1] = trimmed
+        end
+      end
+      task.tags = new_tags
+      local new_line = serialize.serialize(task)
+      local src_bufnr = get_or_load_buf(meta.source_file)
+      vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, { new_line })
+      persist_source(meta.source_file)
+      do_rerender(bufnr)
+    end)
+  end
+end
+
+--- <leader>tD — delete task with confirmation.
+--- @param bufnr integer
+--- @return fun()
+local function make_delete_handler(bufnr)
+  return function()
+    local meta = get_meta_at_cursor(bufnr)
+    if not meta then
+      return
+    end
+    if not no_drift(meta) then
+      return
+    end
+
+    local choice = vim.fn.confirm("Delete task?\n" .. meta.task_text, "&Yes\n&No", 2)
+    if choice ~= 1 then
+      return
+    end -- user chose No or dismissed
+
+    local src_bufnr = get_or_load_buf(meta.source_file)
+    -- Delete the source line (replace with empty list → remove the row).
+    vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, {})
+    persist_source(meta.source_file)
+    do_rerender(bufnr)
+  end
+end
+
+--- <leader>tr — force re-render all regions in the dashboard buffer.
+--- @param bufnr integer
+--- @return fun()
+local function make_refresh_handler(bufnr)
+  return function()
+    do_rerender(bufnr)
+  end
+end
+
+-- ── Public API ────────────────────────────────────────────────────────────────
+
+--- Return true when leader keymaps should be installed.
+--- Reads opts.setup_keymaps; defaults to true when opts are not yet available.
+--- @return boolean
+local function should_setup_keymaps()
+  local ok, ot = pcall(require, "obsidian-tasks")
+  if ok and ot.opts ~= nil then
+    -- setup_keymaps defaults to true; only false explicitly disables.
+    return ot.opts.setup_keymaps ~= false
+  end
+  return true -- default: install
+end
+
+-- All leader lhs values (for detach).
+local LEADER_LHS = {
+  "<leader>tt",
+  "<leader>te",
+  "<leader>tp",
+  "<leader>td",
+  "<leader>tT",
+  "<leader>tg",
+  "<leader>tD",
+  "<leader>tr",
+}
+
+--- Attach buffer-local keymaps to *bufnr*.
 --- Safe to call multiple times (idempotent: last definition wins).
 --- @param bufnr integer
 function M.attach(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  local handler = make_handler(bufnr)
-  local opts = {
+
+  -- ── Jump keymaps (always installed) ─────────────────────────────────────────
+  local jump_handler = make_jump_handler(bufnr)
+  local jump_opts = {
     buffer = bufnr,
     noremap = true,
     silent = true,
     desc = "obsidian-tasks: jump to source or smart action",
   }
-  vim.keymap.set("n", "<CR>", handler, opts)
-  vim.keymap.set("n", "gf", handler, opts)
+  vim.keymap.set("n", "<CR>", jump_handler, jump_opts)
+  vim.keymap.set("n", "gf", jump_handler, jump_opts)
+
+  -- ── Leader keymaps (opt-out via setup_keymaps = false) ──────────────────────
+  if not should_setup_keymaps() then
+    return
+  end
+
+  local function kmap(lhs, handler, desc)
+    vim.keymap.set("n", lhs, handler, {
+      buffer = bufnr,
+      noremap = true,
+      silent = true,
+      desc = "obsidian-tasks: " .. desc,
+    })
+  end
+
+  kmap("<leader>tt", make_toggle_handler(bufnr), "toggle task done/not-done")
+  kmap("<leader>te", make_edit_desc_handler(bufnr), "edit task description")
+  kmap("<leader>tp", make_cycle_priority_handler(bufnr), "cycle task priority")
+  kmap("<leader>td", make_due_date_handler(bufnr), "set/edit due date")
+  kmap("<leader>tT", make_edit_tags_handler(bufnr), "edit task tags")
+  kmap("<leader>tg", make_jump_handler(bufnr), "jump to source file at task row")
+  kmap("<leader>tD", make_delete_handler(bufnr), "delete task (with confirmation)")
+  kmap("<leader>tr", make_refresh_handler(bufnr), "force re-render all regions")
 end
 
---- Detach buffer-local <CR> and gf mappings from *bufnr*.
+--- Detach buffer-local keymaps from *bufnr*.
 --- Safe to call when no mappings exist (no-op).
 --- @param bufnr integer
 function M.detach(bufnr)
+  -- Remove jump keymaps.
   pcall(vim.keymap.del, "n", "<CR>", { buffer = bufnr })
   pcall(vim.keymap.del, "n", "gf", { buffer = bufnr })
+  -- Remove leader keymaps (all are no-ops if not installed).
+  for _, lhs in ipairs(LEADER_LHS) do
+    pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
+  end
 end
 
 return M

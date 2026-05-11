@@ -6,6 +6,12 @@
 --   M.dispatch(opts)           — dispatch an opts table (testable entry point)
 --   M.resolve_task_at(bufnr, lnum) — resolve task at 0-indexed lnum
 --   M.bulk_range(bufnr, range) — walk range, return list of resolved tasks
+--
+-- Resolver for render lines (T7):
+--   Uses managed.task_meta_for_row to identify rendered task lines.
+--   Performs drift detection: if the source file line no longer matches
+--   meta.task_text, the operation is refused with a notification.
+--   Returns source buffer bufnr/lnum so subcommands write directly to source.
 
 local M = {}
 
@@ -38,74 +44,93 @@ end
 
 -- ── Resolver helpers ─────────────────────────────────────────────────────────
 
---- Strip the trailing ' [[basename]]' wikilink that layout.lua appends to
---- render-buffer task lines when task._src_path is set.
+--- Read a single line (0-indexed row) from a source file.
+--- Prefers a loaded buffer; falls back to readfile for unloaded files.
+--- Returns nil if the file cannot be read or the row is out of range.
 ---
---- Only strips when the literal suffix matches; returns the original string
---- otherwise (e.g. when hide.backlinks is true and no wikilink was added).
----
---- @param line     string  raw render-buffer task line
---- @param src_path string  absolute path of the task's source file
---- @return string  line with wikilink suffix removed, or original if no match
-function M._strip_render_wikilink(line, src_path)
-  local basename = vim.fn.fnamemodify(src_path, ":t:r")
-  local suffix = " [[" .. basename .. "]]"
-  if #line >= #suffix and line:sub(-#suffix) == suffix then
-    return line:sub(1, -(#suffix + 1))
+--- @param file_path  string
+--- @param row        integer  0-indexed
+--- @return string|nil
+local function read_source_line(file_path, row)
+  local src_bufnr = vim.fn.bufnr(file_path, false)
+  if src_bufnr > -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
+    local lines = vim.api.nvim_buf_get_lines(src_bufnr, row, row + 1, false)
+    return lines[1]
   end
-  return line
+  local ok, lines = pcall(vim.fn.readfile, file_path)
+  if ok and type(lines) == "table" then
+    return lines[row + 1] -- readfile is 1-indexed
+  end
+  return nil
+end
+
+--- Get or load the source buffer for *file_path*.
+--- Returns an already-loaded bufnr, or bufadd+bufload a new one.
+---
+--- @param file_path string
+--- @return integer  bufnr
+local function get_or_load_buf(file_path)
+  local src_bufnr = vim.fn.bufnr(file_path, false)
+  if src_bufnr == -1 then
+    src_bufnr = vim.fn.bufadd(file_path)
+    vim.fn.bufload(src_bufnr)
+  end
+  return src_bufnr
 end
 
 -- ── Resolver ──────────────────────────────────────────────────────────────────
 
 --- Resolve the task at a specific buffer position.
 ---
---- Checks render lines first (draw.is_render_line); falls back to parsing the
---- raw buffer line as a task.
+--- For rendered task lines: uses managed.task_meta_for_row to look up the
+--- extmark side table.  Performs drift detection — if the source file line
+--- no longer matches meta.task_text (external edit), the operation is refused
+--- and nil is returned with a log.warn notification so the user knows to run
+--- <leader>tr.  When no drift is detected the source buffer is opened and the
+--- returned record points at the SOURCE buffer (bufnr, lnum = source_row) so
+--- that subcommands write directly to the source without touching the render
+--- buffer.
 ---
---- For render lines the wikilink suffix appended by layout.lua is stripped
---- before parsing.  The returned record carries src_path and src_line so that
---- subcommands can locate the source file.  The hash fields (src_hash,
---- source_text_hash) are intentionally omitted — they were consumed by the F4
---- edit-through path which has been removed.  T7 will replace this resolver
---- with a managed.task_meta_for_row-based implementation.
+--- For source-buffer lines: parses the raw buffer line as a task.
 ---
---- NOTE: cmd subcommands are currently non-functional on rendered task lines
---- (render kind='render' is returned but subcommands cannot write back without
---- T7's resolver).  They continue to work on source buffers (kind='source').
----
---- @param bufnr integer  buffer number
+--- @param bufnr integer  buffer number (render or source)
 --- @param lnum  integer  0-indexed buffer line number
 --- @return table|nil
----   Render task:  { kind='render', bufnr, lnum, task, src_path, src_line }
+---   Render task:  { kind='render', bufnr=src_bufnr, lnum=src_row, task, src_path, src_line }
 ---   Source task:  { kind='source', bufnr, lnum, task }
 function M.resolve_task_at(bufnr, lnum)
-  -- Check render layer first.
-  local draw = require("obsidian-tasks.render.draw")
-  local info = draw.is_render_line(bufnr, lnum)
-  if info then
-    -- Parse the render-buffer line after stripping the wikilink suffix so the
-    -- parsed task is clean.
-    local render_lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
-    local task = nil
-    if #render_lines > 0 then
-      local source_line = render_lines[1]
-      if info.src_path then
-        source_line = M._strip_render_wikilink(source_line, info.src_path)
-      end
-      task = require("obsidian-tasks.task.parse").parse(source_line)
+  -- Check managed task-meta first (render lines).
+  local managed = require("obsidian-tasks.render.managed")
+  local meta = managed.task_meta_for_row(bufnr, lnum)
+  if meta then
+    -- Drift check: compare current source line against the recorded task_text.
+    local current_line = read_source_line(meta.source_file, meta.source_row)
+    if current_line == nil then
+      log.warn("obsidian-tasks: cannot read source file — run <leader>tr to refresh")
+      return nil
     end
+    if current_line ~= meta.task_text then
+      log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+      return nil
+    end
+
+    -- Open (or reuse) the source buffer so subcommands can write directly.
+    local src_bufnr = get_or_load_buf(meta.source_file)
+
+    -- Parse the task from the clean source-file text (no wikilink suffix).
+    local task = require("obsidian-tasks.task.parse").parse(meta.task_text)
+
     return {
       kind = "render",
-      bufnr = bufnr,
-      lnum = lnum,
+      bufnr = src_bufnr,
+      lnum = meta.source_row, -- 0-indexed source row
       task = task,
-      src_path = info.src_path,
-      src_line = info.src_line,
+      src_path = meta.source_file,
+      src_line = meta.source_row + 1, -- 1-indexed for cursor placement
     }
   end
 
-  -- Fall back to parsing the raw buffer line.
+  -- Fall back to parsing the raw buffer line (source-buffer mode).
   local lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
   if #lines == 0 then
     return nil

@@ -1,13 +1,14 @@
 -- lua/obsidian-tasks/cmd/priority.lua
 -- :ObsidianTask priority [LEVEL] — set or clear the priority field on task(s).
 --
--- LEVEL must be one of: highest | high | medium | low | lowest | none.
+-- LEVEL must be one of: highest | high | medium | low | lowest | none | cycle.
 --   highest → 🔺
 --   high    → ⏫
 --   medium  → 🔼
 --   low     → 🔽
 --   lowest  → ⏬
 --   none    → removes the priority field (no-op if absent)
+--   cycle   → rotate through: none → highest → high → medium → low → lowest → none
 --
 -- With LEVEL arg: applied to every task in the range; non-task lines skipped.
 -- Without arg:    same as calling with the current priority displayed, which
@@ -15,7 +16,7 @@
 --                 supply a level.
 --
 -- Source buffers: edits the buffer line in-place via nvim_buf_set_lines.
--- Render lines:   edit-through pipeline (F4) handles write-back on :w.
+-- Render lines:   resolver (T7) opens source buffer; edits source in-place.
 
 local M = {}
 
@@ -26,10 +27,32 @@ for _, v in ipairs(VALID_LEVELS) do
   VALID_LEVELS_SET[v] = true
 end
 
+-- Cycle order: nil/none → highest → high → medium → low → lowest → nil (wrap)
+local CYCLE_ORDER = { "highest", "high", "medium", "low", "lowest" }
+
+local CYCLE_NEXT = {}
+CYCLE_NEXT[nil] = "highest"
+CYCLE_NEXT["highest"] = "high"
+CYCLE_NEXT["high"] = "medium"
+CYCLE_NEXT["medium"] = "low"
+CYCLE_NEXT["low"] = "lowest"
+CYCLE_NEXT["lowest"] = nil -- wraps back to none
+
+--- Return the next priority level in the cycle.
+--- @param current string|nil  current priority level name (or nil for none)
+--- @return string|nil  next level name (nil means "none")
+local function next_priority(current)
+  if CYCLE_NEXT[current] == nil and current ~= nil and current ~= "lowest" then
+    -- Unknown value: treat as none → start cycle at highest.
+    return "highest"
+  end
+  return CYCLE_NEXT[current]
+end
+
 --- Apply the priority mutation to a single resolved task entry.
 ---
 --- @param resolved table   result of cmd.resolve_task_at()
---- @param level    string  one of the VALID_LEVELS values
+--- @param level    string  one of VALID_LEVELS values (NOT "cycle")
 local function priority_one(resolved, level)
   if resolved.kind == "source" or resolved.kind == "render" then
     local task = resolved.task
@@ -50,7 +73,7 @@ end
 
 --- Run the priority command.
 ---
---- @param args  table  positional args; args[1] is the optional level string
+--- @param args  table  positional args; args[1] is the level string (including "cycle")
 --- @param range table  { line1: integer, line2: integer } 1-indexed
 function M.run(args, range)
   local cmd = require("obsidian-tasks.cmd")
@@ -59,12 +82,20 @@ function M.run(args, range)
 
   local level = args and args[1]
   if not level or level == "" then
-    log.error("ObsidianTask priority: missing level. Valid: " .. table.concat(VALID_LEVELS, " "))
+    log.error(
+      "ObsidianTask priority: missing level. Valid: " .. table.concat(VALID_LEVELS, " ") .. " cycle"
+    )
     return
   end
 
-  if not VALID_LEVELS_SET[level] then
-    log.error("ObsidianTask priority: invalid level '" .. level .. "'. Valid: " .. table.concat(VALID_LEVELS, " "))
+  if level ~= "cycle" and not VALID_LEVELS_SET[level] then
+    log.error(
+      "ObsidianTask priority: invalid level '"
+        .. level
+        .. "'. Valid: "
+        .. table.concat(VALID_LEVELS, " ")
+        .. " cycle"
+    )
     return
   end
 
@@ -75,7 +106,13 @@ function M.run(args, range)
   end
 
   for _, resolved in ipairs(resolved_list) do
-    priority_one(resolved, level)
+    if level == "cycle" then
+      local current_priority = resolved.task and resolved.task.fields.priority
+      local next_level = next_priority(current_priority)
+      priority_one(resolved, next_level or "none")
+    else
+      priority_one(resolved, level)
+    end
   end
 end
 
@@ -84,13 +121,21 @@ end
 --- @param arg_lead  string
 --- @return string[]
 function M.complete(arg_lead, _cmdline, _cursorpos)
-  local matches = {}
+  local all_levels = {}
   for _, level in ipairs(VALID_LEVELS) do
+    all_levels[#all_levels + 1] = level
+  end
+  all_levels[#all_levels + 1] = "cycle"
+  local matches = {}
+  for _, level in ipairs(all_levels) do
     if vim.startswith(level, arg_lead) then
       matches[#matches + 1] = level
     end
   end
   return matches
 end
+
+-- Export for unit testing.
+M._next_priority = next_priority
 
 return M

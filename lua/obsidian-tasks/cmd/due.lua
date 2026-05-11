@@ -66,18 +66,22 @@ function M.run(args, range)
     end
 
     -- Append "📅 " to the end of the task line.
-    -- For render lines, strip the wikilink suffix first so F4 does not write
-    -- it to the source file on :w.
-    local lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
+    -- For render lines, resolved.bufnr points to the source buffer (T7 resolver),
+    -- so we read from and write to the source directly (no wikilink strip needed).
+    local target_bufnr = resolved.bufnr
+    local target_lnum = resolved.lnum
+    local lines = vim.api.nvim_buf_get_lines(target_bufnr, target_lnum, target_lnum + 1, false)
     local base_line = lines[1] or ""
-    if resolved.kind == "render" and resolved.src_path then
-      base_line = cmd._strip_render_wikilink(base_line, resolved.src_path)
-    end
     local new_line = base_line .. " " .. FIELD_EMOJI .. " "
-    vim.api.nvim_buf_set_lines(bufnr, lnum, lnum + 1, false, { new_line })
+    vim.api.nvim_buf_set_lines(target_bufnr, target_lnum, target_lnum + 1, false, { new_line })
 
-    -- Position cursor after the appended emoji and enter insert mode.
-    vim.api.nvim_win_set_cursor(0, { range.line1, #new_line })
+    -- For render lines jump to the source buffer; for source lines stay put.
+    if resolved.kind == "render" then
+      vim.cmd("edit " .. vim.fn.fnameescape(resolved.src_path))
+      vim.api.nvim_win_set_cursor(0, { resolved.src_line, #new_line })
+    else
+      vim.api.nvim_win_set_cursor(0, { range.line1, #new_line })
+    end
     vim.cmd("startinsert!")
   end
 end
