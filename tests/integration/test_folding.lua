@@ -272,7 +272,7 @@ T["foldtext: returns summary string for a folded block"] = function()
     result = foldtext_mod.foldtext()
   end)
 
-  eq(result, "📋 not done  (2)")
+  eq(result, "        📋 not done  (2)")
 
   foldtext_mod.clear_buffer(bufnr)
   close_win(winid)
@@ -294,7 +294,7 @@ T["foldtext: empty query → all tasks with cached count"] = function()
     result = foldtext_mod.foldtext()
   end)
 
-  eq(result, "📋 all tasks  (1)")
+  eq(result, "        📋 all tasks  (1)")
 
   foldtext_mod.clear_buffer(bufnr)
   close_win(winid)
@@ -315,7 +315,7 @@ T["foldtext: falls back to 0 count when cache is empty"] = function()
     result = foldtext_mod.foldtext()
   end)
 
-  eq(result, "📋 not done  (0)")
+  eq(result, "        📋 not done  (0)")
 
   foldtext_mod.clear_buffer(bufnr)
   close_win(winid)

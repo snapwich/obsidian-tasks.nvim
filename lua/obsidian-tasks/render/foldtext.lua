@@ -2,24 +2,21 @@
 -- Query-derived foldtext for dashboard buffers.
 --
 -- Two public surfaces:
---   M.summarize(ast, count, prefix)  — pure function, easy to unit-test.
+--   M.summarize(ast, count)  — pure function, easy to unit-test.
 --   M.foldtext()             — called by Neovim via vim.wo.foldtext; reads
 --                              v:foldstart / v:foldend, looks up cached count.
 --   M.set_result_count(bufnr, fence_first, count)  — called by render/init.lua
 --                              after each render to cache the result count per block.
---   M.configure(opts)       — store plugin opts (currently: foldtext_prefix).
 --   M.clear_buffer(bufnr)   — called on BufDelete / clear.
 
 local M = {}
 
--- Module-level opts, populated by M.configure() at setup time.
-local _opts = { foldtext_prefix = "" }
-
---- Store plugin opts.  Called from render/init.configure().
---- @param opts table  merged plugin opts (see config.lua)
-function M.configure(opts)
-  _opts.foldtext_prefix = (opts and opts.foldtext_prefix) or ""
-end
+-- Indent on the foldtext summary.  Render-markdown.nvim and similar plugins
+-- overlay a code-block label + border at the start of the opening-fence line,
+-- which collides with our foldtext.  An 8-column indent shifts the summary
+-- past that overlay, and looks fine on terminals without a markdown decorator
+-- too (the line just sits indented like a child element of the fold).
+local FOLDTEXT_INDENT = "        "
 
 -- ── Result count cache ────────────────────────────────────────────────────────
 -- _result_cache[bufnr][fence_first_0indexed] = count
@@ -199,20 +196,17 @@ end
 
 --- Pure function: convert a query AST + result count to a foldtext summary string.
 ---
---- Shape: "<prefix>📋 <filter summary>  (N)"
+--- Shape: "<indent>📋 <filter summary>  (N)"
 --- Special cases:
 ---   • No filters  → "📋 all tasks  (N)"
 ---   • Parse errors → "📋 invalid query"  (count is ignored)
 ---
 --- @param ast    table    { filters, errors, ... } from query/parse.lua
 --- @param count  integer  number of task lines rendered in this block
---- @param prefix string?  prefix string prepended to the result (defaults to "")
 --- @return string
-function M.summarize(ast, count, prefix)
-  prefix = prefix or ""
-
+function M.summarize(ast, count)
   if ast.errors and #ast.errors > 0 then
-    return prefix .. "📋 invalid query"
+    return FOLDTEXT_INDENT .. "📋 invalid query"
   end
 
   local phrases = {}
@@ -227,7 +221,7 @@ function M.summarize(ast, count, prefix)
     summary = table.concat(phrases, " · ")
   end
 
-  return prefix .. string.format("📋 %s  (%d)", summary, count)
+  return FOLDTEXT_INDENT .. string.format("📋 %s  (%d)", summary, count)
 end
 
 --- Called by Neovim as the foldtext function.
@@ -263,13 +257,13 @@ function M.foldtext()
   -- Parse to detect structural errors.
   local ok, ast = pcall(require("obsidian-tasks.query.parse").parse, query_text)
   if not ok then
-    return (_opts.foldtext_prefix or "") .. "📋 invalid query"
+    return FOLDTEXT_INDENT .. "📋 invalid query"
   end
 
   -- Look up the cached result count written by render/init.lua.
   local count = (_result_cache[bufnr] or {})[fence_first] or 0
 
-  return M.summarize(ast, count, _opts.foldtext_prefix)
+  return M.summarize(ast, count)
 end
 
 return M

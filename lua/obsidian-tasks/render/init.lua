@@ -22,7 +22,6 @@ M._opts = { default_folded = true }
 --- @param opts table  merged plugin opts (see config.lua)
 function M.configure(opts)
   M._opts = opts or {}
-  require("obsidian-tasks.render.foldtext").configure(M._opts)
 end
 
 -- ── Per-buffer orchestrator state ─────────────────────────────────────────────
