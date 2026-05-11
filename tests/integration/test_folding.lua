@@ -320,6 +320,12 @@ end
 -- ── render/init.lua integration: folds applied after render_buffer ─────────────
 
 T["render_buffer: applies fold and caches result count"] = function()
+  -- Ensure default_folded is true for this test regardless of what earlier test
+  -- files set.  test_f9_acceptance.lua runs first (alphabetically) and calls
+  -- render.configure({ default_folded = false }), leaving the module state dirty.
+  local saved_opts = render._opts
+  render.configure({ default_folded = true })
+
   -- Use a minimal stub index with one task.
   local index_mod = require("obsidian-tasks.index")
   local task_parse = require("obsidian-tasks.task.parse")
@@ -385,6 +391,7 @@ T["render_buffer: applies fold and caches result count"] = function()
   index_mod.clear_render_paths = saved_clear
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
+  render.configure(saved_opts)
 end
 
 return T

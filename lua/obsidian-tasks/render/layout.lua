@@ -10,11 +10,14 @@
 -- All other kinds set those to nil.
 --
 -- src_hash          — sha256[:16] of the RENDERED task text (includes wikilink
---                     when backlinks are visible).  Stored in draw.lua em_map
---                     for per-task metadata lookup.
+--                     when backlinks are visible).  Stored in draw.lua em_map.
+--                     Currently computed but not read by any live caller
+--                     (reserved for future stale-render detection).
 -- source_text_hash  — sha256[:16] of the task text BEFORE the wikilink is
---                     appended.  Matches source-file line content and is used
---                     by keymap.lua for stale-jump content-match scanning.
+--                     appended.  Matches the verbatim source-file line content
+--                     (including all fields, even those hidden by hide flags).
+--                     Currently computed but not read by any live caller
+--                     (reserved for future stale-jump content-match scanning).
 
 local M = {}
 

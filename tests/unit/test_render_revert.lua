@@ -145,8 +145,11 @@ T["on_lines: edit on managed row schedules revert"] = function()
 
   eq(revert._debug_state(bufnr).scheduled, true)
 
-  -- Flush event loop so the scheduled callback runs.
-  vim.wait(200)
+  -- Use the synchronous test seam instead of vim.wait(200).
+  -- vim.wait() drains vim.schedule callbacks, causing other mini.test test-case
+  -- callbacks to start running interleaved — cross-test state contamination.
+  -- _flush_pending() runs do_revert() directly without pumping vim.schedule.
+  revert._flush_pending(bufnr)
 
   restore()
 
@@ -231,8 +234,8 @@ T["on_lines: debounce — second edit does not schedule a second pass"] = functi
   vim.api.nvim_buf_set_lines(bufnr, 2, 3, false, { "EDIT2" })
   eq(revert._debug_state(bufnr).scheduled, true) -- still one pending
 
-  -- Flush.
-  vim.wait(200)
+  -- Use synchronous seam (avoids vim.wait interleaving).
+  revert._flush_pending(bufnr)
   restore()
 
   -- Only one rerender was called (debounce worked).
@@ -262,7 +265,7 @@ T["on_lines: deletion of managed row schedules revert"] = function()
 
   eq(revert._debug_state(bufnr).scheduled, true)
 
-  vim.wait(200)
+  revert._flush_pending(bufnr)
   restore()
 
   eq(render_called, true)

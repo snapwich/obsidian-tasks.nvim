@@ -555,7 +555,10 @@ T["AC7: direct edit on rendered task line reverts to canonical text"] = function
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical ~= nil and canonical:find("AC7 task") ~= nil, true)
 
-  -- Corrupt the task line.
+  -- Capture pre-corruption line count for post-revert comparison.
+  local pre_corrupt_count = vim.api.nvim_buf_line_count(bufnr)
+
+  -- Corrupt the task line (replace, not add — same line count).
   vim.api.nvim_buf_set_lines(bufnr, task_row, task_row + 1, false, { "CORRUPTED_AC7" })
   eq(get_line(bufnr, task_row), "CORRUPTED_AC7")
   eq(revert._debug_state(bufnr).scheduled, true)
@@ -563,10 +566,24 @@ T["AC7: direct edit on rendered task line reverts to canonical text"] = function
   -- Flush the pending revert synchronously.
   revert._flush_pending(bufnr)
 
-  -- Line must be back to canonical.
+  -- 1. Line at task_row must be back to canonical.
   local final = get_line(bufnr, task_row)
   MiniTest.expect.equality(final ~= nil and final:find("AC7 task") ~= nil, true)
   eq(revert._debug_state(bufnr).scheduled, false)
+
+  -- 2. CORRUPTED_AC7 must be absent from every line of the buffer.
+  local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local corrupted_found = false
+  for _, l in ipairs(all_lines) do
+    if l == "CORRUPTED_AC7" then
+      corrupted_found = true
+      break
+    end
+  end
+  eq(corrupted_found, false, "AC7: CORRUPTED_AC7 must be absent from buffer after revert")
+
+  -- 3. Line count must match pre-corruption state (revert must not leave orphan lines).
+  eq(#all_lines, pre_corrupt_count, "AC7: line count must match pre-corruption state after revert")
 
   render.clear_buffer(bufnr)
   restore()
@@ -574,10 +591,10 @@ T["AC7: direct edit on rendered task line reverts to canonical text"] = function
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── AC8: No conceal anywhere in plugin source ─────────────────────────────────
--- "No conceal is used anywhere in this plugin."
--- Verified by checking that the render pipeline does not set conceallevel or
--- apply conceal_lines extmarks.
+-- ── AC8: Render pipeline does not use Neovim conceal mechanisms ───────────────
+-- F9 replaced the conceal-based rendering (F4) with real buffer text.
+-- Verified at runtime: render_buffer must not change conceallevel and must not
+-- attach any extmark with a conceal_lines field.
 
 T["AC8: render does not set conceallevel or apply conceal_lines extmarks"] = function()
   render.configure({ default_folded = false })
