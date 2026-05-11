@@ -421,4 +421,186 @@ T["revert: paste straddling boundary — managed rows revert, prose rows stay"] 
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
+-- ── T8: sequential reverts — debounce flag resets between cycles ─────────────
+-- Regression guard: removing `_scheduled[bufnr] = nil` inside the vim.schedule
+-- callback would cause the second edit to silently skip the revert.
+-- The flush(N, cond_fn) helper drains scheduled callbacks (unlike vim.wait(N)
+-- with no condition), so both cycles are fully exercised.
+
+T["revert: two sequential edit cycles both revert (debounce flag resets)"] = function()
+  render.configure({ default_folded = false })
+  local restore = install_one_task_stub("- [ ] Cycle task")
+
+  local bufnr = make_buf({
+    "```tasks",
+    "not done",
+    "```",
+  })
+
+  render.render_buffer(bufnr, nil)
+
+  local task_row = 3
+  local canonical = get_line(bufnr, task_row)
+  MiniTest.expect.equality(canonical ~= nil and canonical:find("Cycle task") ~= nil, true)
+
+  -- First corruption and revert cycle.
+  set_line(bufnr, task_row, "CORRUPTED 1")
+  local reverted1 = flush(500, function()
+    local cur = get_line(bufnr, task_row)
+    return cur ~= nil and cur ~= "CORRUPTED 1"
+  end)
+  MiniTest.expect.equality(reverted1, true)
+
+  -- Confirm task text restored after first cycle.
+  local mid = get_line(bufnr, task_row)
+  MiniTest.expect.equality(mid ~= nil and mid:find("Cycle task") ~= nil, true)
+
+  -- Debounce flag must have reset; second corruption must also revert.
+  set_line(bufnr, task_row, "CORRUPTED 2")
+  eq(get_line(bufnr, task_row), "CORRUPTED 2")
+
+  local reverted2 = flush(500, function()
+    local cur = get_line(bufnr, task_row)
+    return cur ~= nil and cur ~= "CORRUPTED 2"
+  end)
+  MiniTest.expect.equality(reverted2, true)
+
+  local final = get_line(bufnr, task_row)
+  MiniTest.expect.equality(final ~= nil and final:find("Cycle task") ~= nil, true)
+
+  render.clear_buffer(bufnr)
+  restore()
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+-- ── T9: snapshot adjusts after prose insertion above managed region ───────────
+-- Regression guard: removing the snapshot-shift block at revert.lua:121-134
+-- would cause on_lines to miss edits on the shifted managed rows, silently
+-- letting corruption persist.
+
+T["revert: snapshot shifts after prose insertion above managed region"] = function()
+  render.configure({ default_folded = false })
+  local restore = install_one_task_stub("- [ ] Shift task")
+
+  --   row 0: ```tasks
+  --   row 1: not done
+  --   row 2: ```
+  -- After render with 1 task:
+  --   row 3: - [ ] Shift task [[stub]]  ← managed
+  local bufnr = make_buf({
+    "```tasks",
+    "not done",
+    "```",
+  })
+
+  render.render_buffer(bufnr, nil)
+
+  local lines_before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  MiniTest.expect.equality(#lines_before >= 4, true)
+  MiniTest.expect.equality(get_line(bufnr, 3):find("Shift task") ~= nil, true)
+
+  -- Insert a prose line at the top (row 0).  This is NOT in a managed region
+  -- so no revert fires, but the snapshot must shift so row 4 is now managed.
+  vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { "inserted prose" })
+
+  -- No revert should have been scheduled.
+  flush_events(150)
+  eq(revert._debug_state(bufnr).scheduled, false)
+
+  -- Task is now at row 4 (shifted down by the insertion).
+  local task_row_new = 4
+  local shifted_line = get_line(bufnr, task_row_new)
+  MiniTest.expect.equality(shifted_line ~= nil and shifted_line:find("Shift task") ~= nil, true)
+
+  -- Corrupt the task at its new position.
+  -- Without snapshot adjustment this would NOT trigger a revert.
+  set_line(bufnr, task_row_new, "SNAPSHOT MISS")
+
+  local reverted = flush(500, function()
+    local cur = get_line(bufnr, task_row_new)
+    return cur ~= nil and cur ~= "SNAPSHOT MISS"
+  end)
+
+  MiniTest.expect.equality(reverted, true)
+
+  local final = get_line(bufnr, task_row_new)
+  MiniTest.expect.equality(final ~= nil and final:find("Shift task") ~= nil, true)
+
+  render.clear_buffer(bufnr)
+  restore()
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+-- ── T10: undojoin — pressing u after revert skips the CORRUPTED state ─────────
+-- Task acceptance criterion: pressing u after a managed-region revert should
+-- NOT cycle through the corrupted intermediate state.  undojoin merges the
+-- revert change with the user's preceding edit so pressing u undoes them as a
+-- single unit, returning to the pre-corruption buffer state.
+
+T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] = function()
+  render.configure({ default_folded = false })
+  local restore = install_one_task_stub("- [ ] Undo task")
+
+  local bufnr = make_buf({
+    "```tasks",
+    "not done",
+    "```",
+  })
+
+  -- Open the buffer in a floating window so normal-mode undo works.
+  local win = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 10,
+    row = 0,
+    col = 0,
+    style = "minimal",
+  })
+
+  render.render_buffer(bufnr, nil)
+
+  local task_row = 3
+  local canonical = get_line(bufnr, task_row)
+  MiniTest.expect.equality(canonical ~= nil and canonical:find("Undo task") ~= nil, true)
+
+  -- Corrupt the managed row.
+  set_line(bufnr, task_row, "CORRUPTED")
+
+  -- Wait for the revert to fire (flush drains vim.schedule callbacks).
+  local reverted = flush(500, function()
+    local cur = get_line(bufnr, task_row)
+    return cur ~= nil and cur ~= "CORRUPTED"
+  end)
+  MiniTest.expect.equality(reverted, true)
+
+  -- Buffer is back to canonical after revert.  Now press u.
+  -- With undojoin: the revert was merged with the user's corruption, so pressing
+  -- u undoes both in one step → returns to the pre-corruption state (canonical).
+  -- Without undojoin: u would undo only the revert → CORRUPTED would reappear.
+  vim.api.nvim_set_current_win(win)
+  vim.cmd("normal! u")
+
+  -- Allow any on_lines triggered by the undo to settle.
+  flush_events(100)
+
+  -- The CORRUPTED text must not be visible in the buffer at any row.
+  local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local corrupted_found = false
+  for _, l in ipairs(buf_lines) do
+    if l == "CORRUPTED" then
+      corrupted_found = true
+      break
+    end
+  end
+  MiniTest.expect.equality(corrupted_found, false)
+
+  pcall(vim.api.nvim_win_close, win, true)
+  render.clear_buffer(bufnr)
+  restore()
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
 return T
