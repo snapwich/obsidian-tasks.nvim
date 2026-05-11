@@ -118,24 +118,26 @@ end
 
 -- ── folds.apply_folds ─────────────────────────────────────────────────────────
 
-T["apply_folds: creates a fold covering fence through region end"] = function()
+T["apply_folds: folds fence lines only, leaves rendered tasks visible"] = function()
   -- Buffer:
   --   0 "```tasks"      ← fence_first = 0
   --   1 "not done"
-  --   2 "```"
-  --   3 "- [ ] Task A"  ← region_end = 3
+  --   2 "```"           ← fence_last  = 2
+  --   3 "- [ ] Task A"  ← rendered task, must stay visible
   local bufnr = make_buf({ "```tasks", "not done", "```", "- [ ] Task A" })
   local winid = open_in_win(bufnr)
 
-  folds_mod.apply_folds(bufnr, { { fence_first = 0, region_end = 3 } })
+  folds_mod.apply_folds(bufnr, { { fence_first = 0, fence_last = 2 } })
 
-  -- foldclosed(1) should be 1 (the fold starts at line 1, 1-indexed).
-  local result
+  local fence_fc, task_fc
   vim.api.nvim_win_call(winid, function()
-    result = vim.fn.foldclosed(1)
+    fence_fc = vim.fn.foldclosed(1) -- opening fence
+    task_fc = vim.fn.foldclosed(4) -- rendered task
   end)
-  -- foldclosed returns 1-indexed start of the closed fold, i.e. 1.
-  eq(result, 1)
+  -- Fence is in a closed fold starting at line 1.
+  eq(fence_fc, 1)
+  -- Rendered task line is NOT in any closed fold (AC1).
+  eq(task_fc, -1)
 
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -153,7 +155,7 @@ end
 T["apply_folds: no-op when no windows show the buffer"] = function()
   local bufnr = make_buf({ "line 1", "line 2" })
   -- Do NOT open in a window — should not error.
-  folds_mod.apply_folds(bufnr, { { fence_first = 0, region_end = 1 } })
+  folds_mod.apply_folds(bufnr, { { fence_first = 0, fence_last = 1 } })
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
@@ -224,13 +226,16 @@ T["restore_fold_state: re-applies fold when state is 'closed'"] = function()
     vim.wo[winid].foldmethod = "manual"
   end)
 
-  folds_mod.restore_fold_state(bufnr, 0, 3, "closed")
+  -- fence_first=0, fence_last=2 — rendered task at row 3 must stay visible.
+  folds_mod.restore_fold_state(bufnr, 0, 2, "closed")
 
-  local fc
+  local fence_fc, task_fc
   vim.api.nvim_win_call(winid, function()
-    fc = vim.fn.foldclosed(1)
+    fence_fc = vim.fn.foldclosed(1) -- opening fence
+    task_fc = vim.fn.foldclosed(4) -- rendered task
   end)
-  eq(fc, 1) -- fold starts at line 1 (1-indexed)
+  eq(fence_fc, 1) -- fold starts at line 1 (1-indexed)
+  eq(task_fc, -1) -- rendered task line is not folded
 
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })

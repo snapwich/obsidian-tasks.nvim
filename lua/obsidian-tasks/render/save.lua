@@ -125,6 +125,8 @@ function M.on_write_cmd(args)
   end
 
   vim.bo[bufnr].modified = false
+  -- Disk is now authoritative — no pending user edits to protect.
+  require("obsidian-tasks.render.hygiene").mark_clean(bufnr)
 
   -- Fire BufWritePost manually so external plugins (LSP, formatters, the
   -- render refresh in autocmds.lua) that hook BufWritePost still run.

@@ -213,19 +213,23 @@ T["AC1: two blocks both folded with foldtext summary on render"] = function()
 
   render.render_buffer(bufnr, nil)
 
-  -- After render with 1 task each:
-  --   block 1: fence rows 0-2 + task row 3 → fold lines 1..4.
-  --   block 2: fence rows 4-6 + task row 7 → fold lines 5..8.
+  -- After render with 1 task each, fold covers fence lines only:
+  --   block 1: fence rows 0-2 → fold lines 1..3; task row 3 (line 4) visible.
+  --   block 2: fence rows 4-6 → fold lines 5..7; task row 7 (line 8) visible.
   local fc1 = fold_closed_at(bufnr, 1)
   local fc2 = fold_closed_at(bufnr, 5)
+  local fc_task1 = fold_closed_at(bufnr, 4)
+  local fc_task2 = fold_closed_at(bufnr, 8)
 
-  -- Both folds should be closed.
+  -- Both fence folds should be closed; rendered task lines must remain visible.
   local fold1_closed = fc1 == 1
   local fold2_closed = fc2 == 5
+  local task1_visible = fc_task1 == -1
+  local task2_visible = fc_task2 == -1
 
   -- Foldtext must contain the 📋 prefix and a result count of 1.
-  local ft1 = get_foldtext(bufnr, 1, 4)
-  local ft2 = get_foldtext(bufnr, 5, 8)
+  local ft1 = get_foldtext(bufnr, 1, 3)
+  local ft2 = get_foldtext(bufnr, 5, 7)
   local ft1_ok = ft1:find("📋", 1, true) ~= nil and ft1:find("(1)", 1, true) ~= nil
   local ft2_ok = ft2:find("📋", 1, true) ~= nil and ft2:find("(1)", 1, true) ~= nil
 
@@ -244,8 +248,10 @@ T["AC1: two blocks both folded with foldtext summary on render"] = function()
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  eq(fold1_closed, true, "AC1: block 1 fold must be closed")
-  eq(fold2_closed, true, "AC1: block 2 fold must be closed")
+  eq(fold1_closed, true, "AC1: block 1 fence fold must be closed")
+  eq(fold2_closed, true, "AC1: block 2 fence fold must be closed")
+  eq(task1_visible, true, "AC1: block 1 rendered task must be visible (not folded)")
+  eq(task2_visible, true, "AC1: block 2 rendered task must be visible (not folded)")
   eq(ft1_ok, true, "AC1: block 1 foldtext must contain 📋 and (1)")
   eq(ft2_ok, true, "AC1: block 2 foldtext must contain 📋 and (1)")
   eq(task_line_found, true, "AC1: rendered task line must be present in buffer")

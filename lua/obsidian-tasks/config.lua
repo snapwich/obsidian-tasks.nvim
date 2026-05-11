@@ -23,6 +23,12 @@ M.defaults = {
   },
   log_level = "info",
   max_file_bytes = 1048576,
+  -- Prefix prepended to the foldtext summary string.  Set to spaces (e.g. "        ")
+  -- when using markdown-decorator plugins like render-markdown.nvim that draw a
+  -- code-block label / border at the start of the fence line and overlay our
+  -- foldtext.  Shifting the summary right past the overlay column avoids the
+  -- visual collision.
+  foldtext_prefix = "",
 }
 
 --- Type-check a single field.
@@ -96,6 +102,10 @@ local function check_field(key, value)
     if type(value) ~= "number" or math.floor(value) ~= value or value <= 0 then
       error(("obsidian-tasks: 'max_file_bytes' must be a positive integer, got %s"):format(tostring(value)), 2)
     end
+  elseif key == "foldtext_prefix" then
+    if type(value) ~= "string" then
+      error(("obsidian-tasks: 'foldtext_prefix' must be a string, got %s"):format(type(value)), 2)
+    end
   end
 end
 
@@ -116,6 +126,7 @@ local KNOWN_KEYS = {
   date_input = true,
   log_level = true,
   max_file_bytes = true,
+  foldtext_prefix = true,
 }
 
 --- Validate user opts types and return deep-merged result.

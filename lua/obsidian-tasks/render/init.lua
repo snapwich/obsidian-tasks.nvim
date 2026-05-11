@@ -22,6 +22,7 @@ M._opts = { default_folded = true }
 --- @param opts table  merged plugin opts (see config.lua)
 function M.configure(opts)
   M._opts = opts or {}
+  require("obsidian-tasks.render.foldtext").configure(M._opts)
 end
 
 -- ── Per-buffer orchestrator state ─────────────────────────────────────────────
@@ -136,6 +137,7 @@ function M.render_buffer(bufnr, workspace)
   local folds_mod = require("obsidian-tasks.render.folds")
   local foldtext_mod = require("obsidian-tasks.render.foldtext")
   local revert = require("obsidian-tasks.render.revert")
+  local hygiene = require("obsidian-tasks.render.hygiene")
 
   -- ── 0. Guard: buffer must still be valid ───────────────────────────────────
   if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -147,215 +149,220 @@ function M.render_buffer(bufnr, workspace)
     return
   end
 
-  -- Suppress on_lines callbacks for the duration of this render so our own
-  -- buffer mutations don't trigger spurious reverts.  Placed after the cheap
-  -- guard checks so we only touch the suppress counter when we will actually
-  -- mutate the buffer.
-  --
-  -- The pcall wrapper below guarantees unsuppress() is called even if an
-  -- unexpected exception escapes the render pipeline (e.g. from draw or folds).
-  revert.suppress(bufnr)
-  local _render_ok, _render_err = pcall(function()
-    -- ── 2. Lazy index init ─────────────────────────────────────────────────────
-    -- If the index appears empty and we have a workspace, kick off a one-shot
-    -- vault walk.  The _lazy_init_started guard prevents re-triggering the walk
-    -- on the recursive render call that fires from the completion callback —
-    -- which would otherwise loop forever when the vault has zero tasks.
-    do
-      local any = index.tasks_in(nil)()
-      if any == nil and workspace and not _lazy_init_started[workspace] then
-        _lazy_init_started[workspace] = true
-        -- Start async walk; re-render once complete (non-blocking).
-        index.refresh_all(workspace, function()
-          vim.schedule(function()
-            M.render_buffer(bufnr, workspace)
+  -- Plugin mutations are not user edits — suppress eventignore signals, keep
+  -- them out of undo, and (if clean_baseline allows) clear `modified` after.
+  hygiene.with_clean_buffer(bufnr, function()
+    -- Suppress on_lines callbacks for the duration of this render so our own
+    -- buffer mutations don't trigger spurious reverts.  Placed after the cheap
+    -- guard checks so we only touch the suppress counter when we will actually
+    -- mutate the buffer.
+    --
+    -- The pcall wrapper below guarantees unsuppress() is called even if an
+    -- unexpected exception escapes the render pipeline (e.g. from draw or folds).
+    revert.suppress(bufnr)
+    local _render_ok, _render_err = pcall(function()
+      -- ── 2. Lazy index init ─────────────────────────────────────────────────────
+      -- If the index appears empty and we have a workspace, kick off a one-shot
+      -- vault walk.  The _lazy_init_started guard prevents re-triggering the walk
+      -- on the recursive render call that fires from the completion callback —
+      -- which would otherwise loop forever when the vault has zero tasks.
+      do
+        local any = index.tasks_in(nil)()
+        if any == nil and workspace and not _lazy_init_started[workspace] then
+          _lazy_init_started[workspace] = true
+          -- Start async walk; re-render once complete (non-blocking).
+          index.refresh_all(workspace, function()
+            vim.schedule(function()
+              M.render_buffer(bufnr, workspace)
+            end)
           end)
+          -- Fall through: render immediately with empty results so the user sees
+          -- "0 results" rather than a blank block.
+        end
+      end
+
+      -- ── 3. Clear previous render ───────────────────────────────────────────────
+      -- Clear draw state (extmarks + inserted lines), drop our own state, and
+      -- remove any reverse-index associations for this buffer.
+      M.clear_buffer(bufnr)
+
+      -- ── 4. Find all blocks (positions in now-cleared buffer) ───────────────────
+      local blocks = M.find_blocks(bufnr)
+      if #blocks == 0 then
+        -- No complete (paired) blocks found (e.g. unclosed fence); bail out.
+        -- unsuppress() is called by the pcall wrapper below.
+        return
+      end
+
+      -- ── 5. Render each block ───────────────────────────────────────────────────
+      local new_buf_state = {}
+      -- `offset` tracks cumulative task lines inserted by prior blocks so we can
+      -- adjust fence positions for subsequent blocks.
+      local offset = 0
+      -- Accumulate fold descriptors { fence_first, fence_last } for post-render fold pass.
+      -- Folds cover ONLY the fence lines; rendered task lines stay visible below.
+      local fold_blocks = {}
+
+      for _, block in ipairs(blocks) do
+        -- Convert 1-indexed block positions to 0-indexed, adjusted by offset.
+        local fence_first = block.fence_start - 1 + offset
+        local fence_last = block.fence_end - 1 + offset
+        local fence_range = { fence_first, fence_last }
+
+        -- Extract query text from the adjusted buffer positions.
+        local query_text = ""
+        if block.query_start <= block.query_end then
+          local q_lines =
+            vim.api.nvim_buf_get_lines(bufnr, block.query_start - 1 + offset, block.query_end - 1 + offset + 1, false)
+          query_text = table.concat(q_lines, "\n")
+        end
+
+        -- Run pipeline; catch any Lua exceptions.
+        local layout_lines
+        local ok, err = pcall(function()
+          local ast = query_parse.parse(query_text)
+          local result = query_run.run(ast, index)
+          layout_lines = layout_mod.layout(result)
         end)
-        -- Fall through: render immediately with empty results so the user sees
-        -- "0 results" rather than a blank block.
-      end
-    end
 
-    -- ── 3. Clear previous render ───────────────────────────────────────────────
-    -- Clear draw state (extmarks + inserted lines), drop our own state, and
-    -- remove any reverse-index associations for this buffer.
-    M.clear_buffer(bufnr)
-
-    -- ── 4. Find all blocks (positions in now-cleared buffer) ───────────────────
-    local blocks = M.find_blocks(bufnr)
-    if #blocks == 0 then
-      -- No complete (paired) blocks found (e.g. unclosed fence); bail out.
-      -- unsuppress() is called by the pcall wrapper below.
-      return
-    end
-
-    -- ── 5. Render each block ───────────────────────────────────────────────────
-    local new_buf_state = {}
-    -- `offset` tracks cumulative task lines inserted by prior blocks so we can
-    -- adjust fence positions for subsequent blocks.
-    local offset = 0
-    -- Accumulate fold descriptors { fence_first, region_end } for post-render fold pass.
-    local fold_blocks = {}
-
-    for _, block in ipairs(blocks) do
-      -- Convert 1-indexed block positions to 0-indexed, adjusted by offset.
-      local fence_first = block.fence_start - 1 + offset
-      local fence_last = block.fence_end - 1 + offset
-      local fence_range = { fence_first, fence_last }
-
-      -- Extract query text from the adjusted buffer positions.
-      local query_text = ""
-      if block.query_start <= block.query_end then
-        local q_lines =
-          vim.api.nvim_buf_get_lines(bufnr, block.query_start - 1 + offset, block.query_end - 1 + offset + 1, false)
-        query_text = table.concat(q_lines, "\n")
-      end
-
-      -- Run pipeline; catch any Lua exceptions.
-      local layout_lines
-      local ok, err = pcall(function()
-        local ast = query_parse.parse(query_text)
-        local result = query_run.run(ast, index)
-        layout_lines = layout_mod.layout(result)
-      end)
-
-      if not ok then
-        -- Emit a single label line with the error message.
-        local msg = type(err) == "string" and err or tostring(err)
-        layout_lines = {
-          {
-            kind = "label",
-            text = "▶ tasks · INTERNAL ERROR: " .. msg,
-            src_path = nil,
-            src_line = nil,
-            src_hash = nil,
-            indent = "",
-          },
-        }
-      end
-
-      -- Draw the block.
-      draw.draw(bufnr, fence_range, layout_lines)
-
-      -- Count tasks inserted for the offset update and result count cache.
-      local n_tasks = 0
-      for _, ll in ipairs(layout_lines) do
-        if ll.kind == "task" then
-          n_tasks = n_tasks + 1
+        if not ok then
+          -- Emit a single label line with the error message.
+          local msg = type(err) == "string" and err or tostring(err)
+          layout_lines = {
+            {
+              kind = "label",
+              text = "▶ tasks · INTERNAL ERROR: " .. msg,
+              src_path = nil,
+              src_line = nil,
+              src_hash = nil,
+              indent = "",
+            },
+          }
         end
-      end
 
-      -- Cache result count so the foldtext function can report it without re-running.
-      foldtext_mod.set_result_count(bufnr, fence_first, n_tasks)
+        -- Draw the block.
+        draw.draw(bufnr, fence_range, layout_lines)
 
-      -- Build per-block orchestrator state from draw's recorded state.
-      local block_state_map = draw.render_state(bufnr)
-      local block_draw_state = block_state_map and block_state_map[fence_first]
-
-      -- Build line_map: lnum (0-indexed) → src metadata.
-      local line_map = {}
-      if block_draw_state and block_draw_state.em_map then
-        for _, meta in pairs(block_draw_state.em_map) do
-          -- em_map keys are extmark IDs; line numbers are recovered via is_render_line.
-          -- Store by iterating inserted_range if available.
-          _ = meta -- used below via is_render_line; stored in draw state
-        end
-      end
-      -- Populate line_map from inserted_range + layout_lines task order.
-      if block_draw_state and block_draw_state.inserted_range then
-        local insert_start = block_draw_state.inserted_range[1]
-        local task_idx = 0
+        -- Count tasks inserted for the offset update and result count cache.
+        local n_tasks = 0
         for _, ll in ipairs(layout_lines) do
           if ll.kind == "task" then
-            local lnum = insert_start + task_idx
-            line_map[lnum] = {
-              src_path = ll.src_path,
-              src_line = ll.src_line,
-              src_hash = ll.src_hash,
-            }
-            task_idx = task_idx + 1
+            n_tasks = n_tasks + 1
+          end
+        end
+
+        -- Cache result count so the foldtext function can report it without re-running.
+        foldtext_mod.set_result_count(bufnr, fence_first, n_tasks)
+
+        -- Build per-block orchestrator state from draw's recorded state.
+        local block_state_map = draw.render_state(bufnr)
+        local block_draw_state = block_state_map and block_state_map[fence_first]
+
+        -- Build line_map: lnum (0-indexed) → src metadata.
+        local line_map = {}
+        if block_draw_state and block_draw_state.em_map then
+          for _, meta in pairs(block_draw_state.em_map) do
+            -- em_map keys are extmark IDs; line numbers are recovered via is_render_line.
+            -- Store by iterating inserted_range if available.
+            _ = meta -- used below via is_render_line; stored in draw state
+          end
+        end
+        -- Populate line_map from inserted_range + layout_lines task order.
+        if block_draw_state and block_draw_state.inserted_range then
+          local insert_start = block_draw_state.inserted_range[1]
+          local task_idx = 0
+          for _, ll in ipairs(layout_lines) do
+            if ll.kind == "task" then
+              local lnum = insert_start + task_idx
+              line_map[lnum] = {
+                src_path = ll.src_path,
+                src_line = ll.src_line,
+                src_hash = ll.src_hash,
+              }
+              task_idx = task_idx + 1
+            end
+          end
+        end
+
+        -- Collect task extmark IDs.
+        local extmark_ids = {}
+        if block_draw_state and block_draw_state.em_map then
+          for eid in pairs(block_draw_state.em_map) do
+            extmark_ids[#extmark_ids + 1] = eid
+          end
+        end
+
+        -- Fold range covers only the fence lines so rendered tasks remain visible
+        -- below the collapsed query (AC1).
+        fold_blocks[#fold_blocks + 1] = { fence_first = fence_first, fence_last = fence_last }
+
+        new_buf_state[#new_buf_state + 1] = {
+          block_range = { block.fence_start, block.fence_end },
+          fence_first = fence_first, -- 0-indexed rendered fence row (stale if user edits between renders)
+          -- managed_fence_id is the managed-NS extmark that Neovim auto-tracks to
+          -- the live fence position even after source-line insertions/deletions.
+          managed_fence_id = block_draw_state and block_draw_state.managed_fence_id or nil,
+          render_range = block_draw_state and block_draw_state.inserted_range or nil,
+          extmark_ids = extmark_ids,
+          line_map = line_map,
+        }
+
+        offset = offset + n_tasks
+      end
+
+      M._buffer_state[bufnr] = new_buf_state
+
+      -- ── 6. Apply manual folds for all rendered blocks ──────────────────────────
+      -- Each block is folded across its fence lines only; rendered tasks stay
+      -- visible underneath the collapsed fold.  setup_window() is called inside
+      -- apply_folds for each window.
+      -- Skip folding when default_folded = false: render but leave folds open.
+      if M._opts.default_folded ~= false then
+        folds_mod.apply_folds(bufnr, fold_blocks)
+      end
+
+      -- ── 7. Update reverse index ────────────────────────────────────────────────
+      -- Collect the unique set of source paths referenced by this render so
+      -- index.reverse_index(path) can return this buffer.
+      local paths_set = {}
+      for _, block_state in ipairs(new_buf_state) do
+        for _, meta in pairs(block_state.line_map) do
+          if meta.src_path then
+            paths_set[meta.src_path] = true
           end
         end
       end
+      index.set_render_paths(bufnr, paths_set)
 
-      -- Collect task extmark IDs.
-      local extmark_ids = {}
-      if block_draw_state and block_draw_state.em_map then
-        for eid in pairs(block_draw_state.em_map) do
-          extmark_ids[#extmark_ids + 1] = eid
-        end
-      end
+      -- ── 8. Attach read-only revert listener (idempotent) ──────────────────────
+      -- Must be called AFTER managed regions are established so the listener has
+      -- valid region extmarks to check against.  Updates the stored workspace on
+      -- subsequent calls so rerender_buffer always uses the current workspace.
+      --
+      -- Pass a closure over `M` (the real module table) as the render function.
+      -- This ensures do_revert always calls the real implementation even when a
+      -- test has replaced package.loaded["obsidian-tasks.render.init"] with a mock.
+      -- render_buffer (not rerender_buffer) is used here: do_revert performs its
+      -- own snapshot-based line removal before calling this function, so the
+      -- fold-state-preserving rerender_buffer path is not needed.
+      revert.attach(bufnr, workspace, function(b, w)
+        M.render_buffer(b, w)
+      end)
+    end) -- end pcall wrapper
 
-      -- Determine the end of the managed region (last task line or closing fence).
-      local region_end
-      if block_draw_state and block_draw_state.inserted_range then
-        region_end = block_draw_state.inserted_range[2]
-      else
-        region_end = fence_last
-      end
-      fold_blocks[#fold_blocks + 1] = { fence_first = fence_first, region_end = region_end }
+    -- Allow on_lines callbacks again now that render is complete.
+    -- Called unconditionally so the counter stays balanced even if the render
+    -- pipeline threw an unexpected exception.
+    revert.unsuppress(bufnr)
 
-      new_buf_state[#new_buf_state + 1] = {
-        block_range = { block.fence_start, block.fence_end },
-        fence_first = fence_first, -- 0-indexed rendered fence row (stale if user edits between renders)
-        -- managed_fence_id is the managed-NS extmark that Neovim auto-tracks to
-        -- the live fence position even after source-line insertions/deletions.
-        managed_fence_id = block_draw_state and block_draw_state.managed_fence_id or nil,
-        render_range = block_draw_state and block_draw_state.inserted_range or nil,
-        extmark_ids = extmark_ids,
-        line_map = line_map,
-      }
-
-      offset = offset + n_tasks
+    if not _render_ok then
+      require("obsidian-tasks.log").warn("render_buffer error: " .. tostring(_render_err))
     end
+  end) -- end with_clean_buffer
 
-    M._buffer_state[bufnr] = new_buf_state
-
-    -- ── 6. Apply manual folds for all rendered blocks ──────────────────────────
-    -- Each block is folded from its opening fence through the end of its managed
-    -- region.  setup_window() is called inside apply_folds for each window.
-    -- Skip folding when default_folded = false: render but leave folds open.
-    if M._opts.default_folded ~= false then
-      folds_mod.apply_folds(bufnr, fold_blocks)
-    end
-
-    -- ── 7. Update reverse index ────────────────────────────────────────────────
-    -- Collect the unique set of source paths referenced by this render so
-    -- index.reverse_index(path) can return this buffer.
-    local paths_set = {}
-    for _, block_state in ipairs(new_buf_state) do
-      for _, meta in pairs(block_state.line_map) do
-        if meta.src_path then
-          paths_set[meta.src_path] = true
-        end
-      end
-    end
-    index.set_render_paths(bufnr, paths_set)
-
-    -- ── 8. Attach read-only revert listener (idempotent) ──────────────────────
-    -- Must be called AFTER managed regions are established so the listener has
-    -- valid region extmarks to check against.  Updates the stored workspace on
-    -- subsequent calls so rerender_buffer always uses the current workspace.
-    --
-    -- Pass a closure over `M` (the real module table) as the render function.
-    -- This ensures do_revert always calls the real implementation even when a
-    -- test has replaced package.loaded["obsidian-tasks.render.init"] with a mock.
-    -- render_buffer (not rerender_buffer) is used here: do_revert performs its
-    -- own snapshot-based line removal before calling this function, so the
-    -- fold-state-preserving rerender_buffer path is not needed.
-    revert.attach(bufnr, workspace, function(b, w)
-      M.render_buffer(b, w)
-    end)
-  end) -- end pcall wrapper
-
-  -- Allow on_lines callbacks again now that render is complete.
-  -- Called unconditionally so the counter stays balanced even if the render
-  -- pipeline threw an unexpected exception.
-  revert.unsuppress(bufnr)
-
-  if not _render_ok then
-    require("obsidian-tasks.log").warn("render_buffer error: " .. tostring(_render_err))
-  end
+  -- After a successful (or partial) render the dashboard has no pending user
+  -- edits we don't already know about: the only mutations were ours.
+  hygiene.mark_clean(bufnr)
 end
 
 --- Refresh a buffer: clear all renders then re-render from scratch.
@@ -495,17 +502,21 @@ function M.clear_buffer(bufnr)
   -- does not detect managed-region row deletions as user edits and schedule a
   -- spurious revert.
   local revert = require("obsidian-tasks.render.revert")
-  revert.suppress(bufnr)
+  local hygiene = require("obsidian-tasks.render.hygiene")
 
-  local draw = require("obsidian-tasks.render.draw")
-  draw.clear(bufnr)
-  M._buffer_state[bufnr] = nil
-  -- Drop foldtext result-count cache for this buffer.
-  require("obsidian-tasks.render.foldtext").clear_buffer(bufnr)
-  -- Keep reverse index consistent: bufnr no longer has any active render.
-  require("obsidian-tasks.index").clear_render_paths(bufnr)
+  hygiene.with_clean_buffer(bufnr, function()
+    revert.suppress(bufnr)
 
-  revert.unsuppress(bufnr)
+    local draw = require("obsidian-tasks.render.draw")
+    draw.clear(bufnr)
+    M._buffer_state[bufnr] = nil
+    -- Drop foldtext result-count cache for this buffer.
+    require("obsidian-tasks.render.foldtext").clear_buffer(bufnr)
+    -- Keep reverse index consistent: bufnr no longer has any active render.
+    require("obsidian-tasks.index").clear_render_paths(bufnr)
+
+    revert.unsuppress(bufnr)
+  end)
 end
 
 return M

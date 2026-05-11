@@ -146,6 +146,7 @@ function M.setup(opts)
       local bufnr = ev.buf
       local render = require("obsidian-tasks.render")
       render.clear_buffer(bufnr)
+      require("obsidian-tasks.render.hygiene")._cleanup(bufnr)
     end,
   })
 end

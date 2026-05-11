@@ -152,6 +152,10 @@ T["revert: edit on rendered task line reverts to canonical text"] = function()
   MiniTest.expect.equality(final ~= nil and final:find("My task") ~= nil, true)
   eq(revert._debug_state(bufnr).scheduled, false)
 
+  -- After a revert the buffer text matches canonical and the plugin owns all
+  -- mutations, so the modified flag must be clear.  (Buffer hygiene contract.)
+  eq(vim.bo[bufnr].modified, false)
+
   render.clear_buffer(bufnr)
   restore()
   revert._cleanup(bufnr)

@@ -116,14 +116,18 @@ each block in a **manual fold** so the dashboard stays compact.
 
 ### Default-folded layout
 
-With `default_folded = true` (the default), every query block opens collapsed:
+With `default_folded = true` (the default), every query block opens with its fence lines
+collapsed into a one-line summary; rendered task lines remain visible below:
 
 ```
 📋 not done  (3)
+- [ ] Task A 📅 2026-05-12 [[note-a]]
+- [ ] Task B 📅 2026-05-13 [[note-b]]
+- [ ] Task C 📅 2026-05-14 [[note-c]]
 ```
 
-The foldtext shows a summary of the query filter and the result count. Expand a fold to
-see the rendered task lines:
+The foldtext shows a summary of the query filter and the result count. Expand the fold to
+edit the underlying query:
 
 | Key         | Action                                   |
 | ----------- | ---------------------------------------- |

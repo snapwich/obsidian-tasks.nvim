@@ -105,6 +105,8 @@ do_revert = function(bufnr)
     return
   end
 
+  local hygiene = require("obsidian-tasks.render.hygiene")
+
   -- Capture cursor position before re-render.
   local wins = vim.fn.win_findbuf(bufnr)
   local cursor_save = nil
@@ -116,51 +118,61 @@ do_revert = function(bufnr)
   -- <u> undoes the user's original edit rather than the revert separately.
   pcall(vim.cmd, "silent! undojoin")
 
-  -- Suppress on_lines during our own buffer mutations to avoid recursion.
-  M.suppress(bufnr)
-  local ok, err = pcall(function()
-    -- Use the stored render function (injected by render/init.lua at attach
-    -- time) rather than a lazy require.  The lazy-require path is kept as a
-    -- fallback for callers (e.g. unit tests) that attach without providing a
-    -- render_fn.  Importantly, the stored closure captures the real module
-    -- table `M` of render/init.lua, so test mocks that replace
-    -- package.loaded["obsidian-tasks.render.init"] cannot intercept it.
-    local fn = _rerender_fn[bufnr]
-    if fn then
-      -- Two-step snapshot-based clear before re-render:
-      --
-      -- Step 1: Clear managed-namespace extmarks before removing lines.
-      -- When the user's edit spans the entire managed region (e.g. a paste that
-      -- replaces all rows including the task line), Neovim's extmark gravity
-      -- heuristics can displace the region extmark to a wrong row.  If we let
-      -- draw.clear() remove lines using the live extmark position it would delete
-      -- the wrong line (e.g. a prose row).  Clearing managed extmarks first makes
-      -- managed.all_regions() return {} during the subsequent render_buffer →
-      -- clear_buffer → draw.clear call, so draw.clear only cleans up draw-NS
-      -- extmarks without attempting any line removal.
-      managed.clear_buffer(bufnr)
+  -- Wrap plugin mutations: keep them out of TextChanged/undo/modified.
+  -- After a successful revert the managed rows are back to canonical, so the
+  -- user has no pending source-changing edit on the dashboard — mark_clean.
+  local ok, err
+  hygiene.with_clean_buffer(bufnr, function()
+    -- Suppress on_lines during our own buffer mutations to avoid recursion.
+    M.suppress(bufnr)
+    ok, err = pcall(function()
+      -- Use the stored render function (injected by render/init.lua at attach
+      -- time) rather than a lazy require.  The lazy-require path is kept as a
+      -- fallback for callers (e.g. unit tests) that attach without providing a
+      -- render_fn.  Importantly, the stored closure captures the real module
+      -- table `M` of render/init.lua, so test mocks that replace
+      -- package.loaded["obsidian-tasks.render.init"] cannot intercept it.
+      local fn = _rerender_fn[bufnr]
+      if fn then
+        -- Two-step snapshot-based clear before re-render:
+        --
+        -- Step 1: Clear managed-namespace extmarks before removing lines.
+        -- When the user's edit spans the entire managed region (e.g. a paste that
+        -- replaces all rows including the task line), Neovim's extmark gravity
+        -- heuristics can displace the region extmark to a wrong row.  If we let
+        -- draw.clear() remove lines using the live extmark position it would delete
+        -- the wrong line (e.g. a prose row).  Clearing managed extmarks first makes
+        -- managed.all_regions() return {} during the subsequent render_buffer →
+        -- clear_buffer → draw.clear call, so draw.clear only cleans up draw-NS
+        -- extmarks without attempting any line removal.
+        managed.clear_buffer(bufnr)
 
-      -- Step 2: Remove managed task lines using snapshot positions.
-      -- _region_snapshot holds the positions recorded at the last attach() call
-      -- (i.e. just after the previous render), which are the correct pre-edit
-      -- positions.  Remove from bottom to top so earlier indices stay valid.
-      local snap = _region_snapshot[bufnr]
-      if snap then
-        for i = #snap, 1, -1 do
-          vim.api.nvim_buf_set_lines(bufnr, snap[i][1], snap[i][2] + 1, false, {})
+        -- Step 2: Remove managed task lines using snapshot positions.
+        -- _region_snapshot holds the positions recorded at the last attach() call
+        -- (i.e. just after the previous render), which are the correct pre-edit
+        -- positions.  Remove from bottom to top so earlier indices stay valid.
+        local snap = _region_snapshot[bufnr]
+        if snap then
+          for i = #snap, 1, -1 do
+            vim.api.nvim_buf_set_lines(bufnr, snap[i][1], snap[i][2] + 1, false, {})
+          end
         end
-      end
 
-      -- Step 3: Re-render.  render_buffer calls clear_buffer internally; since
-      -- managed extmarks were cleared in step 1, draw.clear's line-removal step
-      -- is a no-op and only cleans up draw-NS extmarks and state tables.
-      fn(bufnr, _workspace[bufnr])
-    else
-      local render = require("obsidian-tasks.render.init")
-      render.rerender_buffer(bufnr, _workspace[bufnr])
-    end
+        -- Step 3: Re-render.  render_buffer calls clear_buffer internally; since
+        -- managed extmarks were cleared in step 1, draw.clear's line-removal step
+        -- is a no-op and only cleans up draw-NS extmarks and state tables.
+        fn(bufnr, _workspace[bufnr])
+      else
+        local render = require("obsidian-tasks.render.init")
+        render.rerender_buffer(bufnr, _workspace[bufnr])
+      end
+    end)
+    M.unsuppress(bufnr)
+
+    -- After the revert lands, the buffer text matches canonical — there are
+    -- no pending user changes outside what we've just written.
+    hygiene.mark_clean(bufnr)
   end)
-  M.unsuppress(bufnr)
 
   if not ok then
     require("obsidian-tasks.log").warn("revert: rerender_buffer error: " .. tostring(err))
@@ -212,6 +224,11 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
 
   if not touched then
     -- The edit did not touch any managed region (prose or query fence edit).
+    -- It is a real user edit, so the buffer now has pending unsaved content
+    -- outside what we wrote — subsequent plugin re-renders must NOT clear the
+    -- modified flag silently.
+    require("obsidian-tasks.render.hygiene").mark_dirty(bufnr)
+
     -- If lines were inserted or deleted, incrementally update the snapshot so
     -- future on_lines calls use correct positions (avoids the stale-snapshot
     -- false-negative when prose is inserted above the managed region).
