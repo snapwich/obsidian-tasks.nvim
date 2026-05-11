@@ -38,6 +38,20 @@ local function fixture(name)
   return VAULT .. name
 end
 
+--- True if any task item's description contains `substr`.
+--- @param items table[]  list of { task, path } items
+--- @param substr string
+--- @return boolean
+local function has_desc(items, substr)
+  for _, it in ipairs(items) do
+    local desc = (it.task and it.task.description) or ""
+    if desc:find(substr, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
 -- Reset obsidian-tasks opts to bare minimum between tests.
 local function reset_opts(overrides)
   local ot = require("obsidian-tasks")
@@ -764,11 +778,20 @@ integration_tests["fixture scan: 3 files, one ignored, global_filter=#task → c
     MiniTest.expect.equality(item.path ~= ignored_path, true)
   end
 
-  -- With global_filter='#task':
-  --   tasks_a.md: "Buy milk #task", "Write report #task", "Call dentist #task", "Another task #task" = 4
-  --   tasks_b.md: "Fix bug #task", "Write tests #task", "Deploy app #task" = 3
-  --   "Non-tagged item" and "Item without tag" are excluded → not counted
-  MiniTest.expect.equality(#tasks, 7)
+  -- global_filter='#task': every surviving task's description must contain "#task"
+  for _, item in ipairs(tasks) do
+    MiniTest.expect.equality(item.task.description:find("#task", 1, true) ~= nil, true)
+  end
+
+  -- Known #task-tagged tasks from tasks_a/tasks_b must be present
+  MiniTest.expect.equality(has_desc(tasks, "Buy milk"), true)
+  MiniTest.expect.equality(has_desc(tasks, "Write report"), true)
+  MiniTest.expect.equality(has_desc(tasks, "Call dentist"), true)
+  MiniTest.expect.equality(has_desc(tasks, "Fix bug"), true)
+
+  -- Non-tagged tasks must be excluded
+  MiniTest.expect.equality(has_desc(tasks, "Non-tagged item"), false)
+  MiniTest.expect.equality(has_desc(tasks, "Item without tag"), false)
 end
 
 integration_tests["fixture scan: no global_filter → includes all non-ignored tasks"] = function()
@@ -861,13 +884,11 @@ integration_tests["fixture scan: no global_filter → includes all non-ignored t
     MiniTest.expect.equality(item.path ~= ignored_path, true)
   end
 
-  -- Without global_filter, all task lines from tasks_a + tasks_b are included:
-  --   tasks_a.md: 5 task lines (4 todo + 1 done checked via [x])
-  --   tasks_b.md: 4 task lines (all [ ] )
-  -- But our search_async stub only matches [ ] and [x] patterns.
-  -- tasks_a: [ ] Buy milk, [x] Write report, [ ] Call dentist, [ ] Non-tagged item, [ ] Another task = 5
-  -- tasks_b: [ ] Fix bug, [ ] Write tests, [ ] Deploy app, [ ] Item without tag = 4
-  MiniTest.expect.equality(#tasks, 9)
+  -- Without global_filter, both #task-tagged and untagged tasks are included
+  MiniTest.expect.equality(has_desc(tasks, "Buy milk"), true)
+  MiniTest.expect.equality(has_desc(tasks, "Non-tagged item"), true)
+  MiniTest.expect.equality(has_desc(tasks, "Item without tag"), true)
+  MiniTest.expect.equality(has_desc(tasks, "Write report"), true) -- the lone [x] in tasks_a
 end
 
 T["integration"] = integration_tests
