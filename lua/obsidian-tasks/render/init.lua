@@ -336,7 +336,16 @@ function M.render_buffer(bufnr, workspace)
     -- Must be called AFTER managed regions are established so the listener has
     -- valid region extmarks to check against.  Updates the stored workspace on
     -- subsequent calls so rerender_buffer always uses the current workspace.
-    revert.attach(bufnr, workspace)
+    --
+    -- Pass a closure over `M` (the real module table) as the render function.
+    -- This ensures do_revert always calls the real implementation even when a
+    -- test has replaced package.loaded["obsidian-tasks.render.init"] with a mock.
+    -- render_buffer (not rerender_buffer) is used here: do_revert performs its
+    -- own snapshot-based line removal before calling this function, so the
+    -- fold-state-preserving rerender_buffer path is not needed.
+    revert.attach(bufnr, workspace, function(b, w)
+      M.render_buffer(b, w)
+    end)
   end) -- end pcall wrapper
 
   -- Allow on_lines callbacks again now that render is complete.

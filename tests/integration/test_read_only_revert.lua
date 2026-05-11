@@ -8,10 +8,21 @@
 --   • Edit inside query fence: no revert.
 --   • Plugin-initiated mutations (render/rerender) do not trigger spurious reverts.
 --   • Suppress reference counting is correct across nested render calls.
+--   • undojoin: pressing u after a revert does not reveal the corrupted state.
+--   • Sequential reverts: the debounce flag resets between cycles.
+--   • Snapshot adjustment: prose insertions above the managed region are tracked.
 --
 -- Uses a stub index (no vault walk required).
 -- render.configure({default_folded=false}) keeps folds out of the picture so
 -- tests can rely on stable row numbers without needing a window open.
+--
+-- NOTE on async vs synchronous:
+--   mini.test runs each case inside a vim.schedule callback.  When a case calls
+--   vim.wait(N, cond_fn), other queued case-callbacks fire and steal the event
+--   loop, so assertions after the wait are never reached — the test silently
+--   "passes" as a no-op.  All revert assertions therefore use
+--   revert._flush_pending(bufnr), which runs the revert synchronously without
+--   yielding to the event loop, making every assertion reachable and deterministic.
 
 local T = MiniTest.new_set()
 
@@ -91,20 +102,6 @@ local function install_zero_task_stub()
   end
 end
 
---- Flush pending vim.schedule callbacks by waiting up to max_ms.
---- Returns true if condition is satisfied within the timeout.
---- @param max_ms  integer
---- @param cond_fn fun(): boolean
---- @return boolean
-local function flush(max_ms, cond_fn)
-  return vim.wait(max_ms, cond_fn, 10)
-end
-
---- Flush pending callbacks unconditionally (no condition to check).
-local function flush_events(ms)
-  vim.wait(ms or 100)
-end
-
 --- Get line at 0-indexed row in bufnr.
 local function get_line(bufnr, row0)
   local lines = vim.api.nvim_buf_get_lines(bufnr, row0, row0 + 1, false)
@@ -116,7 +113,7 @@ local function set_line(bufnr, row0, text)
   vim.api.nvim_buf_set_lines(bufnr, row0, row0 + 1, false, { text })
 end
 
--- ── T1: typing on a rendered task line reverts after one tick ─────────────────
+-- ── T1: typing on a rendered task line reverts synchronously ──────────────────
 
 T["revert: edit on rendered task line reverts to canonical text"] = function()
   render.configure({ default_folded = false })
@@ -142,21 +139,18 @@ T["revert: edit on rendered task line reverts to canonical text"] = function()
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical:find("My task") ~= nil, true)
 
-  -- Corrupt the task line.
+  -- Corrupt the task line.  on_lines fires synchronously and sets _scheduled.
   set_line(bufnr, task_row, "CORRUPTED")
   eq(get_line(bufnr, task_row), "CORRUPTED")
+  eq(revert._debug_state(bufnr).scheduled, true)
 
-  -- Wait for the scheduled revert to fire and re-render.
-  local reverted = flush(500, function()
-    local cur = get_line(bufnr, task_row)
-    return cur ~= nil and cur ~= "CORRUPTED"
-  end)
+  -- Run the revert synchronously (bypasses vim.schedule so assertions are reachable).
+  revert._flush_pending(bufnr)
 
-  MiniTest.expect.equality(reverted, true)
-
-  -- Line should be back to the canonical task text.
+  -- Line must be back to the canonical task text.
   local final = get_line(bufnr, task_row)
   MiniTest.expect.equality(final ~= nil and final:find("My task") ~= nil, true)
+  eq(revert._debug_state(bufnr).scheduled, false)
 
   render.clear_buffer(bufnr)
   restore()
@@ -179,16 +173,12 @@ T["revert: edit in prose above query block is NOT reverted"] = function()
 
   render.render_buffer(bufnr, nil)
 
-  -- Row 0 is prose (not managed).
+  -- Row 0 is prose (not managed).  on_lines fires synchronously.
   set_line(bufnr, 0, "EDITED PROSE")
 
-  -- Wait; the prose edit should persist — no revert scheduled.
-  flush_events(200)
-
-  eq(get_line(bufnr, 0), "EDITED PROSE")
-
-  -- Revert state: no pending revert.
+  -- No revert must be scheduled (checked immediately — on_lines is synchronous).
   eq(revert._debug_state(bufnr).scheduled, false)
+  eq(get_line(bufnr, 0), "EDITED PROSE")
 
   render.clear_buffer(bufnr)
   restore()
@@ -213,11 +203,9 @@ T["revert: edit inside query fence is NOT reverted"] = function()
   -- Row 1 is the query line (inside fence, not in managed region).
   set_line(bufnr, 1, "EDITED QUERY")
 
-  flush_events(200)
-
-  -- Query edit should persist.
-  eq(get_line(bufnr, 1), "EDITED QUERY")
+  -- No revert scheduled.
   eq(revert._debug_state(bufnr).scheduled, false)
+  eq(get_line(bufnr, 1), "EDITED QUERY")
 
   render.clear_buffer(bufnr)
   restore()
@@ -240,13 +228,11 @@ T["revert: rerender_buffer does not schedule spurious revert"] = function()
   render.render_buffer(bufnr, nil)
 
   -- Explicitly re-render (simulates BufWritePost handler).
+  -- The suppress wrapping in render/init.lua must prevent on_lines from
+  -- seeing the rerender's buffer mutations.
   render.rerender_buffer(bufnr, nil)
 
-  -- No spurious revert should be scheduled.
-  eq(revert._debug_state(bufnr).scheduled, false)
-
-  -- Also flush to make sure nothing fires later.
-  flush_events(100)
+  -- No spurious revert must be scheduled.
   eq(revert._debug_state(bufnr).scheduled, false)
 
   render.clear_buffer(bufnr)
@@ -390,30 +376,28 @@ T["revert: paste straddling boundary — managed rows revert, prose rows stay"] 
     "CORRUPTED TASK",
   })
 
-  -- Wait for revert: the corrupted task row should restore to canonical text.
-  -- After rerender: line count same, task line restored.
-  local reverted = flush(500, function()
-    local all = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    -- Scan all lines for the corrupted text.
-    for _, l in ipairs(all) do
-      if l == "CORRUPTED TASK" then
-        return false
-      end
+  -- on_lines fires synchronously: the paste touched the managed row.
+  eq(revert._debug_state(bufnr).scheduled, true)
+
+  -- Run the revert synchronously.
+  revert._flush_pending(bufnr)
+
+  -- "CORRUPTED TASK" must be gone.
+  local all = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local corrupted_found = false
+  local new_prose_found = false
+  for _, l in ipairs(all) do
+    if l == "CORRUPTED TASK" then
+      corrupted_found = true
     end
-    return true
-  end)
-
-  MiniTest.expect.equality(reverted, true)
-
-  -- The new prose line should still be in the buffer after revert.
-  local found_new_prose = false
-  for _, l in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
     if l == "NEW PROSE LINE" then
-      found_new_prose = true
-      break
+      new_prose_found = true
     end
   end
-  MiniTest.expect.equality(found_new_prose, true)
+  MiniTest.expect.equality(corrupted_found, false)
+
+  -- The new prose line should still be in the buffer after revert.
+  MiniTest.expect.equality(new_prose_found, true)
 
   render.clear_buffer(bufnr)
   restore()
@@ -422,10 +406,9 @@ T["revert: paste straddling boundary — managed rows revert, prose rows stay"] 
 end
 
 -- ── T8: sequential reverts — debounce flag resets between cycles ─────────────
--- Regression guard: removing `_scheduled[bufnr] = nil` inside the vim.schedule
--- callback would cause the second edit to silently skip the revert.
--- The flush(N, cond_fn) helper drains scheduled callbacks (unlike vim.wait(N)
--- with no condition), so both cycles are fully exercised.
+-- Regression guard for mutation: removing `_scheduled[bufnr] = nil` inside
+-- do_revert would cause every second edit to silently skip the revert.
+-- Two synchronous _flush_pending cycles catch this without async waits.
 
 T["revert: two sequential edit cycles both revert (debounce flag resets)"] = function()
   render.configure({ default_folded = false })
@@ -445,25 +428,19 @@ T["revert: two sequential edit cycles both revert (debounce flag resets)"] = fun
 
   -- First corruption and revert cycle.
   set_line(bufnr, task_row, "CORRUPTED 1")
-  local reverted1 = flush(500, function()
-    local cur = get_line(bufnr, task_row)
-    return cur ~= nil and cur ~= "CORRUPTED 1"
-  end)
-  MiniTest.expect.equality(reverted1, true)
+  eq(revert._debug_state(bufnr).scheduled, true)
+  revert._flush_pending(bufnr)
+  eq(revert._debug_state(bufnr).scheduled, false)
 
-  -- Confirm task text restored after first cycle.
   local mid = get_line(bufnr, task_row)
   MiniTest.expect.equality(mid ~= nil and mid:find("Cycle task") ~= nil, true)
 
-  -- Debounce flag must have reset; second corruption must also revert.
+  -- Second corruption: debounce flag must have been reset by _flush_pending.
+  -- Without the `_scheduled[bufnr] = nil` reset in do_revert this would no-op.
   set_line(bufnr, task_row, "CORRUPTED 2")
-  eq(get_line(bufnr, task_row), "CORRUPTED 2")
-
-  local reverted2 = flush(500, function()
-    local cur = get_line(bufnr, task_row)
-    return cur ~= nil and cur ~= "CORRUPTED 2"
-  end)
-  MiniTest.expect.equality(reverted2, true)
+  eq(revert._debug_state(bufnr).scheduled, true)
+  revert._flush_pending(bufnr)
+  eq(revert._debug_state(bufnr).scheduled, false)
 
   local final = get_line(bufnr, task_row)
   MiniTest.expect.equality(final ~= nil and final:find("Cycle task") ~= nil, true)
@@ -475,9 +452,9 @@ T["revert: two sequential edit cycles both revert (debounce flag resets)"] = fun
 end
 
 -- ── T9: snapshot adjusts after prose insertion above managed region ───────────
--- Regression guard: removing the snapshot-shift block at revert.lua:121-134
--- would cause on_lines to miss edits on the shifted managed rows, silently
--- letting corruption persist.
+-- Regression guard for mutation: removing the snapshot-shift block in revert.lua
+-- would cause on_lines to use stale (pre-shift) positions and miss edits on the
+-- managed row after it has been displaced by a prose insertion.
 
 T["revert: snapshot shifts after prose insertion above managed region"] = function()
   render.configure({ default_folded = false })
@@ -496,33 +473,25 @@ T["revert: snapshot shifts after prose insertion above managed region"] = functi
 
   render.render_buffer(bufnr, nil)
 
-  local lines_before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  MiniTest.expect.equality(#lines_before >= 4, true)
+  MiniTest.expect.equality(#vim.api.nvim_buf_get_lines(bufnr, 0, -1, false) >= 4, true)
   MiniTest.expect.equality(get_line(bufnr, 3):find("Shift task") ~= nil, true)
 
-  -- Insert a prose line at the top (row 0).  This is NOT in a managed region
-  -- so no revert fires, but the snapshot must shift so row 4 is now managed.
+  -- Insert a prose line at the top (row 0).  on_lines fires synchronously.
+  -- This is NOT in the managed region so no revert fires, but the snapshot
+  -- must shift so row 4 (not row 3) is now treated as managed.
   vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { "inserted prose" })
+  eq(revert._debug_state(bufnr).scheduled, false) -- prose edit, no revert
 
-  -- No revert should have been scheduled.
-  flush_events(150)
-  eq(revert._debug_state(bufnr).scheduled, false)
-
-  -- Task is now at row 4 (shifted down by the insertion).
+  -- Task is now at row 4 (shifted down by +1).
   local task_row_new = 4
-  local shifted_line = get_line(bufnr, task_row_new)
-  MiniTest.expect.equality(shifted_line ~= nil and shifted_line:find("Shift task") ~= nil, true)
+  MiniTest.expect.equality(get_line(bufnr, task_row_new):find("Shift task") ~= nil, true)
 
-  -- Corrupt the task at its new position.
+  -- Corrupt the task at its new (shifted) position.
   -- Without snapshot adjustment this would NOT trigger a revert.
   set_line(bufnr, task_row_new, "SNAPSHOT MISS")
+  eq(revert._debug_state(bufnr).scheduled, true) -- managed row touched
 
-  local reverted = flush(500, function()
-    local cur = get_line(bufnr, task_row_new)
-    return cur ~= nil and cur ~= "SNAPSHOT MISS"
-  end)
-
-  MiniTest.expect.equality(reverted, true)
+  revert._flush_pending(bufnr)
 
   local final = get_line(bufnr, task_row_new)
   MiniTest.expect.equality(final ~= nil and final:find("Shift task") ~= nil, true)
@@ -534,10 +503,10 @@ T["revert: snapshot shifts after prose insertion above managed region"] = functi
 end
 
 -- ── T10: undojoin — pressing u after revert skips the CORRUPTED state ─────────
--- Task acceptance criterion: pressing u after a managed-region revert should
--- NOT cycle through the corrupted intermediate state.  undojoin merges the
--- revert change with the user's preceding edit so pressing u undoes them as a
--- single unit, returning to the pre-corruption buffer state.
+-- Task acceptance criterion: pressing u after a managed-region revert must NOT
+-- cycle through the corrupted intermediate state.  undojoin merges the revert
+-- change with the user's preceding edit so pressing u undoes them as one unit,
+-- returning to the pre-corruption buffer state.
 
 T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] = function()
   render.configure({ default_folded = false })
@@ -549,7 +518,8 @@ T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] 
     "```",
   })
 
-  -- Open the buffer in a floating window so normal-mode undo works.
+  -- Open the buffer in a floating window (required for normal! u and for
+  -- undojoin to apply to the correct current buffer).
   local win = vim.api.nvim_open_win(bufnr, true, {
     relative = "editor",
     width = 80,
@@ -565,27 +535,22 @@ T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] 
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical ~= nil and canonical:find("Undo task") ~= nil, true)
 
-  -- Corrupt the managed row.
+  -- Corrupt the managed row.  bufnr is current (entered via open_win above).
   set_line(bufnr, task_row, "CORRUPTED")
+  eq(revert._debug_state(bufnr).scheduled, true)
 
-  -- Wait for the revert to fire (flush drains vim.schedule callbacks).
-  local reverted = flush(500, function()
-    local cur = get_line(bufnr, task_row)
-    return cur ~= nil and cur ~= "CORRUPTED"
-  end)
-  MiniTest.expect.equality(reverted, true)
+  -- Run the revert synchronously.  do_revert calls undojoin with bufnr current,
+  -- merging the revert into the user's preceding change.
+  revert._flush_pending(bufnr)
 
-  -- Buffer is back to canonical after revert.  Now press u.
-  -- With undojoin: the revert was merged with the user's corruption, so pressing
-  -- u undoes both in one step → returns to the pre-corruption state (canonical).
+  -- Buffer is back to canonical.  Now press u.
+  -- With undojoin: pressing u undoes the merged block (corruption + revert)
+  -- in one step → returns to the pre-corruption state (canonical task text).
   -- Without undojoin: u would undo only the revert → CORRUPTED would reappear.
   vim.api.nvim_set_current_win(win)
   vim.cmd("normal! u")
 
-  -- Allow any on_lines triggered by the undo to settle.
-  flush_events(100)
-
-  -- The CORRUPTED text must not be visible in the buffer at any row.
+  -- "CORRUPTED" must not be present anywhere in the buffer after undo.
   local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local corrupted_found = false
   for _, l in ipairs(buf_lines) do
