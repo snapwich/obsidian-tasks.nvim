@@ -79,7 +79,9 @@ end
 -- ── frontmatter ───────────────────────────────────────────────────────────────
 
 --- Parse the YAML frontmatter of a file at the given path.
---- obsidian.frontmatter.parse returns (ret, metadata, errors) where:
+--- obsidian.frontmatter.parse expects ONLY the YAML region (between `---`
+--- delimiters), not the full file. We slice that region here before calling.
+--- Returns (ret, metadata, errors) where:
 ---   ret      = validated/known keys (id, tags, aliases, ...)
 ---   metadata = all other user YAML keys
 ---   errors   = list of validation error strings
@@ -89,7 +91,6 @@ end
 --- @return table      errors list (empty on success; non-empty on parse or read error)
 function M.parse_frontmatter(path)
   check_guard()
-  -- Read file lines
   local lines = {}
   local ok, err_msg = pcall(function()
     local f = io.open(path, "r")
@@ -104,10 +105,20 @@ function M.parse_frontmatter(path)
   if not ok then
     return nil, { err_msg }
   end
+
+  if lines[1] ~= "---" then
+    return {}, {}
+  end
+  local fm_lines = {}
+  for i = 2, #lines do
+    if lines[i] == "---" then
+      break
+    end
+    fm_lines[#fm_lines + 1] = lines[i]
+  end
+
   local frontmatter = require("obsidian.frontmatter")
-  local ret, metadata, errors = frontmatter.parse(lines, path)
-  -- Merge known fields (ret) and user metadata into a single table.
-  -- ret takes precedence on key collision (validated values are preferred).
+  local ret, metadata, errors = frontmatter.parse(fm_lines, path)
   return vim.tbl_extend("force", metadata or {}, ret or {}), errors or {}
 end
 
