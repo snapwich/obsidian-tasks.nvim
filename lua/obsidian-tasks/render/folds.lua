@@ -113,6 +113,20 @@ function M.capture_fold_state(bufnr, fence_lnum)
   return state
 end
 
+--- Open the fold at fence_lnum_1 (1-indexed) in all windows displaying bufnr.
+--- Used by rerender_buffer to re-open folds that were open before a re-render.
+---
+--- @param bufnr       integer
+--- @param fence_lnum_1 integer  1-indexed line number of the opening fence
+function M.open_fold(bufnr, fence_lnum_1)
+  local wins = vim.fn.win_findbuf(bufnr)
+  for _, winid in ipairs(wins) do
+    vim.api.nvim_win_call(winid, function()
+      pcall(vim.cmd, fence_lnum_1 .. "foldopen")
+    end)
+  end
+end
+
 --- Restore fold state for a block after re-rendering.
 ---
 --- If the block was previously closed, re-apply the fold.  If it was open,

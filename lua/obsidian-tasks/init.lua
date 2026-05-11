@@ -14,6 +14,8 @@ function M.setup(opts)
   M.opts = config.merge(opts)
   -- Merge user status overrides so toggle/done/cancel respect custom statuses.
   require("obsidian-tasks.task.status").merge(M.opts.statuses)
+  -- Propagate opts to the render orchestrator (default_folded, etc.).
+  require("obsidian-tasks.render").configure(M.opts)
   -- Wire autocmds (BufReadPost / FocusGained / BufWritePost / BufDelete).
   require("obsidian-tasks.autocmds").setup(M.opts)
   -- Register :ObsidianTask dispatcher (replaces plugin/ stub).

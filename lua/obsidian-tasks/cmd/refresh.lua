@@ -35,7 +35,8 @@ function M.run(_args, _range)
   local bufnr = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(bufnr)
   local ws = safe_workspace_for_path(path)
-  render.refresh_buffer(bufnr, ws)
+  -- Use rerender_buffer to preserve fold states across the refresh.
+  render.rerender_buffer(bufnr, ws)
 end
 
 return M

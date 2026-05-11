@@ -12,6 +12,18 @@
 
 local M = {}
 
+-- ── Module-level opts ─────────────────────────────────────────────────────────
+-- Populated by M.configure(opts) called from init.setup().
+-- Default: default_folded=true mirrors the config.lua default.
+M._opts = { default_folded = true }
+
+--- Store plugin opts for use by render_buffer / rerender_buffer.
+--- Called from init.lua after opts are merged and validated.
+--- @param opts table  merged plugin opts (see config.lua)
+function M.configure(opts)
+  M._opts = opts or {}
+end
+
 -- ── Per-buffer orchestrator state ─────────────────────────────────────────────
 --
 --   M._buffer_state[bufnr] = {
@@ -271,6 +283,7 @@ function M.render_buffer(bufnr, workspace)
 
     new_buf_state[#new_buf_state + 1] = {
       block_range = { block.fence_start, block.fence_end },
+      fence_first = fence_first, -- actual 0-indexed fence row in the current buffer
       render_range = block_draw_state and block_draw_state.inserted_range or nil,
       extmark_ids = extmark_ids,
       line_map = line_map,
@@ -284,7 +297,10 @@ function M.render_buffer(bufnr, workspace)
   -- ── 6. Apply manual folds for all rendered blocks ──────────────────────────
   -- Each block is folded from its opening fence through the end of its managed
   -- region.  setup_window() is called inside apply_folds for each window.
-  folds_mod.apply_folds(bufnr, fold_blocks)
+  -- Skip folding when default_folded = false: render but leave folds open.
+  if M._opts.default_folded ~= false then
+    folds_mod.apply_folds(bufnr, fold_blocks)
+  end
 
   -- ── 7. Update reverse index ────────────────────────────────────────────────
   -- Collect the unique set of source paths referenced by this render so
@@ -307,6 +323,81 @@ end
 function M.refresh_buffer(bufnr, workspace)
   M.clear_buffer(bufnr)
   M.render_buffer(bufnr, workspace)
+end
+
+--- Re-render a buffer while preserving block fold states.
+---
+--- Used by BufWritePost and FocusGained handlers so that:
+---   • Existing blocks retain their open/closed state after re-render.
+---   • New blocks (not present in prior render) are folded per default_folded.
+---   • Deleted blocks (rendered lines removed by clear) are cleaned up.
+---
+--- Algorithm:
+---   1. Before clearing: snapshot the source-fence-row → fold-state map from
+---      the current _buffer_state (compensating for rendered lines so rows match
+---      the cleared buffer).
+---   2. Clear and re-render (render_buffer applies folds for all blocks when
+---      default_folded=true, or leaves them open when default_folded=false).
+---   3. For blocks whose old fold state was "open" AND render_buffer applied
+---      folds (default_folded=true), re-open those folds.
+---
+--- @param bufnr     integer
+--- @param workspace table?
+function M.rerender_buffer(bufnr, workspace)
+  local folds_mod = require("obsidian-tasks.render.folds")
+
+  -- ── 1. Snapshot fold states keyed by source-fence-row ─────────────────────
+  -- "source-fence-row" = the row the fence will be at in the cleared buffer
+  -- (i.e., after rendered task lines have been removed).
+  -- We compute it by subtracting the cumulative rendered-line count for all
+  -- prior blocks.  The result is the 1-indexed fence_start that find_blocks()
+  -- will return after the clear, matching block_range[1] in the new state.
+  local fold_states = {} -- source_fence_start (1-indexed) → "open"|"closed"
+
+  local old_buf_state = M._buffer_state[bufnr]
+  if old_buf_state then
+    local cumulative_rendered = 0
+    for _, block_state in ipairs(old_buf_state) do
+      local original_fence_start = block_state.block_range[1] -- 1-indexed (WITH rendered lines)
+      local source_fence_start = original_fence_start - cumulative_rendered -- 1-indexed (cleared buffer)
+
+      -- Capture fold state at the actual (current-buffer) fence row.
+      local actual_fence_row_0 = block_state.fence_first -- 0-indexed
+      fold_states[source_fence_start] = folds_mod.capture_fold_state(bufnr, actual_fence_row_0)
+
+      -- Advance cumulative rendered-line count.
+      if block_state.render_range then
+        cumulative_rendered = cumulative_rendered + (block_state.render_range[2] - block_state.render_range[1] + 1)
+      end
+    end
+  end
+
+  -- ── 2. Clear + re-render ───────────────────────────────────────────────────
+  -- render_buffer applies folds for ALL blocks if default_folded=true,
+  -- or leaves them open if default_folded=false.
+  M.clear_buffer(bufnr)
+  M.render_buffer(bufnr, workspace)
+
+  -- ── 3. Restore "open" fold states when default_folded=true ─────────────────
+  -- When default_folded=false, render_buffer leaves folds open — nothing to do.
+  -- When default_folded=true, render_buffer closes all folds; we re-open the
+  -- blocks that were open before.
+  if M._opts.default_folded ~= false then
+    local new_buf_state = M._buffer_state[bufnr]
+    if new_buf_state then
+      for _, new_block_state in ipairs(new_buf_state) do
+        local source_fence_start = new_block_state.block_range[1] -- 1-indexed (cleared buffer)
+        local old_state = fold_states[source_fence_start]
+        if old_state == "open" then
+          -- Block existed before and was open; re-open it.
+          -- fence_first is 0-indexed; :foldopen takes 1-indexed.
+          folds_mod.open_fold(bufnr, new_block_state.fence_first + 1)
+        end
+        -- old_state == "closed" → already closed by apply_folds (no action)
+        -- old_state == nil      → new block; apply_folds already closed it (default_folded)
+      end
+    end
+  end
 end
 
 --- Clear all renders for a buffer and drop orchestrator state.

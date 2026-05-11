@@ -81,6 +81,7 @@ function M.setup(opts)
 
   -- ── FocusGained ─────────────────────────────────────────────────────────────
   -- Refresh all visible vault md buffers that have an active render.
+  -- Uses rerender_buffer to preserve existing fold states across the re-render.
   vim.api.nvim_create_autocmd("FocusGained", {
     group = group,
     callback = function()
@@ -96,7 +97,7 @@ function M.setup(opts)
             local ws = safe_workspace_for_path(path)
             if ws ~= nil then
               seen[bufnr] = true
-              render.refresh_buffer(bufnr, ws)
+              render.rerender_buffer(bufnr, ws)
             end
           end
         end
@@ -105,7 +106,11 @@ function M.setup(opts)
   })
 
   -- ── BufWritePost ────────────────────────────────────────────────────────────
-  -- Refresh the buffer after a write when an active render exists.
+  -- Re-render the buffer after a write when an active render exists.
+  -- Uses rerender_buffer to implement block lifecycle:
+  --   • Existing blocks: re-rendered in place, fold state preserved.
+  --   • New blocks: rendered + folded per default_folded.
+  --   • Deleted blocks: cleaned up by clear_buffer inside rerender_buffer.
   --
   -- For dashboard buffers (acwrite), this event is fired manually by the
   -- BufWriteCmd handler in render/save.lua after writefile succeeds.
@@ -129,7 +134,7 @@ function M.setup(opts)
         return
       end
 
-      render.refresh_buffer(bufnr, ws)
+      render.rerender_buffer(bufnr, ws)
     end,
   })
 

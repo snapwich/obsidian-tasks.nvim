@@ -7,6 +7,7 @@ local M = {}
 M.defaults = {
   global_filter = nil,
   auto_render = true,
+  default_folded = true,
   watcher = true,
   watcher_debounce_ms = 300,
   done_date_format = "%Y-%m-%d",
@@ -34,6 +35,10 @@ local function check_field(key, value)
   elseif key == "auto_render" then
     if type(value) ~= "boolean" then
       error(("obsidian-tasks: 'auto_render' must be a boolean, got %s"):format(type(value)), 2)
+    end
+  elseif key == "default_folded" then
+    if type(value) ~= "boolean" then
+      error(("obsidian-tasks: 'default_folded' must be a boolean, got %s"):format(type(value)), 2)
     end
   elseif key == "watcher" then
     if type(value) ~= "boolean" then
@@ -93,6 +98,7 @@ end
 local KNOWN_KEYS = {
   global_filter = true,
   auto_render = true,
+  default_folded = true,
   watcher = true,
   watcher_debounce_ms = true,
   done_date_format = true,
