@@ -152,10 +152,20 @@ function M.setup(opts)
         index.refresh_file(path)
         for _, other_bufnr in ipairs(index.reverse_index(path)) do
           if other_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(other_bufnr) then
-            -- rerender_buffer (not refresh_buffer) preserves cursor + fold state
-            -- across the re-render so users don't get yanked to the top of the
-            -- query buffer when an unrelated source file gets saved.
-            render.rerender_buffer(other_bufnr, ws)
+            -- rerender_buffer preserves cursor + fold state for *visible*
+            -- buffers via win_findbuf-based save/restore.  Hidden buffers we
+            -- intentionally skip: clear+render on a buffer with no window in
+            -- scope mutates the buffer's stored cursor (it gets carried by
+            -- line removals during clear and never properly restored), so
+            -- when the user later switches back, neovim restores them to a
+            -- fold line instead of where they were.
+            --
+            -- The index has already been refreshed for `path` above, so the
+            -- next time the user enters the buffer they can `<leader>tr` to
+            -- pick up the fresh data without losing their cursor position.
+            if #vim.fn.win_findbuf(other_bufnr) > 0 then
+              render.rerender_buffer(other_bufnr, ws)
+            end
           end
         end
       end)

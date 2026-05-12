@@ -68,8 +68,12 @@ T["BufWritePost on source file triggers cross-buffer refresh via reverse_index"]
   end
   eq(rev_set[by_tag_bufnr], true)
 
-  -- ── 3. Open health.md (the file we'll write). ────────────────────────────
-  vim.cmd("noswapfile edit " .. vim.fn.fnameescape(health_path))
+  -- ── 3. Open health.md in a *split* so by-tag.md stays visible. ──────────
+  -- BufWritePost only propagates rerenders to buffers with a live window;
+  -- hidden buffers are intentionally skipped to avoid clear+render moving
+  -- the buffer's internal cursor to a fold line.  The split keeps by-tag.md
+  -- visible so the propagation path is exercised.
+  vim.cmd("noswapfile split " .. vim.fn.fnameescape(health_path))
   local health_bufnr = vim.api.nvim_get_current_buf()
 
   -- ── 4. Spy on render.rerender_buffer — the function our BufWritePost path
