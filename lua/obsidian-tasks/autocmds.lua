@@ -106,11 +106,18 @@ function M.setup(opts)
   })
 
   -- ── BufWritePost ────────────────────────────────────────────────────────────
-  -- Re-render the buffer after a write when an active render exists.
-  -- Uses rerender_buffer to implement block lifecycle:
-  --   • Existing blocks: re-rendered in place, fold state preserved.
-  --   • New blocks: rendered + folded per default_folded.
-  --   • Deleted blocks: cleaned up by clear_buffer inside rerender_buffer.
+  -- Two responsibilities on every .md write in a workspace:
+  --
+  --  1. Refresh the index entry for the written file from disk and re-render
+  --     every other buffer that references that file (via reverse_index).
+  --     This is the deterministic in-nvim path — it must NOT depend on the
+  --     libuv watcher (which can silently fail on hosts that exhaust their
+  --     inotify instances, e.g. WSL2 with `fs.inotify.max_user_instances=128`).
+  --     The watcher remains the path for *external* file changes only.
+  --
+  --  2. Re-render *this* buffer if it has an active render (i.e. contains
+  --     tasks blocks).  Uses rerender_buffer to preserve fold state and
+  --     implement block lifecycle (new/deleted blocks).
   --
   -- For dashboard buffers (acwrite), this event is fired manually by the
   -- BufWriteCmd handler in render/save.lua after writefile succeeds.
@@ -123,18 +130,32 @@ function M.setup(opts)
       local bufnr = ev.buf
       local render = require("obsidian-tasks.render")
 
-      -- Skip buffers with no active render.
-      if render._buffer_state[bufnr] == nil then
-        return
-      end
-
       local path = vim.api.nvim_buf_get_name(bufnr)
       local ws = safe_workspace_for_path(path)
       if ws == nil then
         return
       end
 
-      render.rerender_buffer(bufnr, ws)
+      -- (1) Re-render this buffer if it has an active render (ordered first
+      -- so a broken index call below cannot block the visible refresh).
+      if render._buffer_state[bufnr] ~= nil then
+        render.rerender_buffer(bufnr, ws)
+      end
+
+      -- (2) Refresh the index entry for the written file, then propagate
+      -- the change to any other buffers whose renders reference this file.
+      -- Wrapped in pcall so a misbehaving adapter (or files that fail to
+      -- read mid-flush) never breaks the autocmd chain.
+      pcall(function()
+        local index = require("obsidian-tasks.index")
+        index.invalidate(path) -- bypass mtime no-op: nvim writes may share a second
+        index.refresh_file(path)
+        for _, other_bufnr in ipairs(index.reverse_index(path)) do
+          if other_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(other_bufnr) then
+            render.refresh_buffer(other_bufnr, ws)
+          end
+        end
+      end)
     end,
   })
 
