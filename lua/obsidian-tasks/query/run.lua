@@ -87,6 +87,25 @@ end
 --- @param index table  index module (obsidian-tasks.index) — must expose tasks_in()
 --- @return table  QueryResult
 function M.run(ast, index)
+  -- 0. Short-circuit on parse_error: a typo'd directive (e.g. "has tags" instead
+  -- of "has tag") would otherwise be silently dropped from ast.filters and the
+  -- surviving filters would run with a wider result set than intended. Render
+  -- zero tasks under the error banner so the user sees the typo, not bogus rows.
+  -- Other error kinds (`unsupported`, `v2_feature`) intentionally degrade-and-run.
+  for _, err in ipairs(ast.errors or {}) do
+    if err.kind == "parse_error" then
+      return {
+        groups = {},
+        total = 0,
+        hide_flags = require("obsidian-tasks.query.hide").make_flags(ast.hide),
+        header_summary = "",
+        errors = ast.errors,
+        _ast_sort = ast.sort_by,
+        limit = ast.limit,
+      }
+    end
+  end
+
   -- 1. Collect all tasks from the index.
   -- tasks_in() returns (task, abs_path, line_num).
   local items = {} -- { task, path, line_num, _idx }

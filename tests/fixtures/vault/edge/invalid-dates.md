@@ -12,3 +12,6 @@ Edge case: tasks with malformed date emoji values. Exercises `due date is invali
 ```tasks
 due date is invalid
 ```
+- [ ] Task with bad due date test #task #edge 📅 not-a-date [[invalid-dates]]
+- [ ] Task with year-only due #task #edge 📅 2026 [[invalid-dates]]
+- [ ] Ship auth refactor #task #work #sprint 🔺 📅 2026-05-13 [[web-app]] [[sprint]]

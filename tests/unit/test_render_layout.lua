@@ -63,75 +63,24 @@ end
 
 -- ── basic structure ────────────────────────────────────────────────────────
 
-T["empty result: contains label and footer only"] = function()
+T["empty result: contains footer only"] = function()
   local result = make_result({})
   local rendered = layout_mod.layout(result)
-  eq(#lines_of_kind(rendered, "label"), 1)
+  eq(#lines_of_kind(rendered, "label"), 0)
   eq(#lines_of_kind(rendered, "footer"), 1)
   eq(#lines_of_kind(rendered, "task"), 0)
   eq(#lines_of_kind(rendered, "group_header"), 0)
   eq(#lines_of_kind(rendered, "error"), 0)
 end
 
-T["empty result: first line is label, last is footer"] = function()
+T["empty result: only line is footer"] = function()
   local result = make_result({})
   local rendered = layout_mod.layout(result)
-  eq(rendered[1].kind, "label")
-  eq(rendered[#rendered].kind, "footer")
-end
-
-T["empty result: label starts with '▶ tasks'"] = function()
-  local result = make_result({})
-  local rendered = layout_mod.layout(result)
-  local label = rendered[1].text
-  MiniTest.expect.equality(label:sub(1, #"▶ tasks") == "▶ tasks", true)
-end
-
-T["empty result: label shows 0 results"] = function()
-  local result = make_result({ total = 0 })
-  local rendered = layout_mod.layout(result)
-  local label = rendered[1].text
-  MiniTest.expect.equality(label:find("0 results") ~= nil, true)
-end
-
--- ── label ──────────────────────────────────────────────────────────────────
-
-T["label: includes header_summary when non-empty"] = function()
-  local result = make_result({ header_summary = "not done · sorted by due asc" })
-  local rendered = layout_mod.layout(result)
-  local label = rendered[1].text
-  MiniTest.expect.equality(label:find("not done", 1, true) ~= nil, true)
-  MiniTest.expect.equality(label:find("sorted by due asc", 1, true) ~= nil, true)
-end
-
-T["label: total=1 emits '1 result' (singular)"] = function()
-  local result = make_result({ total = 1, groups = { { name = "", tasks = { pt("- [ ] Task") } } } })
-  local rendered = layout_mod.layout(result)
-  local label = rendered[1].text
-  MiniTest.expect.equality(label:find("1 result", 1, true) ~= nil, true)
-  -- Must NOT contain "1 results" (plural)
-  MiniTest.expect.equality(label:find("1 results", 1, true) == nil, true)
-end
-
-T["label: total=3 emits '3 results' (plural)"] = function()
-  local result = make_result({ total = 3 })
-  local rendered = layout_mod.layout(result)
-  MiniTest.expect.equality(rendered[1].text:find("3 results", 1, true) ~= nil, true)
+  eq(#rendered, 1)
+  eq(rendered[1].kind, "footer")
 end
 
 -- ── hide task_count ────────────────────────────────────────────────────────
-
-T["hide.task_count: label omits result count"] = function()
-  local result = make_result({
-    total = 5,
-    hide_flags = { task_count = true },
-    header_summary = "not done",
-  })
-  local rendered = layout_mod.layout(result)
-  local label = rendered[1].text
-  MiniTest.expect.equality(label:find("results") == nil, true)
-  MiniTest.expect.equality(label:find("result") == nil, true)
-end
 
 T["hide.task_count: footer omits result count"] = function()
   local result = make_result({
@@ -144,24 +93,17 @@ T["hide.task_count: footer omits result count"] = function()
   MiniTest.expect.equality(footer:find("result") == nil, true)
 end
 
-T["hide.task_count: label still contains '▶ tasks'"] = function()
-  local result = make_result({ hide_flags = { task_count = true }, header_summary = "not done" })
-  local rendered = layout_mod.layout(result)
-  MiniTest.expect.equality(rendered[1].text:find("▶ tasks", 1, true) ~= nil, true)
-end
-
 -- ── errors ─────────────────────────────────────────────────────────────────
 
-T["errors: error lines emitted after label"] = function()
+T["errors: error lines emitted before footer"] = function()
   local result = make_result({
     errors = {
       { kind = "unsupported", msg = "Scripting filters not supported in nvim" },
     },
   })
   local rendered = layout_mod.layout(result)
-  -- label at index 1, error at index 2, footer last
-  eq(rendered[1].kind, "label")
-  eq(rendered[2].kind, "error")
+  -- error at index 1, footer last
+  eq(rendered[1].kind, "error")
   eq(rendered[#rendered].kind, "footer")
 end
 
@@ -262,7 +204,7 @@ T["3 named groups: emits 3 task lines total (one per group)"] = function()
   eq(#lines_of_kind(rendered, "task"), 3)
 end
 
-T["3 named groups: order is label, headers interleaved with tasks, footer"] = function()
+T["3 named groups: order is headers interleaved with tasks, footer"] = function()
   local task_a = with_src(pt("- [ ] Task A"), "/vault/a.md", 1)
   local task_b = with_src(pt("- [ ] Task B"), "/vault/b.md", 1)
   local task_c = with_src(pt("- [ ] Task C"), "/vault/c.md", 1)
@@ -275,15 +217,14 @@ T["3 named groups: order is label, headers interleaved with tasks, footer"] = fu
     },
   })
   local rendered = layout_mod.layout(result)
-  -- Expected order: label, header A, task A, header B, task B, header C, task C, footer
-  eq(rendered[1].kind, "label")
-  eq(rendered[2].kind, "group_header")
-  eq(rendered[3].kind, "task")
-  eq(rendered[4].kind, "group_header")
-  eq(rendered[5].kind, "task")
-  eq(rendered[6].kind, "group_header")
-  eq(rendered[7].kind, "task")
-  eq(rendered[8].kind, "footer")
+  -- Expected order: header A, task A, header B, task B, header C, task C, footer
+  eq(rendered[1].kind, "group_header")
+  eq(rendered[2].kind, "task")
+  eq(rendered[3].kind, "group_header")
+  eq(rendered[4].kind, "task")
+  eq(rendered[5].kind, "group_header")
+  eq(rendered[6].kind, "task")
+  eq(rendered[7].kind, "footer")
 end
 
 T["single unnamed group: no group_header emitted"] = function()
@@ -588,17 +529,7 @@ T["footer: starts and ends with '─'"] = function()
   MiniTest.expect.equality(footer:sub(1, #"─") == "─", true)
 end
 
--- ── label and task records: kind / shape correctness ─────────────────────
-
-T["label: kind = 'label', src fields nil"] = function()
-  local result = make_result({})
-  local rendered = layout_mod.layout(result)
-  local label = rendered[1]
-  eq(label.kind, "label")
-  eq(label.src_path, nil)
-  eq(label.src_line, nil)
-  eq(label.src_hash, nil)
-end
+-- ── record shape correctness ─────────────────────────────────────────────
 
 T["group_header: kind='group_header', src fields nil"] = function()
   local task_a = with_src(pt("- [ ] Task A"), "/vault/a.md", 1)

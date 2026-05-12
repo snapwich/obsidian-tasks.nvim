@@ -3,7 +3,7 @@
 --
 -- Responsibilities:
 --   • Insert real buffer text for task lines.
---   • Attach virt_lines for label / group_header / footer / error.
+--   • Attach virt_lines for group_header / footer / error.
 --   • Wire managed-region extmarks (fence, region, per-task).
 --   • Maintain a Lua-side em_map (draw NS) for is_render_line / keymap jump.
 --   • Expose clear / is_render_line / render_state for orchestrator + keymap.
@@ -39,7 +39,6 @@ local _state = {}
 -- ── Highlight group helpers ───────────────────────────────────────────────────
 
 local _HL = {
-  label = "ObsidianTasksLabel",
   group_header = "ObsidianTasksGroupHeader",
   footer = "ObsidianTasksFooter",
   error = "ObsidianTasksError",
@@ -161,7 +160,6 @@ function M.draw(bufnr, fence_range, layout_lines)
   end
 
   -- ── 3. Walk layout_lines and attach draw-NS extmarks ─────────────────────
-  -- • label        → virt_lines_above on fence_first
   -- • group_header / error → accumulate; attach above next task (virt_lines_above=true)
   -- • task         → per-line extmark tracked in em_map
   -- • footer       → virt_lines_above=false on last task (or fence if none)
@@ -174,14 +172,7 @@ function M.draw(bufnr, fence_range, layout_lines)
   for _, ll in ipairs(layout_lines) do
     local kind = ll.kind
 
-    if kind == "label" then
-      -- Render as a virtual line above the opening fence.
-      local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, fence_first, 0, {
-        virt_lines = { { { ll.text, hl("label") } } },
-        virt_lines_above = true,
-      })
-      all_eids[#all_eids + 1] = eid
-    elseif kind == "group_header" or kind == "error" then
+    if kind == "group_header" or kind == "error" then
       -- Accumulate; will appear above the next task line.
       pending_virt[#pending_virt + 1] = { { ll.text, hl(kind) } }
     elseif kind == "task" then

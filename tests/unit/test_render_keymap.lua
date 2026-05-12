@@ -1272,7 +1272,6 @@ T["draw wiring: draw attaches keymap on first draw for buffer"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local hash = vim.fn.sha256("- [ ] T"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     { kind = "task", text = "- [ ] T", src_path = "/v/n.md", src_line = 1, src_hash = hash },
     { kind = "footer", text = "─ 1 result ─" },
   }
@@ -1294,7 +1293,6 @@ T["draw wiring: clear detaches keymap"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local hash = vim.fn.sha256("- [ ] T"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     { kind = "task", text = "- [ ] T", src_path = "/v/n.md", src_line = 1, src_hash = hash },
     { kind = "footer", text = "─ 1 result ─" },
   }
@@ -1313,7 +1311,6 @@ T["draw wiring: re-draw after clear re-attaches keymap"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local hash = vim.fn.sha256("- [ ] T"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     { kind = "task", text = "- [ ] T", src_path = "/v/n.md", src_line = 1, src_hash = hash },
     { kind = "footer", text = "─ 1 result ─" },
   }
@@ -1335,12 +1332,10 @@ T["draw wiring: second draw of same buffer does not error"] = function()
   local hash_a = vim.fn.sha256("- [ ] A"):sub(1, 16)
   local hash_b = vim.fn.sha256("- [x] B"):sub(1, 16)
   local layout_a = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     { kind = "task", text = "- [ ] A", src_path = "/v/a.md", src_line = 1, src_hash = hash_a },
     { kind = "footer", text = "─ 1 result ─" },
   }
   local layout_b = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     { kind = "task", text = "- [x] B", src_path = "/v/b.md", src_line = 2, src_hash = hash_b },
     { kind = "footer", text = "─ 1 result ─" },
   }

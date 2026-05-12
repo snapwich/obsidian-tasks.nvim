@@ -1,15 +1,15 @@
 # Tag filters
 
-## Has tags
+## Has tag
 
 ```tasks
-has tags
+has tag
 ```
 
-## No tags
+## No tag
 
 ```tasks
-no tags
+no tag
 ```
 
 ## Tag includes #work

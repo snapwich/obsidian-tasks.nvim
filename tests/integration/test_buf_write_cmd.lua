@@ -45,7 +45,6 @@ end
 local function simple_layout(task_text, src_path, src_line)
   local hash = vim.fn.sha256(task_text):sub(1, 16)
   return {
-    { kind = "label", text = "▶ tasks · 1 result" },
     {
       kind = "task",
       text = task_text,

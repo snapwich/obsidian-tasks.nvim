@@ -106,7 +106,7 @@ T["integration: rendered buffer contains task text as real line"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
-T["integration: label line is a virt_line, not real buffer text"] = function()
+T["integration: '▶ tasks' label never appears in buffer or virt_lines"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local extmark_util = require("obsidian-tasks.util.extmark")
@@ -122,31 +122,25 @@ T["integration: label line is a virt_line, not real buffer text"] = function()
 
   -- Label text must NOT appear in real buffer lines.
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local label_in_buf = false
   for _, l in ipairs(lines) do
-    if l:find("▶ tasks", 1, true) then
-      label_in_buf = true
-    end
+    MiniTest.expect.equality(l:find("▶ tasks", 1, true) == nil, true)
   end
-  MiniTest.expect.equality(label_in_buf, false)
 
-  -- Label text MUST appear in virt_lines extmarks.
+  -- Label text must NOT appear in any virt_lines extmark either.
   local NS = extmark_util.NS
   local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, 0, -1, { details = true })
-  local label_in_virt = false
   for _, em in ipairs(ems) do
     local details = em[4]
     if details and details.virt_lines then
       for _, row in ipairs(details.virt_lines) do
         for _, chunk in ipairs(row) do
-          if type(chunk[1]) == "string" and chunk[1]:find("▶ tasks", 1, true) then
-            label_in_virt = true
+          if type(chunk[1]) == "string" then
+            MiniTest.expect.equality(chunk[1]:find("▶ tasks", 1, true) == nil, true)
           end
         end
       end
     end
   end
-  MiniTest.expect.equality(label_in_virt, true)
 
   draw_mod.clear(bufnr)
   restore_idx()

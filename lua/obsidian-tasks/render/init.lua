@@ -6,7 +6,7 @@
 --   • Scan buffers for ```tasks fences (has_tasks_block / find_blocks).
 --   • For each block: parse query → run against index → layout → draw.
 --   • Handle multi-block buffers (blocks render independently).
---   • Catch Lua exceptions and emit an INTERNAL ERROR label in place of results.
+--   • Catch Lua exceptions and emit an INTERNAL ERROR line in place of results.
 --   • Lazy index init: kick off a vault walk on first render if index is empty.
 --   • Track per-buffer state in M._buffer_state (used by BufWritePost refresh).
 
@@ -223,12 +223,21 @@ function M.render_buffer(bufnr, workspace)
         end)
 
         if not ok then
-          -- Emit a single label line with the error message.
+          -- Emit a single error line plus footer so the message surfaces in
+          -- the virt_lines flow below the fence.
           local msg = type(err) == "string" and err or tostring(err)
           layout_lines = {
             {
-              kind = "label",
-              text = "▶ tasks · INTERNAL ERROR: " .. msg,
+              kind = "error",
+              text = "▼ INTERNAL ERROR: " .. msg,
+              src_path = nil,
+              src_line = nil,
+              src_hash = nil,
+              indent = "",
+            },
+            {
+              kind = "footer",
+              text = "─",
               src_path = nil,
               src_line = nil,
               src_hash = nil,

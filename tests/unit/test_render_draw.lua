@@ -45,11 +45,10 @@ local function virt_line_ems(bufnr)
   return result
 end
 
---- Build a minimal single-task layout_lines list (label, task, footer).
+--- Build a minimal single-task layout_lines list (task, footer).
 local function simple_layout(task_text, src_path, src_line)
   local hash = vim.fn.sha256(task_text):sub(1, 16)
   return {
-    { kind = "label", text = "▶ tasks · 1 result" },
     {
       kind = "task",
       text = task_text,
@@ -103,7 +102,6 @@ T["draw: multiple tasks inserted in order"] = function()
   local hash_a = vim.fn.sha256("- [ ] Alpha"):sub(1, 16)
   local hash_b = vim.fn.sha256("- [ ] Beta"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 2 results" },
     { kind = "task", text = "- [ ] Alpha", src_path = "/v/a.md", src_line = 1, src_hash = hash_a },
     { kind = "task", text = "- [ ] Beta", src_path = "/v/b.md", src_line = 2, src_hash = hash_b },
     { kind = "footer", text = "─ 2 results ─" },
@@ -153,41 +151,20 @@ end
 
 -- ── draw: virt_lines ─────────────────────────────────────────────────────────
 
-T["draw: virt_lines extmarks present (label + footer)"] = function()
+T["draw: virt_lines extmarks present (footer)"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] T"))
 
-  -- Expect at least label and footer virt_lines.
+  -- Expect at least one footer virt_line.
   local vems = virt_line_ems(bufnr)
-  MiniTest.expect.equality(#vems >= 2, true)
-  draw_mod.clear(bufnr)
-end
-
-T["draw: label virt_line text matches layout label"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
-  local layout = simple_layout("- [ ] T")
-  layout[1].text = "▶ tasks · my label · 1 result"
-  draw_mod.draw(bufnr, fence(0, 2), layout)
-
-  -- Find a virt_line containing label text.
-  local found = false
-  for _, em in ipairs(virt_line_ems(bufnr)) do
-    for _, row in ipairs(em[4].virt_lines) do
-      for _, chunk in ipairs(row) do
-        if type(chunk[1]) == "string" and chunk[1]:find("my label", 1, true) then
-          found = true
-        end
-      end
-    end
-  end
-  MiniTest.expect.equality(found, true)
+  MiniTest.expect.equality(#vems >= 1, true)
   draw_mod.clear(bufnr)
 end
 
 T["draw: footer virt_line text matches layout footer"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local layout = simple_layout("- [ ] T")
-  layout[3].text = "─ sorted: due asc │ 1 result ─"
+  layout[2].text = "─ sorted: due asc │ 1 result ─"
   draw_mod.draw(bufnr, fence(0, 2), layout)
 
   local found = false
@@ -208,7 +185,6 @@ T["draw: group_header appears as virt_line before task"] = function()
   local bufnr = make_buf({ "```tasks", "group by path", "```" })
   local hash = vim.fn.sha256("- [ ] T"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     { kind = "group_header", text = "## /vault/note.md" },
     { kind = "task", text = "- [ ] T", src_path = "/vault/note.md", src_line = 1, src_hash = hash },
     { kind = "footer", text = "─ 1 result ─" },
@@ -234,7 +210,6 @@ end
 T["draw: buffer unchanged when layout has no task lines"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local layout = {
-    { kind = "label", text = "▶ tasks · 0 results" },
     { kind = "footer", text = "─ 0 results ─" },
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
@@ -286,7 +261,6 @@ T["draw: managed task text strips wikilink suffix"] = function()
   local rendered_text = "- [ ] My task [[note]]"
   local hash = vim.fn.sha256(rendered_text):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 1 result" },
     {
       kind = "task",
       text = rendered_text,
@@ -311,7 +285,6 @@ T["draw: managed region extmark covers all task rows"] = function()
   local hash_a = vim.fn.sha256("- [ ] A"):sub(1, 16)
   local hash_b = vim.fn.sha256("- [ ] B"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 2 results" },
     { kind = "task", text = "- [ ] A", src_path = "/v/a.md", src_line = 1, src_hash = hash_a },
     { kind = "task", text = "- [ ] B", src_path = "/v/b.md", src_line = 2, src_hash = hash_b },
     { kind = "footer", text = "─ 2 results ─" },
@@ -332,7 +305,6 @@ end
 T["draw: no managed region extmark when no task lines"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local layout = {
-    { kind = "label", text = "▶ tasks · 0 results" },
     { kind = "footer", text = "─ 0 results ─" },
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
@@ -348,7 +320,6 @@ T["draw: multiple tasks — task_meta populated for each row"] = function()
   local hash_a = vim.fn.sha256("- [ ] Alpha"):sub(1, 16)
   local hash_b = vim.fn.sha256("- [ ] Beta"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 2 results" },
     { kind = "task", text = "- [ ] Alpha", src_path = "/v/a.md", src_line = 10, src_hash = hash_a },
     { kind = "task", text = "- [ ] Beta", src_path = "/v/b.md", src_line = 20, src_hash = hash_b },
     { kind = "footer", text = "─ 2 results ─" },
@@ -579,7 +550,6 @@ T["render_state: inserted_range covers task lines"] = function()
   local hash_a = vim.fn.sha256("- [ ] A"):sub(1, 16)
   local hash_b = vim.fn.sha256("- [ ] B"):sub(1, 16)
   local layout = {
-    { kind = "label", text = "▶ tasks · 2 results" },
     { kind = "task", text = "- [ ] A", src_path = "/v/a.md", src_line = 1, src_hash = hash_a },
     { kind = "task", text = "- [ ] B", src_path = "/v/b.md", src_line = 2, src_hash = hash_b },
     { kind = "footer", text = "─ 2 results ─" },
@@ -596,7 +566,6 @@ end
 T["render_state: inserted_range is nil when no task lines"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
   local layout = {
-    { kind = "label", text = "▶ tasks · 0 results" },
     { kind = "footer", text = "─ 0 results ─" },
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)

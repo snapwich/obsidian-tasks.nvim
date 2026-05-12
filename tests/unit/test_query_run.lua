@@ -942,6 +942,38 @@ run_tests["errors forwarded from ast"] = function()
   eq(result.total, 1)
 end
 
+run_tests["parse_error: short-circuits to zero results"] = function()
+  -- Regression: a typo'd directive like "has tags" (plural) used to be dropped
+  -- silently from ast.filters and the rest of the query would run with one
+  -- fewer filter, widening the result set. Now any parse_error suppresses all
+  -- tasks while the error banner still renders.
+  local idx = make_index({
+    { task = task_open_due, path = PATH_A },
+    { task = task_done, path = PATH_A },
+  })
+  local result = run("has tags\nnot done", idx)
+  eq(result.total, 0)
+  eq(#result.groups, 0)
+  MiniTest.expect.equality(#result.errors >= 1, true)
+  local found_parse_err = false
+  for _, e in ipairs(result.errors) do
+    if e.kind == "parse_error" then
+      found_parse_err = true
+    end
+  end
+  eq(found_parse_err, true)
+end
+
+run_tests["parse_error: degrade-and-run kinds (v2_feature) still produce tasks"] = function()
+  -- Companion to the above: confirm that non-parse_error kinds keep the legacy
+  -- behaviour so existing v2_feature / unsupported callers don't regress.
+  local idx = make_index({
+    { task = task_open_due, path = PATH_A },
+  })
+  local result = run("is blocked\nnot done", idx)
+  eq(result.total, 1)
+end
+
 run_tests["header_summary: describes the query"] = function()
   local idx = make_index({})
   local result = run("not done\nsort by due\ngroup by path\nlimit 10", idx)

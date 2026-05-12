@@ -4,7 +4,7 @@
 -- Each record has shape:
 --   { kind, text, src_path, src_line, src_hash, source_text_hash, indent }
 --
--- kind ∈ 'label' | 'group_header' | 'task' | 'footer' | 'error'
+-- kind ∈ 'group_header' | 'task' | 'footer' | 'error'
 --
 -- Only 'task' records carry src_path / src_line / src_hash / source_text_hash.
 -- All other kinds set those to nil.
@@ -110,30 +110,9 @@ function M.layout(query_result, opts)
   local hide = query_result.hide_flags or {}
   local lines = {}
 
-  -- ── 1. Label line ──────────────────────────────────────────────────────────
-  local label_parts = { "▶ tasks" }
-  local summary = query_result.header_summary
-  if summary and summary ~= "" then
-    label_parts[#label_parts + 1] = summary
-  end
-
-  -- Append result count unless task_count is hidden.
   local total = query_result.total or 0
-  if not hide.task_count then
-    local count_str = total == 1 and "1 result" or (total .. " results")
-    label_parts[#label_parts + 1] = count_str
-  end
 
-  lines[#lines + 1] = {
-    kind = "label",
-    text = table.concat(label_parts, " · "),
-    src_path = nil,
-    src_line = nil,
-    src_hash = nil,
-    indent = "",
-  }
-
-  -- ── 2. Error lines (emitted right after label) ─────────────────────────────
+  -- ── 1. Error lines ─────────────────────────────────────────────────────────
   for _, err in ipairs(query_result.errors or {}) do
     local err_text = "▼ " .. (err.kind or "error") .. ": " .. (err.msg or "unknown error")
     lines[#lines + 1] = {
@@ -146,7 +125,7 @@ function M.layout(query_result, opts)
     }
   end
 
-  -- ── 3. Groups (group_header + task lines) ─────────────────────────────────
+  -- ── 2. Groups (group_header + task lines) ─────────────────────────────────
   local has_groups = #(query_result.groups or {}) > 0
   local multi_group = has_groups and (#query_result.groups > 1 or query_result.groups[1].name ~= "")
 
@@ -216,7 +195,7 @@ function M.layout(query_result, opts)
     end
   end
 
-  -- ── 4. Footer ─────────────────────────────────────────────────────────────
+  -- ── 3. Footer ─────────────────────────────────────────────────────────────
   local footer_parts = {}
 
   -- Sort description.

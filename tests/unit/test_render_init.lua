@@ -272,7 +272,7 @@ T["render_buffer: calls draw once for single block"] = function()
   restore_idx()
 end
 
-T["render_buffer: layout_lines contain label and footer for empty result"] = function()
+T["render_buffer: layout_lines contain footer for empty result"] = function()
   local render = get_render_mod()
   local draw_mock = make_draw_mock()
   local restore_draw = install_draw_mock(draw_mock)
@@ -282,13 +282,12 @@ T["render_buffer: layout_lines contain label and footer for empty result"] = fun
   render.render_buffer(bufnr)
 
   local layout_lines = draw_mock.draw_calls[1].layout_lines
-  -- Should have at least label and footer kinds.
   local kinds = {}
   for _, ll in ipairs(layout_lines) do
     kinds[ll.kind] = true
   end
-  MiniTest.expect.equality(kinds["label"] == true, true)
   MiniTest.expect.equality(kinds["footer"] == true, true)
+  MiniTest.expect.equality(kinds["label"], nil)
 
   restore_draw()
   restore_idx()
@@ -448,7 +447,7 @@ end
 
 -- ── render_buffer: error path ─────────────────────────────────────────────────
 
-T["render_buffer: error in run produces INTERNAL ERROR label, no crash"] = function()
+T["render_buffer: error in run produces INTERNAL ERROR line, no crash"] = function()
   local render = get_render_mod()
   local draw_mock = make_draw_mock()
   local restore_draw = install_draw_mock(draw_mock)
@@ -473,11 +472,11 @@ T["render_buffer: error in run produces INTERNAL ERROR label, no crash"] = funct
   -- draw() must still have been called.
   MiniTest.expect.equality(#draw_mock.draw_calls >= 1, true)
 
-  -- The layout_lines should contain a label with INTERNAL ERROR.
+  -- The layout_lines should contain an error line with INTERNAL ERROR.
   local layout_lines = draw_mock.draw_calls[1].layout_lines
   local found_error = false
   for _, ll in ipairs(layout_lines) do
-    if ll.kind == "label" and type(ll.text) == "string" and ll.text:find("INTERNAL ERROR", 1, true) then
+    if ll.kind == "error" and type(ll.text) == "string" and ll.text:find("INTERNAL ERROR", 1, true) then
       found_error = true
     end
   end

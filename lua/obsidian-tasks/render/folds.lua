@@ -19,10 +19,6 @@ local M = {}
 ---   insert mode.  'foldopen' is a global option (no window-local equivalent),
 ---   so we set it once; subsequent calls are idempotent via the has_insert guard.
 ---
---- The summary line that used to live in `foldtext` is now rendered as a
---- virt_lines_above extmark on the opening fence (see render/draw.set_summary).
---- That avoids fighting render-markdown.nvim for the folded fence row.
----
 --- @param winid integer  window to configure (pass 0 for current window)
 function M.setup_window(winid)
   vim.wo[winid].foldmethod = "manual"
