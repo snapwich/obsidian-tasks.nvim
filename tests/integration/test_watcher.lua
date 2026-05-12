@@ -190,7 +190,7 @@ local function setup_watch_mocks(debounce_ms, bufnr, source_paths)
   })
   local r_render = install_mock("obsidian-tasks.render", {
     _buffer_state = {}, -- empty → cursor never in render region
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       refresh_buf_calls[#refresh_buf_calls + 1] = b
     end,
   })

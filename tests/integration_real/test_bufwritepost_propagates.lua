@@ -72,11 +72,11 @@ T["BufWritePost on source file triggers cross-buffer refresh via reverse_index"]
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(health_path))
   local health_bufnr = vim.api.nvim_get_current_buf()
 
-  -- ── 4. Spy on render.refresh_buffer — the function our BufWritePost path
+  -- ── 4. Spy on render.rerender_buffer — the function our BufWritePost path
   --       uses for cross-buffer propagation. ─────────────────────────────────
   local refreshed = {}
-  local orig_refresh = render.refresh_buffer
-  render.refresh_buffer = function(bufnr, ws)
+  local orig_refresh = render.rerender_buffer
+  render.rerender_buffer = function(bufnr, ws)
     refreshed[#refreshed + 1] = bufnr
     return orig_refresh(bufnr, ws)
   end
@@ -85,7 +85,7 @@ T["BufWritePost on source file triggers cross-buffer refresh via reverse_index"]
   vim.api.nvim_buf_set_lines(health_bufnr, -1, -1, false, { "" })
   vim.cmd("silent write")
 
-  render.refresh_buffer = orig_refresh
+  render.rerender_buffer = orig_refresh
 
   -- ── 6. Assert by-tag.md got a refresh call. ─────────────────────────────
   local saw_by_tag = false

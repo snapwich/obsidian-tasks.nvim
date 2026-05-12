@@ -152,7 +152,10 @@ function M.setup(opts)
         index.refresh_file(path)
         for _, other_bufnr in ipairs(index.reverse_index(path)) do
           if other_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(other_bufnr) then
-            render.refresh_buffer(other_bufnr, ws)
+            -- rerender_buffer (not refresh_buffer) preserves cursor + fold state
+            -- across the re-render so users don't get yanked to the top of the
+            -- query buffer when an unrelated source file gets saved.
+            render.rerender_buffer(other_bufnr, ws)
           end
         end
       end)

@@ -103,7 +103,8 @@ local function _refresh_or_defer(bufnr)
     return
   end
   local render = require("obsidian-tasks.render")
-  render.refresh_buffer(bufnr)
+  -- rerender_buffer preserves cursor + fold state across the refresh.
+  render.rerender_buffer(bufnr)
 end
 
 --- Push *path* into the debounce queue for *ws_name* and schedule a flush
@@ -378,7 +379,7 @@ function M.setup()
       if not _cursor_in_render_region(cur_bufnr) then
         _deferred[cur_bufnr] = nil
         if vim.api.nvim_buf_is_valid(cur_bufnr) then
-          require("obsidian-tasks.render").refresh_buffer(cur_bufnr)
+          require("obsidian-tasks.render").rerender_buffer(cur_bufnr)
         end
       end
     end,
@@ -393,7 +394,7 @@ function M.setup()
       if _deferred[cur_bufnr] then
         _deferred[cur_bufnr] = nil
         if vim.api.nvim_buf_is_valid(cur_bufnr) then
-          require("obsidian-tasks.render").refresh_buffer(cur_bufnr)
+          require("obsidian-tasks.render").rerender_buffer(cur_bufnr)
         end
       end
     end,

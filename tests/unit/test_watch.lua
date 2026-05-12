@@ -531,7 +531,7 @@ local function make_index_mock(reverse_map, refresh_fn)
   }
 end
 
-T["refresh: fs event triggers render.refresh_buffer for affected bufnr"] = function()
+T["refresh: fs event triggers render.rerender_buffer for affected bufnr"] = function()
   -- Arrange: one path maps to bufnr=55 in the reverse index.
   local refresh_buf_calls = {}
   local r_index = install_mock(
@@ -542,7 +542,7 @@ T["refresh: fs event triggers render.refresh_buffer for affected bufnr"] = funct
   )
   local r_render = install_mock("obsidian-tasks.render", {
     _buffer_state = {}, -- empty → cursor not in render region
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       refresh_buf_calls[#refresh_buf_calls + 1] = b
     end,
   })
@@ -590,7 +590,7 @@ T["refresh: 10 paths changed in one debounce window → buffer refreshed at most
   local r_index = install_mock("obsidian-tasks.index", make_index_mock(reverse_map))
   local r_render = install_mock("obsidian-tasks.render", {
     _buffer_state = {},
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       refresh_buf_calls[#refresh_buf_calls + 1] = b
     end,
   })
@@ -642,7 +642,7 @@ T["refresh: cursor in render region → deferred, not immediately refreshed"] = 
     _buffer_state = {
       [42] = { { render_range = { 5, 10 } } },
     },
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       refresh_buf_calls[#refresh_buf_calls + 1] = b
     end,
   })
@@ -698,7 +698,7 @@ T["refresh: CursorMoved when cursor leaves render region fires deferred refresh"
     _buffer_state = {
       [33] = { { render_range = { 5, 10 } } },
     },
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       refresh_buf_calls[#refresh_buf_calls + 1] = b
     end,
   })
@@ -754,7 +754,7 @@ T["refresh: CursorMoved while cursor still in render region does NOT fire refres
     _buffer_state = {
       [44] = { { render_range = { 5, 10 } } },
     },
-    refresh_buffer = function(b)
+    rerender_buffer = function(b)
       refresh_buf_calls[#refresh_buf_calls + 1] = b
     end,
   })
