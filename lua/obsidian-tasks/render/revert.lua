@@ -212,7 +212,13 @@ local function classify_and_commit(bufnr)
                   local lines = vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
                   vim.fn.writefile(lines, meta.source_file)
                   vim.bo[src_bufnr].modified = false
-                  require("obsidian-tasks.index").refresh_file(meta.source_file)
+                  local index = require("obsidian-tasks.index")
+                  -- invalidate before refresh: rapid cycles ([ ]→[~]→[!])
+                  -- can land within the same second, and refresh_file's mtime
+                  -- no-op would skip the reparse, leaving the index stale
+                  -- and producing a spurious drift on the next press.
+                  index.invalidate(meta.source_file)
+                  index.refresh_file(meta.source_file)
                 end)
               end
             end

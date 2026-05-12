@@ -373,4 +373,85 @@ T["status edit: two consecutive edits both commit (no spurious drift)"] = functi
   vim.fn.delete(src_path)
 end
 
+-- ── rapid status cycle: invalidate must bypass mtime no-op ────────────────
+--
+-- Regression: classify_and_commit's persist block calls index.refresh_file,
+-- which has an mtime no-op (skip parse if mtime unchanged).  When the user
+-- cycles statuses rapidly (e.g. obsidian.nvim's <CR> smart_action firing
+-- 4 times in < 1 second), successive writefile calls land in the same
+-- mtime second.  Without an explicit invalidate, refresh_file no-ops on
+-- the second cycle and the index keeps the first cycle's symbol — so the
+-- third press's drift check (meta.task_text from stale index vs source
+-- buffer) fails and locks the row.
+--
+-- This test asserts _index[src_path] reflects each commit, bypassing the
+-- stub that the other tests rely on.
+
+T["status edit: rapid cycle updates the real index entry every commit"] = function()
+  local index_mod = require("obsidian-tasks.index")
+  index_mod._reset()
+
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile({ "- [ ] Rapid cycle" })
+  local restore_stub = install_file_task_stub(src_path)
+
+  local bufnr = make_buf({ "```tasks", "description includes Rapid", "```" })
+  render.render_buffer(bufnr, nil)
+
+  local task_row = 3
+  local function row_symbol_in_index()
+    local raw = index_mod._raw()
+    local entry = raw[src_path]
+    if not entry or not entry.tasks or not entry.tasks[1] then
+      return nil
+    end
+    return entry.tasks[1].task.status_symbol
+  end
+
+  -- Initial index entry (from the lazy walk on first render).
+  index_mod.refresh_file(src_path)
+  eq(row_symbol_in_index(), " ")
+
+  -- Capture warns: a drift here is the regression.
+  local notify_calls = {}
+  local orig_notify = vim.notify
+  vim.notify = function(msg, level)
+    notify_calls[#notify_calls + 1] = { msg = msg, level = level }
+  end
+
+  local function press_to(sym)
+    local cur = get_line(bufnr, task_row)
+    set_line(bufnr, task_row, (cur:gsub("%[.%]", "[" .. sym .. "]", 1)))
+    revert._flush_pending(bufnr)
+  end
+
+  -- Cycle [ ] → x → [-] → [ ] in quick succession.  Each step's commit must
+  -- be visible in _index — i.e. invalidate-then-refresh must overcome the
+  -- mtime no-op even when writes land in the same wall-clock second.
+  press_to("x")
+  eq(row_symbol_in_index(), "x", "index must reflect [x] after first cycle")
+  press_to("-")
+  eq(row_symbol_in_index(), "-", "index must reflect [-] after second cycle")
+  press_to(" ")
+  eq(row_symbol_in_index(), " ", "index must reflect [ ] after third cycle")
+
+  vim.notify = orig_notify
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.WARN and tostring(c.msg):find("drift", 1, true) then
+      eq(true, false, "unexpected drift warning: " .. tostring(c.msg))
+    end
+  end
+
+  render.clear_buffer(bufnr)
+  restore_stub()
+  revert._cleanup(bufnr)
+  local src_buf = vim.fn.bufnr(src_path, false)
+  if src_buf ~= -1 then
+    vim.api.nvim_buf_delete(src_buf, { force = true })
+  end
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+  index_mod._reset()
+end
+
 return T
