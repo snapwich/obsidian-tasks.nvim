@@ -110,10 +110,9 @@ function M.setup(opts)
   --
   --  1. Refresh the index entry for the written file from disk and re-render
   --     every other buffer that references that file (via reverse_index).
-  --     This is the deterministic in-nvim path — it must NOT depend on the
-  --     libuv watcher (which can silently fail on hosts that exhaust their
-  --     inotify instances, e.g. WSL2 with `fs.inotify.max_user_instances=128`).
-  --     The watcher remains the path for *external* file changes only.
+  --     This is the only path that propagates source-file edits to query
+  --     buffers — external edits (made outside nvim) are not auto-detected;
+  --     the user must `<leader>tr` to pick them up.
   --
   --  2. Re-render *this* buffer if it has an active render (i.e. contains
   --     tasks blocks).  Uses rerender_buffer to preserve fold state and

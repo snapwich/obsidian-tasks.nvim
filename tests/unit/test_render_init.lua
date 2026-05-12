@@ -687,9 +687,9 @@ end
 
 T["configure: stores opts in M._opts"] = function()
   local render = get_render_mod()
-  render.configure({ default_folded = false, watcher = true })
+  render.configure({ default_folded = false, hide_query_metadata = true })
   MiniTest.expect.equality(render._opts.default_folded, false)
-  MiniTest.expect.equality(render._opts.watcher, true)
+  MiniTest.expect.equality(render._opts.hide_query_metadata, true)
 end
 
 T["configure: default_folded defaults to true when not configured"] = function()

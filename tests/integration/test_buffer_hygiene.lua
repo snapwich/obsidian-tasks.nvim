@@ -130,10 +130,11 @@ T["rerender_buffer preserves modified=true when user edited a query line"] = fun
 
     eq(hygiene.is_clean(bufnr), false, "user edit must mark buffer dirty")
 
-    -- Now a re-render fires (e.g. watcher event).  modified must NOT be cleared.
+    -- Now a re-render fires (e.g. cross-buffer BufWritePost propagation).
+    -- modified must NOT be cleared.
     vim.bo[bufnr].modified = true
     render.rerender_buffer(bufnr, nil)
-    eq(vim.bo[bufnr].modified, true, "watcher-driven rerender must not clobber unsaved edits")
+    eq(vim.bo[bufnr].modified, true, "rerender must not clobber unsaved edits")
   end)
 end
 

@@ -9,8 +9,6 @@ M.defaults = {
   auto_render = true,
   default_folded = true,
   setup_keymaps = true,
-  watcher = true,
-  watcher_debounce_ms = 300,
   done_date_format = "%Y-%m-%d",
   done_date_tz = "local",
   capture_file = nil,
@@ -44,14 +42,6 @@ local function check_field(key, value)
   elseif key == "default_folded" then
     if type(value) ~= "boolean" then
       error(("obsidian-tasks: 'default_folded' must be a boolean, got %s"):format(type(value)), 2)
-    end
-  elseif key == "watcher" then
-    if type(value) ~= "boolean" then
-      error(("obsidian-tasks: 'watcher' must be a boolean, got %s"):format(type(value)), 2)
-    end
-  elseif key == "watcher_debounce_ms" then
-    if type(value) ~= "number" or math.floor(value) ~= value or value <= 0 then
-      error(("obsidian-tasks: 'watcher_debounce_ms' must be a positive integer, got %s"):format(tostring(value)), 2)
     end
   elseif key == "done_date_format" then
     -- Accept any string resembling a strftime pattern (contains %)
@@ -105,8 +95,6 @@ local KNOWN_KEYS = {
   auto_render = true,
   default_folded = true,
   setup_keymaps = true,
-  watcher = true,
-  watcher_debounce_ms = true,
   done_date_format = true,
   done_date_tz = true,
   capture_file = true,

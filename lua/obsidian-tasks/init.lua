@@ -20,10 +20,6 @@ function M.setup(opts)
   require("obsidian-tasks.autocmds").setup(M.opts)
   -- Register :ObsidianTask dispatcher (replaces plugin/ stub).
   require("obsidian-tasks.cmd").setup()
-  -- Start per-workspace libuv file watcher (opt-out via opts.watcher = false).
-  if M.opts.watcher then
-    require("obsidian-tasks.index.watch").setup()
-  end
 end
 
 return M

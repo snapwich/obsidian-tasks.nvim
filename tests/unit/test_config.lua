@@ -10,8 +10,6 @@ T["defaults round-trip: merge({}) returns defaults"] = function()
   local merged = config.merge({})
   MiniTest.expect.equality(merged.auto_render, true)
   MiniTest.expect.equality(merged.default_folded, true)
-  MiniTest.expect.equality(merged.watcher, true)
-  MiniTest.expect.equality(merged.watcher_debounce_ms, 300)
   MiniTest.expect.equality(merged.done_date_format, "%Y-%m-%d")
   MiniTest.expect.equality(merged.done_date_tz, "local")
   MiniTest.expect.equality(merged.hide_query_metadata, false)
@@ -34,13 +32,11 @@ end
 T["user override: scalar fields"] = function()
   local merged = config.merge({
     auto_render = false,
-    watcher_debounce_ms = 500,
     done_date_format = "%d/%m/%Y",
     log_level = "debug",
     max_file_bytes = 2097152,
   })
   MiniTest.expect.equality(merged.auto_render, false)
-  MiniTest.expect.equality(merged.watcher_debounce_ms, 500)
   MiniTest.expect.equality(merged.done_date_format, "%d/%m/%Y")
   MiniTest.expect.equality(merged.log_level, "debug")
   MiniTest.expect.equality(merged.max_file_bytes, 2097152)
@@ -107,27 +103,6 @@ T["validate: auto_render must be boolean"] = function()
   MiniTest.expect.error(function()
     config.merge({ auto_render = "yes" })
   end, "auto_render")
-end
-
-T["validate: watcher must be boolean"] = function()
-  MiniTest.expect.error(function()
-    config.merge({ watcher = 1 })
-  end, "watcher")
-end
-
-T["validate: watcher_debounce_ms must be positive integer"] = function()
-  MiniTest.expect.error(function()
-    config.merge({ watcher_debounce_ms = 0 })
-  end, "watcher_debounce_ms")
-  MiniTest.expect.error(function()
-    config.merge({ watcher_debounce_ms = -5 })
-  end, "watcher_debounce_ms")
-  MiniTest.expect.error(function()
-    config.merge({ watcher_debounce_ms = 1.5 })
-  end, "watcher_debounce_ms")
-  MiniTest.expect.error(function()
-    config.merge({ watcher_debounce_ms = "fast" })
-  end, "watcher_debounce_ms")
 end
 
 T["validate: done_date_format must be string"] = function()

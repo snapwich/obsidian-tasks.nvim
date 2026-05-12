@@ -56,7 +56,6 @@ require("obsidian").setup({
 
 require("obsidian-tasks").setup({
   global_filter = "#task",
-  watcher = false, -- disable libuv watcher in tests
 })
 
 -- ── Run integration_real/test_*.lua ──────────────────────────────────────────

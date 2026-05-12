@@ -14,7 +14,7 @@
 -- landed since the last save/initial render.  Real user edits (detected by
 -- revert.on_lines for changes outside managed regions) flip it to false, and
 -- the wrapper then leaves `modified = true` alone — protecting the user's
--- unsaved query edits from being silently cleared by a watcher-driven re-render.
+-- unsaved query edits from being silently cleared by a cross-buffer re-render.
 
 local M = {}
 

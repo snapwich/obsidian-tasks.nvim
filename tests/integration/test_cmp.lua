@@ -191,6 +191,11 @@ end
 
 T["S2: date field offers next friday"] = function()
   local c1 = install_mock("obsidian-tasks.index", make_index_stub({}))
+  -- Mock obsidian-tasks with empty opts so values.lua falls back to its
+  -- built-in NL_DATE_PHRASES (which contains "next friday").  Without this
+  -- stub the test inherits whichever opts.date_input.suggestions another
+  -- test (e.g. test_smoke calling setup({})) left on the real module.
+  local c2 = install_mock("obsidian-tasks", { opts = {} })
   local Source = fresh_source()
   local inst = Source.new({}, {})
 
@@ -201,6 +206,7 @@ T["S2: date field offers next friday"] = function()
   eq(labels["next friday"] ~= nil, true)
 
   c1()
+  c2()
 end
 
 T["S2: scheduled emoji also triggers date items"] = function()

@@ -1,12 +1,10 @@
 -- tests/integration_real/test_bufwritepost_propagates.lua
 -- Regression test: writing a source .md from inside nvim must refresh the
 -- index entry for that file AND re-render every other buffer whose
--- reverse_index references it — independent of the libuv file watcher.
+-- reverse_index references it.
 --
--- Why: WSL2 hosts (and others) can saturate `fs.inotify.max_user_instances`,
--- starving our per-directory fs_event handles. If the in-nvim write path
--- relies on the watcher, edits silently fail to propagate to query buffers.
--- BufWritePost in autocmds.lua now handles in-nvim writes deterministically.
+-- This is the only path that propagates source-file edits to query buffers
+-- (external edits aren't auto-detected; the user must `<leader>tr`).
 
 local T = MiniTest.new_set()
 
