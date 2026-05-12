@@ -1,16 +1,13 @@
 -- tests/unit/test_cmd_misc.lua
--- Tests for misc subcommands: edit, refresh, render, new.
+-- Tests for misc subcommands: refresh, render, new.
 -- Also covers cross-context and feature-verification scenarios:
---   • Dispatcher routing for all 16 subcommands
---   • Tab-completion: all 16 subcmds returned
+--   • Dispatcher routing for all 15 subcommands
+--   • Tab-completion: all 15 subcmds returned
 --   • Source-buffer integration: :ObsidianTask done mutates buffer
 --   • Visual-range integration: 5 tasks all marked done
 --   • Priority dataview-format input (coverage gap from ot-btn3 discovery)
 --
 -- Covers:
---   edit: render line → vim.cmd("edit …") + cursor set
---   edit: non-render line → log.info emitted, no jump
---   edit: render line with src_path=nil → no jump (guard)
 --   refresh: calls render.refresh_buffer with current bufnr
 --   refresh: safe when no render active (stub no-ops without error)
 --   render: calls render.render_buffer with current bufnr
@@ -23,8 +20,8 @@
 --   new: cursor positioned after marker
 --   priority: dataview-format input preserved on overwrite (gap fill)
 --   priority: dataview origin preserved when setting new level
---   dispatcher: all 16 subcommands route without error
---   completion: all 16 subcmds included in empty-prefix result
+--   dispatcher: all 15 subcommands route without error
+--   completion: all 15 subcmds included in empty-prefix result
 
 local T = MiniTest.new_set()
 
@@ -154,121 +151,6 @@ local function capture_jump()
     vim.cmd = orig_cmd
     vim.api.nvim_win_set_cursor = orig_cursor
   end
-end
-
--- ════════════════════════════════════════════════════════════════════════════
--- edit
--- ════════════════════════════════════════════════════════════════════════════
-
-T["edit: render line → jumps to src_path at src_line"] = function()
-  -- managed.task_meta_for_row returns {source_file, source_row (0-indexed), task_text}
-  local fake_meta = { source_file = "/vault/note.md", source_row = 6, task_text = "- [ ] Rendered task" }
-  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
-    task_meta_for_row = function()
-      return fake_meta
-    end,
-  })
-  local bufnr = make_buf({ "- [ ] Rendered task" })
-  local buf_cleanup = mock_current_buf(bufnr)
-  local captured, jump_cleanup = capture_jump()
-
-  require("obsidian-tasks.cmd.edit").run({}, { line1 = 1, line2 = 1 })
-
-  managed_cleanup()
-  buf_cleanup()
-  jump_cleanup()
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  -- Should have jumped to the source file.
-  MiniTest.expect.equality(captured.edit_path ~= nil, true)
-  MiniTest.expect.equality(captured.edit_path:find("note%.md") ~= nil, true)
-  -- Cursor: source_row=6 (0-indexed) → row 7 (1-indexed), col 0.
-  MiniTest.expect.equality(captured.cursor_pos ~= nil, true)
-  MiniTest.expect.equality(captured.cursor_pos[1], 7)
-  MiniTest.expect.equality(captured.cursor_pos[2], 0)
-end
-
-T["edit: non-render line → emits log.info, no jump"] = function()
-  local draw_cleanup = mock_source_ctx()
-  local bufnr = make_buf({ "- [ ] Source task" })
-  local buf_cleanup = mock_current_buf(bufnr)
-  local captured, jump_cleanup = capture_jump()
-
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.edit").run({}, { line1 = 1, line2 = 1 })
-  end)
-
-  draw_cleanup()
-  buf_cleanup()
-  jump_cleanup()
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  -- No jump should have happened.
-  MiniTest.expect.equality(captured.edit_path, nil)
-  -- An info-level notification must have been emitted.
-  local found_info = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.INFO and c.msg:find("not on a render") then
-      found_info = true
-    end
-  end
-  MiniTest.expect.equality(found_info, true)
-end
-
-T["edit: render line with source_file=nil → no jump (safety guard)"] = function()
-  -- managed.task_meta_for_row may return a record without source_file in edge cases.
-  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
-    task_meta_for_row = function()
-      return { source_file = nil, source_row = 0, task_text = "" }
-    end,
-  })
-  local bufnr = make_buf({ "- [ ] Some line" })
-  local buf_cleanup = mock_current_buf(bufnr)
-  local captured, jump_cleanup = capture_jump()
-
-  local notify_calls = capture_notify(function()
-    require("obsidian-tasks.cmd.edit").run({}, { line1 = 1, line2 = 1 })
-  end)
-
-  managed_cleanup()
-  buf_cleanup()
-  jump_cleanup()
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  -- No jump should happen when source_file is nil.
-  MiniTest.expect.equality(captured.edit_path, nil)
-  -- Should emit an info notice instead.
-  local found_info = false
-  for _, c in ipairs(notify_calls) do
-    if c.level == vim.log.levels.INFO then
-      found_info = true
-    end
-  end
-  MiniTest.expect.equality(found_info, true)
-end
-
-T["edit: uses range.line1 for lnum (not cursor row)"] = function()
-  -- Ensure managed.task_meta_for_row is called with 0-indexed lnum derived from range.line1.
-  local called_lnum = nil
-  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
-    task_meta_for_row = function(_bufnr, lnum)
-      called_lnum = lnum
-      return nil
-    end,
-  })
-  local bufnr = make_buf({ "line1", "- [ ] line2" })
-  local buf_cleanup = mock_current_buf(bufnr)
-
-  capture_notify(function()
-    require("obsidian-tasks.cmd.edit").run({}, { line1 = 2, line2 = 2 })
-  end)
-
-  managed_cleanup()
-  buf_cleanup()
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-
-  -- range.line1=2 → lnum=1 (0-indexed)
-  MiniTest.expect.equality(called_lnum, 1)
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1028,10 +910,10 @@ T["visual-range integration: done skips non-task lines"] = function()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Dispatcher: all 16 subcommands route correctly (feature verification)
+-- Dispatcher: all 15 subcommands route correctly (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["dispatcher: all 16 subcommands route without 'unknown' error"] = function()
+T["dispatcher: all 15 subcommands route without 'unknown' error"] = function()
   local cmd = require("obsidian-tasks.cmd")
 
   local subcmds = {
@@ -1046,7 +928,6 @@ T["dispatcher: all 16 subcommands route without 'unknown' error"] = function()
     "priority",
     "recurrence",
     "tags",
-    "edit",
     "refresh",
     "render",
     "new",
@@ -1108,24 +989,6 @@ T["dispatcher: refresh subcmd calls refresh.run"] = function()
   MiniTest.expect.equality(called, true)
 end
 
-T["dispatcher: edit subcmd calls edit.run"] = function()
-  local cmd = require("obsidian-tasks.cmd")
-  local called = false
-  local key = "obsidian-tasks.cmd.edit"
-  local orig = package.loaded[key]
-  package.loaded[key] = {
-    run = function()
-      called = true
-    end,
-  }
-
-  cmd.dispatch({ fargs = { "edit" }, line1 = 1, line2 = 1 })
-
-  package.loaded[key] = orig
-
-  MiniTest.expect.equality(called, true)
-end
-
 T["dispatcher: new subcmd calls new.run"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local called = false
@@ -1145,10 +1008,10 @@ T["dispatcher: new subcmd calls new.run"] = function()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Tab completion: all 16 subcmds returned (feature verification)
+-- Tab completion: all 15 subcmds returned (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["completion: all 16 subcommands present in empty-prefix result"] = function()
+T["completion: all 15 subcommands present in empty-prefix result"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local result = cmd._completion("", "ObsidianTask ", 13)
 
@@ -1164,7 +1027,6 @@ T["completion: all 16 subcommands present in empty-prefix result"] = function()
     "priority",
     "recurrence",
     "tags",
-    "edit",
     "refresh",
     "render",
     "new",
@@ -1182,17 +1044,17 @@ T["completion: all 16 subcommands present in empty-prefix result"] = function()
   end
 end
 
-T["completion: 'edit', 'refresh', 'render', 'new' all appear"] = function()
+T["completion: 'refresh', 'render', 'new', 'goto' all appear"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local result = cmd._completion("", "ObsidianTask ", 13)
   local result_set = {}
   for _, v in ipairs(result) do
     result_set[v] = true
   end
-  MiniTest.expect.equality(result_set["edit"], true)
   MiniTest.expect.equality(result_set["refresh"], true)
   MiniTest.expect.equality(result_set["render"], true)
   MiniTest.expect.equality(result_set["new"], true)
+  MiniTest.expect.equality(result_set["goto"], true)
 end
 
 T["completion: prefix 're' returns {refresh, render, recurrence}"] = function()
@@ -1214,13 +1076,6 @@ T["completion: prefix 'n' returns {new}"] = function()
   local result = cmd._completion("n", "ObsidianTask n", 14)
   MiniTest.expect.equality(#result, 1)
   MiniTest.expect.equality(result[1], "new")
-end
-
-T["completion: prefix 'ed' returns {edit}"] = function()
-  local cmd = require("obsidian-tasks.cmd")
-  local result = cmd._completion("ed", "ObsidianTask ed", 15)
-  MiniTest.expect.equality(#result, 1)
-  MiniTest.expect.equality(result[1], "edit")
 end
 
 return T

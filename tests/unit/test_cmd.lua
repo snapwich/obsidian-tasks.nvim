@@ -467,7 +467,6 @@ T["dispatch: all valid subcmd names route without 'unknown' error"] = function()
     "priority",
     "recurrence",
     "tags",
-    "edit",
     "refresh",
     "render",
     "new",
@@ -496,10 +495,10 @@ end
 
 -- ── M._completion: top-level subcmd name completion ─────────────────────────
 
-T["completion: empty arg_lead returns all 16 valid subcmds"] = function()
+T["completion: empty arg_lead returns all 15 valid subcmds"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local result = cmd._completion("", "ObsidianTask ", 13)
-  MiniTest.expect.equality(#result, 16)
+  MiniTest.expect.equality(#result, 15)
   local set = {}
   for _, v in ipairs(result) do
     set[v] = true

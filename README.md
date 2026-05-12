@@ -17,7 +17,7 @@ Render, filter, and edit tasks across your Obsidian vault — directly in Neovim
 
 ```lua
 {
-  "snapptpod/obsidian-tasks.nvim",  -- replace with actual repo URL at first publish
+  "snapwich/obsidian-tasks.nvim",  -- replace with actual repo URL at first publish
   dependencies = {
     "obsidian-nvim/obsidian.nvim",
     "saghen/blink.cmp",
@@ -57,12 +57,6 @@ require("obsidian-tasks").setup({
   -- Install buffer-local leader keymaps (<leader>tt, <leader>te, etc.) on
   -- dashboard buffers.  Set false to manage keymaps yourself.
   setup_keymaps = true,            -- boolean
-
-  -- Watch vault files for changes and refresh the in-memory index automatically.
-  watcher = true,                  -- boolean
-
-  -- Debounce delay (ms) applied to file-watcher events before re-indexing.
-  watcher_debounce_ms = 300,       -- positive integer
 
   -- strftime pattern used when stamping the done date (✅) on task completion.
   done_date_format = "%Y-%m-%d",   -- string (must contain %)
@@ -211,7 +205,7 @@ vim.keymap.set("n", "<leader>tr", "<cmd>ObsidianTask refresh<cr>",   { desc = "R
 | `:ObsidianTask scheduled` | Set / edit the scheduled date (⏳)                            |
 | `:ObsidianTask new`       | Create a new task (appends to `capture_file` or current file) |
 | `:ObsidianTask refresh`   | Re-render all open query blocks                               |
-| `:ObsidianTask edit`      | Jump to the source line of a rendered task                    |
+| `:ObsidianTask goto`      | Jump to the source line of a rendered task                    |
 
 ## blink.cmp Registration
 
@@ -257,27 +251,6 @@ Expand the fold with `zo` or `zO` to see whether tasks are rendered. If the coun
 is truly 0, check that your filter matches existing tasks. Try an empty query (just
 ` ```tasks ` and ` ``` `) to see all tasks.
 
-### File watcher not refreshing (Linux)
-
-The watcher uses libuv `fs_event` (inotify on Linux). If you have many vault files you may hit
-the kernel inotify watch limit:
-
-```
-FATAL: inotify limit reached — increase fs.inotify.max_user_watches
-```
-
-Raise the limit temporarily:
-
-```sh
-sudo sysctl fs.inotify.max_user_watches=524288
-```
-
-To persist across reboots, add to `/etc/sysctl.conf`:
-
-```
-fs.inotify.max_user_watches=524288
-```
-
 ### obsidian-tasks source not appearing in blink.cmp
 
 1. Confirm the provider is registered under the key `"obsidian-tasks"` (see [blink.cmp Registration](#blinkcmp-registration)).
@@ -291,10 +264,12 @@ fs.inotify.max_user_watches=524288
 If the scanner logs permission-denied errors for some files, those files are silently skipped.
 Check that Neovim has read access to all vault directories.
 
-### Newly created files not appearing in query results
+### External edits not reflected in queries
 
-Queries against an empty result set are not re-evaluated when new files are added to the vault
-(v1 limitation). Run `:ObsidianTask refresh` after creating a new note to force a full re-index.
+Edits made outside Neovim — the Obsidian desktop app, `git pull`, syncthing, another editor —
+are not auto-detected. In-Neovim edits propagate across open buffers on `BufWritePost`, but
+external changes need a manual `:ObsidianTask refresh` (or `<leader>tr` in a dashboard) to
+re-index from disk.
 
 ## v1 Features & Limitations
 
@@ -303,7 +278,7 @@ Queries against an empty result set are not re-evaluated when new files are adde
 - Emoji-field and Dataview-field task parsing and serialization
 - Real-text task rendering in dashboard buffers with manual fold per query block
 - BufWriteCmd save handler — only source content (queries + prose) written to disk
-- In-memory vault index with libuv file watcher
+- In-memory vault index (in-Neovim edits propagate on save; external edits picked up via `:ObsidianTask refresh`)
 - Query blocks: filter, sort, group, limit, hide
 - Status cycling with customizable statuses
 - Leader keymaps for task mutation directly from the dashboard
@@ -316,5 +291,5 @@ Queries against an empty result set are not re-evaluated when new files are adde
   is a v2 feature and raises an error if called directly.
 - **Dependency filter queries:** `depends_on:` filter keyword is not yet implemented.
 - **Language:** English-only NL date phrases.
-- **Newly created files:** require a manual `:ObsidianTask refresh` to appear in queries
-  (reverse-index not updated on file creation).
+- **External vault edits:** changes from the Obsidian app, `git pull`, syncthing, or another
+  editor are not auto-detected; run `:ObsidianTask refresh` (or `<leader>tr`) to re-index.
