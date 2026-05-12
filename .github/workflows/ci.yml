@@ -25,18 +25,18 @@ jobs:
       - name: Install selene
         run: |
           SELENE_VER="0.30.1"
-          curl -sL "https://github.com/Kampfkarren/selene/releases/download/${SELENE_VER}/selene-${SELENE_VER}-linux.zip" -o selene.zip
-          unzip -q selene.zip selene
-          chmod +x selene
-          sudo mv selene /usr/local/bin/
+          curl -sL "https://github.com/Kampfkarren/selene/releases/download/${SELENE_VER}/selene-${SELENE_VER}-linux.zip" -o /tmp/selene.zip
+          unzip -q -d /tmp /tmp/selene.zip selene
+          chmod +x /tmp/selene
+          sudo mv /tmp/selene /usr/local/bin/
 
       - name: Install StyLua
         run: |
           STYLUA_VER="v2.4.1"
-          curl -sL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VER}/stylua-linux-x86_64.zip" -o stylua.zip
-          unzip -q stylua.zip stylua
-          chmod +x stylua
-          sudo mv stylua /usr/local/bin/
+          curl -sL "https://github.com/JohnnyMorganz/StyLua/releases/download/${STYLUA_VER}/stylua-linux-x86_64.zip" -o /tmp/stylua.zip
+          unzip -q -d /tmp /tmp/stylua.zip stylua
+          chmod +x /tmp/stylua
+          sudo mv /tmp/stylua /usr/local/bin/
 
       - name: Cache .deps
         uses: actions/cache@v4
