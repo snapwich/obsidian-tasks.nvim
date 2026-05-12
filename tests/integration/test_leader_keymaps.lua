@@ -417,7 +417,7 @@ T["setup_keymaps=false: no buffer-local keymaps are installed"] = function()
   -- Leader keymaps must be absent when setup_keymaps = false.
   eq(find_nmap(dash_bufnr, "<leader>tt"), nil)
   eq(find_nmap(dash_bufnr, "<leader>tp"), nil)
-  eq(find_nmap(dash_bufnr, "<leader>tg"), nil)
+  eq(find_nmap(dash_bufnr, "gd"), nil)
   eq(find_nmap(dash_bufnr, "<leader>tr"), nil)
   eq(find_nmap(dash_bufnr, "<leader>tD"), nil)
 

@@ -5,7 +5,7 @@
 -- our render attached, we must observe:
 --   • obsidian.nvim's buffer-local <CR> exists (its smart_action).
 --   • NO buffer-local <CR>/gf is installed by us (desc doesn't mention us).
---   • Our <leader>tg IS installed (with our `obsidian-tasks:` desc prefix).
+--   • Our `gd` IS installed (with our `obsidian-tasks:` desc prefix).
 --
 -- If a future change re-introduces a buffer-local <CR> in render/keymap.lua,
 -- this test fails before the race bug ships.

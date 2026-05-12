@@ -35,6 +35,7 @@ local VALID_SUBCMDS = {
   "refresh",
   "render",
   "new",
+  "goto",
 }
 
 local VALID_SUBCMDS_SET = {}

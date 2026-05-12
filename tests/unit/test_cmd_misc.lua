@@ -1,8 +1,8 @@
 -- tests/unit/test_cmd_misc.lua
 -- Tests for misc subcommands: edit, refresh, render, new.
 -- Also covers cross-context and feature-verification scenarios:
---   • Dispatcher routing for all 13 subcommands
---   • Tab-completion: all 15 subcmds returned
+--   • Dispatcher routing for all 16 subcommands
+--   • Tab-completion: all 16 subcmds returned
 --   • Source-buffer integration: :ObsidianTask done mutates buffer
 --   • Visual-range integration: 5 tasks all marked done
 --   • Priority dataview-format input (coverage gap from ot-btn3 discovery)
@@ -23,8 +23,8 @@
 --   new: cursor positioned after marker
 --   priority: dataview-format input preserved on overwrite (gap fill)
 --   priority: dataview origin preserved when setting new level
---   dispatcher: all 13 subcommands route without error
---   completion: all 15 subcmds included in empty-prefix result
+--   dispatcher: all 16 subcommands route without error
+--   completion: all 16 subcmds included in empty-prefix result
 
 local T = MiniTest.new_set()
 
@@ -935,10 +935,10 @@ T["visual-range integration: done skips non-task lines"] = function()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Dispatcher: all 13 subcommands route correctly (feature verification)
+-- Dispatcher: all 16 subcommands route correctly (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["dispatcher: all 13 subcommands route without 'unknown' error"] = function()
+T["dispatcher: all 16 subcommands route without 'unknown' error"] = function()
   local cmd = require("obsidian-tasks.cmd")
 
   local subcmds = {
@@ -957,6 +957,7 @@ T["dispatcher: all 13 subcommands route without 'unknown' error"] = function()
     "refresh",
     "render",
     "new",
+    "goto",
   }
 
   for _, name in ipairs(subcmds) do
@@ -1051,10 +1052,10 @@ T["dispatcher: new subcmd calls new.run"] = function()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Tab completion: all 15 subcmds returned (feature verification)
+-- Tab completion: all 16 subcmds returned (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["completion: all 15 subcommands present in empty-prefix result"] = function()
+T["completion: all 16 subcommands present in empty-prefix result"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local result = cmd._completion("", "ObsidianTask ", 13)
 
@@ -1074,6 +1075,7 @@ T["completion: all 15 subcommands present in empty-prefix result"] = function()
     "refresh",
     "render",
     "new",
+    "goto",
   }
 
   MiniTest.expect.equality(#result, #expected)

@@ -8,7 +8,8 @@
 --     <leader>tp — cycle priority: none → highest → high → medium → low → lowest → none
 --     <leader>td — set due date (vim.ui.input prompt for YYYY-MM-DD)
 --     <leader>tT — edit tags (vim.ui.input, comma-separated)
---     <leader>tg — jump to source (from anywhere on a rendered task row)
+--     gd         — jump to source (from anywhere on a rendered task row;
+--                  also exposed as :ObsidianTask goto)
 --     <leader>tD — delete task (vim.fn.confirm, then remove source line)
 --     <leader>tr — force re-render all regions in this buffer
 --
@@ -21,8 +22,8 @@
 -- early F9 prototypes we did, but obsidian.nvim's ftplugin re-registers its
 -- own smart_action <CR> after our render fires, racing our handler.  Instead,
 -- press <CR> with the cursor on the trailing `[[wikilink]]` of a rendered row
--- (obsidian.nvim's smart_action follows the link) or use <leader>tg to jump
--- from anywhere on the row.
+-- (obsidian.nvim's smart_action follows the link) or use `gd` to jump from
+-- anywhere on the row.
 
 local M = {}
 
@@ -121,40 +122,22 @@ local function do_rerender(bufnr)
   render.rerender_buffer(bufnr, ws)
 end
 
--- ── Jump handler (<leader>tg) ────────────────────────────────────────────────
+-- ── Jump handler (gd) ─────────────────────────────────────────────────────────
 
---- Build the <leader>tg jump handler closed over *bufnr*.
---- Uses managed.task_meta_for_row — trusts the extmark position.
---- For stale positions the user runs <leader>tr to refresh.
---- Emits an info notice when invoked on a row without task_meta (i.e. not a
---- rendered task line) and stays put — no fall-through to obsidian's
---- smart_action, since the user explicitly chose <leader>tg.
---- @param bufnr integer
+--- Build the `gd` jump handler closed over *bufnr*.
+--- Delegates to `:ObsidianTask goto` so the keymap and the command stay in
+--- lockstep.  The cmd module reads cursor-row from range.line1 and trusts the
+--- extmark position; drift emits an info notice but still jumps.
+--- @param _bufnr integer
 --- @return fun()
-local function make_jump_handler(bufnr)
+local function make_jump_handler(_bufnr)
   return function()
-    local managed = require("obsidian-tasks.render.managed")
     local cursor = vim.api.nvim_win_get_cursor(0)
-    local lnum = cursor[1] - 1 -- 0-indexed
-
-    local meta = managed.task_meta_for_row(bufnr, lnum)
-    if not (meta and meta.source_file) then
-      log.info("obsidian-tasks: no rendered task on this line")
-      return
-    end
-
-    -- Jump to source.  :edit preserves unsaved changes if already loaded.
-    vim.cmd("edit " .. vim.fn.fnameescape(meta.source_file))
-    -- source_row is 0-indexed; nvim_win_set_cursor expects 1-indexed.
-    local target_row = meta.source_row + 1
-
-    -- Drift notification only (still jump — extmark is trusted).
-    local current = read_source_line(meta.source_file, meta.source_row)
-    if current ~= nil and current ~= meta.task_text then
-      log.info("obsidian-tasks: source position may be stale — run <leader>tr to refresh")
-    end
-
-    vim.api.nvim_win_set_cursor(0, { target_row, 0 })
+    require("obsidian-tasks.cmd").dispatch({
+      fargs = { "goto" },
+      line1 = cursor[1],
+      line2 = cursor[1],
+    })
   end
 end
 
@@ -392,14 +375,14 @@ local function should_setup_keymaps()
   return true -- default: install
 end
 
--- All leader lhs values (for detach).
-local LEADER_LHS = {
+-- All lhs values registered by attach (for detach).
+local ATTACH_LHS = {
   "<leader>tt",
   "<leader>te",
   "<leader>tp",
   "<leader>td",
   "<leader>tT",
-  "<leader>tg",
+  "gd",
   "<leader>tD",
   "<leader>tr",
 }
@@ -437,7 +420,7 @@ function M.attach(bufnr)
   kmap("<leader>tp", make_cycle_priority_handler(bufnr), "cycle task priority")
   kmap("<leader>td", make_due_date_handler(bufnr), "set/edit due date")
   kmap("<leader>tT", make_edit_tags_handler(bufnr), "edit task tags")
-  kmap("<leader>tg", make_jump_handler(bufnr), "jump to source file at task row")
+  kmap("gd", make_jump_handler(bufnr), "jump to source file at task row")
   kmap("<leader>tD", make_delete_handler(bufnr), "delete task (with confirmation)")
   kmap("<leader>tr", make_refresh_handler(bufnr), "force re-render all regions")
 end
@@ -446,8 +429,8 @@ end
 --- Safe to call when no mappings exist (no-op).
 --- @param bufnr integer
 function M.detach(bufnr)
-  -- Remove leader keymaps (all are no-ops if not installed).
-  for _, lhs in ipairs(LEADER_LHS) do
+  -- Remove buffer-local keymaps (all are no-ops if not installed).
+  for _, lhs in ipairs(ATTACH_LHS) do
     pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
   end
 end

@@ -4,7 +4,7 @@
 -- Verifies the full render pipeline end-to-end:
 --   • Rendered buffer text matches expected content.
 --   • Fence concealment extmarks are applied correctly.
---   • <CR> on a render task line jumps to source file + correct line.
+--   • gd on a render task line jumps to source file + correct line.
 --   • <CR> on a non-render line falls through to smart_action.
 --   • Two ```tasks blocks in one file render independently.
 --
@@ -231,9 +231,9 @@ T["integration: conceallevel is NOT changed by render"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── 3. <leader>tg on render task line → jump to source ───────────────────────
+-- ── 3. `gd` on render task line → jump to source ─────────────────────────────
 
-T["integration: <leader>tg on render task line jumps to source file at correct line"] = function()
+T["integration: gd on render task line jumps to source file at correct line"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local parse = require("obsidian-tasks.task.parse")
@@ -263,7 +263,7 @@ T["integration: <leader>tg on render task line jumps to source file at correct l
   -- The task line was inserted right after the closing fence (0-indexed line 3 → 1-indexed row 4).
   vim.api.nvim_win_set_cursor(winid, { 4, 0 })
 
-  local cb = find_callback(bufnr, "<leader>tg")
+  local cb = find_callback(bufnr, "gd")
   MiniTest.expect.equality(cb ~= nil, true)
   cb()
 
@@ -292,7 +292,7 @@ end
 -- Earlier F9 prototypes overrode <CR>/gf, but the override raced obsidian.nvim's
 -- ftplugin which re-registers smart_action <CR> after our render fires.  The
 -- override now lives entirely in obsidian.nvim — press <CR> on the trailing
--- wikilink (smart_action follows it) or use <leader>tg from anywhere on the row.
+-- wikilink (smart_action follows it) or use `gd` from anywhere on the row.
 
 T["integration: render does NOT install a buffer-local <CR> override"] = function()
   local render = fresh_render()
