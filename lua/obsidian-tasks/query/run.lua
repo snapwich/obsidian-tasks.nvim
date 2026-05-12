@@ -83,10 +83,11 @@ end
 
 --- Execute a parsed query AST against an index.
 ---
---- @param ast   table  AST from query/parse.lua
---- @param index table  index module (obsidian-tasks.index) — must expose tasks_in()
+--- @param ast            table   AST from query/parse.lua
+--- @param index          table   index module (obsidian-tasks.index) — must expose tasks_in()
+--- @param workspace_root string? absolute path prefix to scope results to a single vault
 --- @return table  QueryResult
-function M.run(ast, index)
+function M.run(ast, index, workspace_root)
   -- 0. Short-circuit on parse_error: a typo'd directive (e.g. "has tags" instead
   -- of "has tag") would otherwise be silently dropped from ast.filters and the
   -- surviving filters would run with a wider result set than intended. Render
@@ -106,10 +107,20 @@ function M.run(ast, index)
     end
   end
 
-  -- 1. Collect all tasks from the index.
+  -- 1. Collect tasks from the index, scoped to the current workspace.
   -- tasks_in() returns (task, abs_path, line_num).
+  local path_filter = nil
+  if workspace_root then
+    local root = tostring(workspace_root)
+    if root:sub(-1) ~= "/" then
+      root = root .. "/"
+    end
+    path_filter = function(abs_path)
+      return abs_path:sub(1, #root) == root
+    end
+  end
   local items = {} -- { task, path, line_num, _idx }
-  local iter = index.tasks_in(nil)
+  local iter = index.tasks_in(path_filter)
   local idx = 0
   while true do
     local task, path, line_num = iter()

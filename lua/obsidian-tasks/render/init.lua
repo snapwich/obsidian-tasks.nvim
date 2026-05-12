@@ -159,22 +159,30 @@ function M.render_buffer(bufnr, workspace)
     revert.suppress(bufnr)
     local _render_ok, _render_err = pcall(function()
       -- ── 2. Lazy index init ─────────────────────────────────────────────────────
-      -- If the index appears empty and we have a workspace, kick off a one-shot
-      -- vault walk.  The _lazy_init_started guard prevents re-triggering the walk
-      -- on the recursive render call that fires from the completion callback —
+      -- If this workspace has no indexed tasks yet, kick off a one-shot vault
+      -- walk.  The _lazy_init_started guard prevents re-triggering the walk on
+      -- the recursive render call that fires from the completion callback —
       -- which would otherwise loop forever when the vault has zero tasks.
       do
-        local any = index.tasks_in(nil)()
-        if any == nil and workspace and not _lazy_init_started[workspace] then
-          _lazy_init_started[workspace] = true
-          -- Start async walk; re-render once complete (non-blocking).
-          index.refresh_all(workspace, function()
-            vim.schedule(function()
-              M.render_buffer(bufnr, workspace)
+        if workspace and not _lazy_init_started[workspace] then
+          local ws_root = tostring(workspace.root)
+          if ws_root:sub(-1) ~= "/" then
+            ws_root = ws_root .. "/"
+          end
+          local any = index.tasks_in(function(p)
+            return p:sub(1, #ws_root) == ws_root
+          end)()
+          if any == nil then
+            _lazy_init_started[workspace] = true
+            -- Start async walk; re-render once complete (non-blocking).
+            index.refresh_all(workspace, function()
+              vim.schedule(function()
+                M.render_buffer(bufnr, workspace)
+              end)
             end)
-          end)
-          -- Fall through: render immediately with empty results so the user sees
-          -- "0 results" rather than a blank block.
+            -- Fall through: render immediately with empty results so the user sees
+            -- "0 results" rather than a blank block.
+          end
         end
       end
 
@@ -218,7 +226,8 @@ function M.render_buffer(bufnr, workspace)
         local layout_lines
         local ok, err = pcall(function()
           local ast = query_parse.parse(query_text)
-          local result = query_run.run(ast, index)
+          local ws_root = workspace and workspace.root or nil
+          local result = query_run.run(ast, index, ws_root)
           layout_lines = layout_mod.layout(result)
         end)
 

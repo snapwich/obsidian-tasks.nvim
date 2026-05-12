@@ -31,13 +31,18 @@ end
 --- Build a minimal mock index from a list of { task, path } items.
 local function make_index(items)
   return {
-    tasks_in = function(_path_filter)
+    tasks_in = function(path_filter)
       local i = 0
       return function()
-        i = i + 1
-        local item = items[i]
-        if item then
-          return item.task, item.path
+        while true do
+          i = i + 1
+          local item = items[i]
+          if not item then
+            return nil
+          end
+          if path_filter == nil or path_filter(item.path) then
+            return item.task, item.path
+          end
         end
       end
     end,
@@ -1029,6 +1034,44 @@ run_tests["limit across groups: total cap applied across group boundaries"] = fu
   eq(found_z, false)
 end
 
+run_tests["workspace_root: scopes tasks to workspace prefix"] = function()
+  local vault1_task = pt("- [ ] Vault 1 task")
+  local vault2_task = pt("- [ ] Vault 2 task")
+  local idx = make_index({
+    { task = vault1_task, path = "/vaults/notes/note.md" },
+    { task = vault2_task, path = "/vaults/work-notes/work.md" },
+  })
+  local ast = qp.parse("not done")
+  local result = run_mod.run(ast, idx, "/vaults/notes")
+  eq(result.total, 1)
+  eq(result.groups[1].tasks[1].description, "Vault 1 task")
+end
+
+run_tests["workspace_root: nil means no scoping (all tasks)"] = function()
+  local vault1_task = pt("- [ ] Vault 1 task")
+  local vault2_task = pt("- [ ] Vault 2 task")
+  local idx = make_index({
+    { task = vault1_task, path = "/vaults/notes/note.md" },
+    { task = vault2_task, path = "/vaults/work-notes/work.md" },
+  })
+  local ast = qp.parse("not done")
+  local result = run_mod.run(ast, idx, nil)
+  eq(result.total, 2)
+end
+
+run_tests["workspace_root: trailing slash handled correctly"] = function()
+  local task_in = pt("- [ ] Inside vault")
+  local task_out = pt("- [ ] Outside vault")
+  local idx = make_index({
+    { task = task_in, path = "/vault/subdir/note.md" },
+    { task = task_out, path = "/vault-other/note.md" },
+  })
+  local ast = qp.parse("not done")
+  local result = run_mod.run(ast, idx, "/vault")
+  eq(result.total, 1)
+  eq(result.groups[1].tasks[1].description, "Inside vault")
+end
+
 T["run"] = run_tests
 
 -- ── integration tests: fixture vault ──────────────────────────────────────
@@ -1209,6 +1252,58 @@ int_tests["group by priority: correct group names"] = function()
   MiniTest.expect.equality(names["Priority 6: None"] ~= nil, true)
   eq(names["Priority 1: Highest"], 1) -- Call dentist
   eq(names["Priority 6: None"], 5) -- remaining 5 not-done #task tasks
+end
+
+int_tests["workspace_root: cross-vault isolation with real fixture files"] = function()
+  -- Index tasks from BOTH fixture vaults into a single mock index,
+  -- simulating what happens when a user has multiple obsidian workspaces open.
+  local VAULT2 = vim.fn.fnamemodify("tests/fixtures/vault2", ":p")
+
+  local all_items = {}
+  -- Parse vault1 tasks
+  for _, fname in ipairs({ "tasks_a.md", "tasks_b.md" }) do
+    local parsed = parse_fixture(fname)
+    for _, item in ipairs(parsed) do
+      all_items[#all_items + 1] = item
+    end
+  end
+  -- Parse vault2 tasks
+  local vault2_path = VAULT2 .. "work.md"
+  local f = io.open(vault2_path, "r")
+  assert(f, "vault2/work.md must exist")
+  for line in f:lines() do
+    local t = parse_task.parse(line)
+    if t then
+      all_items[#all_items + 1] = { task = t, path = vault2_path }
+    end
+  end
+  f:close()
+
+  local idx = make_index(all_items)
+
+  -- Query scoped to vault1: must NOT include vault2 tasks
+  local ast = qp.parse("not done")
+  local result_v1 = run_mod.run(ast, idx, VAULT:gsub("/$", ""))
+  for _, g in ipairs(result_v1.groups) do
+    for _, task in ipairs(g.tasks) do
+      eq(task.description:find("Deploy to production") == nil, true)
+      eq(task.description:find("Review pull request") == nil, true)
+    end
+  end
+
+  -- Query scoped to vault2: must NOT include vault1 tasks
+  local result_v2 = run_mod.run(ast, idx, VAULT2:gsub("/$", ""))
+  eq(result_v2.total, 2) -- "Deploy to production" + "Review pull request"
+  for _, g in ipairs(result_v2.groups) do
+    for _, task in ipairs(g.tasks) do
+      eq(task.description:find("Buy milk") == nil, true)
+    end
+  end
+
+  -- Unscoped: all tasks from both vaults
+  local result_all = run_mod.run(ast, idx, nil)
+  eq(result_all.total > result_v1.total, true)
+  eq(result_all.total > result_v2.total, true)
 end
 
 T["integration"] = int_tests
