@@ -97,6 +97,23 @@ function M.refresh_file(abs_path)
   _index[abs_path] = { mtime = mtime, tasks = tasks }
 end
 
+--- Re-parse every currently-indexed file synchronously, bypassing the
+--- mtime no-op check so external edits made within the same second resolution
+--- are picked up.  Files no longer on disk are dropped.
+---
+--- Does NOT discover new files (that would require a vault walk via
+--- refresh_all).  Used by `<leader>tr` for an on-demand refresh.
+function M.refresh_all_indexed_sync()
+  local paths = {}
+  for path in pairs(_index) do
+    paths[#paths + 1] = path
+  end
+  for _, path in ipairs(paths) do
+    _index[path] = nil -- bypass mtime no-op
+    M.refresh_file(path)
+  end
+end
+
 --- Full vault walk: re-parse every file via async search.
 ---
 --- *on_done* is called (with no arguments) once the walk finishes.

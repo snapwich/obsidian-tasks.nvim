@@ -103,8 +103,18 @@ local function persist_source(source_file)
 end
 
 --- Re-render the dashboard buffer.
+---
+--- Refreshes the index from disk first so externally-edited source files
+--- are picked up.  Without this, rerender just re-queries the stale
+--- in-memory index and shows the same pre-edit state.  Wrapped in pcall
+--- to be defensive against stubbed index modules in tests.
+---
 --- @param bufnr integer
 local function do_rerender(bufnr)
+  local index = require("obsidian-tasks.index")
+  if type(index.refresh_all_indexed_sync) == "function" then
+    pcall(index.refresh_all_indexed_sync)
+  end
   local render = require("obsidian-tasks.render")
   local path = vim.api.nvim_buf_get_name(bufnr)
   local ws = safe_workspace(path)
