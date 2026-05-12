@@ -3,6 +3,16 @@
 -- Does NOT source user config. Pins plugin paths to repo-local checkouts.
 -- Clones mini.nvim to .deps/mini.nvim on first run.
 
+-- nvim's bundled ftplugin/markdown.lua calls vim.treesitter.start(); CI runners
+-- have no parsers installed so it asserts. Swallow that so bufload of .md files
+-- doesn't blow up the test.
+do
+  local orig = vim.treesitter.start
+  vim.treesitter.start = function(...)
+    pcall(orig, ...)
+  end
+end
+
 local root = vim.fn.getcwd()
 local deps_dir = root .. "/.deps"
 local mini_path = deps_dir .. "/mini.nvim"

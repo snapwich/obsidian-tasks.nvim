@@ -78,9 +78,20 @@ end
 ---
 --- @param bufnr integer
 --- @param fn    fun()  buffer mutation to perform
+-- nvim 0.12 removed BufModifiedSet in favor of OptionSet/modified; only
+-- include it when the running nvim still recognizes it, otherwise the
+-- append throws E474: Invalid argument.
+local _suppress_events = (function()
+  local events = { "TextChanged", "TextChangedI" }
+  if vim.fn.exists("##BufModifiedSet") == 1 then
+    events[#events + 1] = "BufModifiedSet"
+  end
+  return events
+end)()
+
 function M.with_clean_buffer(bufnr, fn)
   local saved_ei = vim.opt.eventignore:get()
-  vim.opt.eventignore:append({ "TextChanged", "TextChangedI", "BufModifiedSet" })
+  vim.opt.eventignore:append(_suppress_events)
 
   local saved_ul = vim.bo[bufnr].undolevels
   vim.bo[bufnr].undolevels = -1
