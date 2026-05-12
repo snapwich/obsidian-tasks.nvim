@@ -107,6 +107,44 @@ function M.merge(opts_statuses)
   rebuild_lookups()
 end
 
+--- Register obsidian.nvim's `Obsidian.opts.checkbox.order` symbols as
+--- known statuses so that <CR> (smart_action) toggles on a rendered task
+--- row land on a symbol our revert/status-edit detector accepts.
+---
+--- Each obsidian-only symbol is added as a TODO-type entry with name
+--- "Obsidian: <symbol>" and a self-cycle (next=symbol). User overrides
+--- via opts.statuses still take precedence — call status.merge AFTER this
+--- if both are in play, or this AFTER merge if you want user opts to win.
+---
+--- Safe to call when obsidian.nvim is not loaded — no-op.
+--- Idempotent: registering the same symbol twice is a no-op.
+function M.bridge_obsidian_checkbox_order()
+  if type(Obsidian) ~= "table" then
+    return
+  end
+  local checkbox = Obsidian.opts and Obsidian.opts.checkbox
+  local order = checkbox and checkbox.order
+  if type(order) ~= "table" then
+    return
+  end
+
+  local changed = false
+  for _, sym in ipairs(order) do
+    if type(sym) == "string" and sym ~= "" and not M.by_symbol[sym] then
+      M.statuses[#M.statuses + 1] = {
+        symbol = sym,
+        name = "Obsidian: " .. sym,
+        next = sym,
+        type = "TODO",
+      }
+      changed = true
+    end
+  end
+  if changed then
+    rebuild_lookups()
+  end
+end
+
 --- Return the next symbol in the cycle for the given symbol.
 --- If the symbol is unknown, returns it unchanged (no-op for caller).
 ---
