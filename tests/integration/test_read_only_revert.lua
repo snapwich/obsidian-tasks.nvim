@@ -572,4 +572,88 @@ T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] 
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
+-- ── T13: pure insert at managed region boundary — revert covers both ─────────
+-- Regression test for the `o` / `O`-on-folded-fence corruption.
+-- Pressing `o` on a closed query-fence fold lands the new blank line at the
+-- first row of the rendered region (the row immediately after the closing
+-- fence).  Without the snapshot-shift fix, the revert deleted the pre-edit
+-- range and left the user's blank + one trailing rendered task behind, then
+-- cascaded corruption into every block below.
+
+T["revert: pure insert at region start row — both inserted row and managed rows revert"] = function()
+  render.configure({ default_folded = false })
+
+  local index_mod = require("obsidian-tasks.index")
+  local task_parse = require("obsidian-tasks.task.parse")
+  -- Two-block stub so we can verify the second block's positions also recover.
+  local task_a = task_parse.parse("- [ ] Block A task")
+  local task_b = task_parse.parse("- [ ] Block B task")
+  assert(task_a and task_b)
+  local saved = {
+    tasks_in = index_mod.tasks_in,
+    set_render_paths = index_mod.set_render_paths,
+    clear_render_paths = index_mod.clear_render_paths,
+  }
+  -- Each tasks_in() call returns the same single task — block A and block B
+  -- each get one row.  Per-call iterator so two render passes both see a task.
+  index_mod.tasks_in = function(_)
+    local returned = false
+    return function()
+      if not returned then
+        returned = true
+        return task_a, "/vault/stub.md", 1
+      end
+    end
+  end
+  index_mod.set_render_paths = function() end
+  index_mod.clear_render_paths = function() end
+
+  local bufnr = make_buf({
+    "```tasks", -- row 0  (block A fence start)
+    "not done", -- row 1
+    "```", -- row 2
+    "", -- row 3  (separator)
+    "```tasks", -- row 4  (block B fence start)
+    "not done", -- row 5
+    "```", -- row 6
+  })
+
+  render.render_buffer(bufnr, nil)
+  -- After render:
+  --   row 0-2 : block A fence
+  --   row 3   : block A's rendered task   ← managed region [3, 3]
+  --   row 4   : ""
+  --   row 5-7 : block B fence
+  --   row 8   : block B's rendered task   ← managed region [8, 8]
+
+  local pre_line_count = vim.api.nvim_buf_line_count(bufnr)
+  eq(pre_line_count, 9)
+
+  -- Simulate `o` on the closed block A fold landing at row 3 (the first row
+  -- of the rendered region) — what Vim does after foldopen+=insert resolves
+  -- the keystroke.
+  vim.api.nvim_buf_set_lines(bufnr, 3, 3, false, { "" })
+
+  -- Run the scheduled revert synchronously.
+  revert._flush_pending(bufnr)
+
+  -- Both blocks back to their pre-edit positions; no stray rendered tasks.
+  local post_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(#post_lines, 9)
+  eq(post_lines[1], "```tasks")
+  eq(post_lines[3], "```")
+  eq(post_lines[4], "- [ ] Block A task [[stub]]")
+  eq(post_lines[5], "")
+  eq(post_lines[6], "```tasks")
+  eq(post_lines[8], "```")
+  eq(post_lines[9], "- [ ] Block A task [[stub]]")
+
+  render.clear_buffer(bufnr)
+  index_mod.tasks_in = saved.tasks_in
+  index_mod.set_render_paths = saved.set_render_paths
+  index_mod.clear_render_paths = saved.clear_render_paths
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
 return T

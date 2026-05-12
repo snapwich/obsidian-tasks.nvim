@@ -385,6 +385,48 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
     return
   end
 
+  -- Touched edit: also shift _region_snapshot / _meta_snapshot when the user
+  -- inserts new line(s) at a region boundary (e.g. `o` on a folded fence row,
+  -- which Vim resolves to "insert below the fold" — landing at the first row
+  -- of the rendered region).  Without this update, do_revert deletes using
+  -- stale pre-edit positions and corrupts every subsequent block.
+  --
+  -- Only apply to PURE INSERTIONS (last_line == first_line).  For replacements
+  -- and deletes, the snapshot's pre-edit positions remain the safer reference:
+  -- live extmark gravity becomes unreliable when a paste replaces a row
+  -- that's adjacent to (or covers) a region.
+  local delta = new_lastline - last_line
+  if delta ~= 0 and last_line == first_line then
+    local new_snapshot = {}
+    for _, region in ipairs(snapshot) do
+      if region[1] == first_line then
+        -- Boundary insert at region start: expand to cover the inserted row(s)
+        -- so revert removes both the user's edit and the (shifted) managed rows.
+        new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
+      elseif region[1] >= first_line then
+        -- Region strictly below the insert: shift entirely by delta.
+        new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
+      else
+        -- Region above the insert: position unchanged.
+        new_snapshot[#new_snapshot + 1] = region
+      end
+    end
+    _region_snapshot[bufnr] = new_snapshot
+
+    -- Shift _meta_snapshot keys in tandem so row → meta lookups stay aligned
+    -- with the live row numbers after the user's insert.
+    local old_meta = _meta_snapshot[bufnr] or {}
+    local new_meta = {}
+    for row, meta in pairs(old_meta) do
+      if row >= first_line then
+        new_meta[row + delta] = meta
+      else
+        new_meta[row] = meta
+      end
+    end
+    _meta_snapshot[bufnr] = new_meta
+  end
+
   -- Debounce: schedule at most one revert pass per buffer.
   if _scheduled[bufnr] then
     return
