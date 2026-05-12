@@ -361,4 +361,27 @@ function M.render_state(bufnr)
   return _state[bufnr]
 end
 
+--- Attach a single-line summary as virt_lines_above the opening fence.
+--- The extmark ID is appended to all_eids so clear_block removes it with the
+--- rest of the block's draw-NS extmarks.
+---
+--- Idempotent within a block: if a prior summary extmark exists for this block,
+--- the caller is expected to have cleared it (typically via clear_block before
+--- redraw).  This function does NOT dedupe.
+---
+--- @param bufnr       integer
+--- @param fence_first integer  0-indexed opening-fence row (block key into _state)
+--- @param summary     string   summary text to render
+function M.set_summary(bufnr, fence_first, summary)
+  if not _state[bufnr] or not _state[bufnr][fence_first] then
+    return
+  end
+  local block = _state[bufnr][fence_first]
+  local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, fence_first, 0, {
+    virt_lines = { { { summary, hl("label") } } },
+    virt_lines_above = true,
+  })
+  block.all_eids[#block.all_eids + 1] = eid
+end
+
 return M

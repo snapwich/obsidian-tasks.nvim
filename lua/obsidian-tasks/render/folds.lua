@@ -2,7 +2,7 @@
 -- Manual fold helpers for dashboard buffers.
 --
 -- Public API:
---   M.setup_window(winid)                          — set foldmethod/foldtext/foldopen
+--   M.setup_window(winid)                          — set foldmethod/foldopen
 --   M.apply_folds(bufnr, block_list)               — apply manual folds for all blocks
 --   M.capture_fold_state(bufnr, fence_lnum)         → "open"|"closed"
 --   M.restore_fold_state(bufnr, fence_first, fence_last, state) — re-fold if needed
@@ -15,17 +15,17 @@ local M = {}
 ---
 --- • foldmethod=manual: fold boundaries are explicit, created by :fold commands.
 ---   We do NOT use 'expr' to avoid recomputation overhead on every keystroke.
---- • foldtext: our Lua summarizer derives a query-summary line from the AST.
 --- • foldopen+=insert: pressing 'i' on a closed fold opens it before entering
 ---   insert mode.  'foldopen' is a global option (no window-local equivalent),
 ---   so we set it once; subsequent calls are idempotent via the has_insert guard.
 ---
+--- The summary line that used to live in `foldtext` is now rendered as a
+--- virt_lines_above extmark on the opening fence (see render/draw.set_summary).
+--- That avoids fighting render-markdown.nvim for the folded fence row.
+---
 --- @param winid integer  window to configure (pass 0 for current window)
 function M.setup_window(winid)
   vim.wo[winid].foldmethod = "manual"
-
-  -- Our Lua foldtext function; called by Neovim when drawing the fold indicator.
-  vim.wo[winid].foldtext = 'v:lua.require("obsidian-tasks.render.foldtext").foldtext()'
 
   -- foldopen is global-only in Neovim — no per-window equivalent.
   -- Append 'insert' idempotently so pressing 'i' opens closed query folds.

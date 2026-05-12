@@ -1,45 +1,13 @@
 -- lua/obsidian-tasks/render/foldtext.lua
--- Query-derived foldtext for dashboard buffers.
---
--- Two public surfaces:
---   M.summarize(ast, count)  — pure function, easy to unit-test.
---   M.foldtext()             — called by Neovim via vim.wo.foldtext; reads
---                              v:foldstart / v:foldend, looks up cached count.
---   M.set_result_count(bufnr, fence_first, count)  — called by render/init.lua
---                              after each render to cache the result count per block.
---   M.clear_buffer(bufnr)   — called on BufDelete / clear.
+-- Pure summarizer: query AST + result count → human-readable summary string.
+-- Consumed by render/init.lua and rendered as a virt_lines_above extmark by
+-- render/draw.lua (see draw.set_summary).  The string is no longer used as
+-- Neovim foldtext: we used to set `vim.wo.foldtext` to a Lua callback, but
+-- render-markdown.nvim and similar plugins overlay decorations at column 0 of
+-- the folded fence line and competed with our text.  Moving the summary to a
+-- virt_lines_above extmark on the opening fence sidesteps that collision.
 
 local M = {}
-
--- Indent on the foldtext summary.  Render-markdown.nvim and similar plugins
--- overlay a code-block label + border at the start of the opening-fence line,
--- which collides with our foldtext.  An 8-column indent shifts the summary
--- past that overlay, and looks fine on terminals without a markdown decorator
--- too (the line just sits indented like a child element of the fold).
-local FOLDTEXT_INDENT = "        "
-
--- ── Result count cache ────────────────────────────────────────────────────────
--- _result_cache[bufnr][fence_first_0indexed] = count
--- Populated by render/init.lua after each render so foldtext() can look up the
--- count without re-running the query.
-local _result_cache = {}
-
---- Store the rendered result count for a block.
---- @param bufnr      integer
---- @param fence_first integer  0-indexed opening-fence row
---- @param count      integer
-function M.set_result_count(bufnr, fence_first, count)
-  if not _result_cache[bufnr] then
-    _result_cache[bufnr] = {}
-  end
-  _result_cache[bufnr][fence_first] = count
-end
-
---- Drop all cached counts for a buffer (call on clear / BufDelete).
---- @param bufnr integer
-function M.clear_buffer(bufnr)
-  _result_cache[bufnr] = nil
-end
 
 -- ── Internal: date value humanisation ─────────────────────────────────────────
 
@@ -194,9 +162,9 @@ end
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
---- Pure function: convert a query AST + result count to a foldtext summary string.
+--- Convert a query AST + result count to a summary string.
 ---
---- Shape: "<indent>📋 <filter summary>  (N)"
+--- Shape: "📋 <filter summary>  (N)"
 --- Special cases:
 ---   • No filters  → "📋 all tasks  (N)"
 ---   • Parse errors → "📋 invalid query"  (count is ignored)
@@ -206,7 +174,7 @@ end
 --- @return string
 function M.summarize(ast, count)
   if ast.errors and #ast.errors > 0 then
-    return FOLDTEXT_INDENT .. "📋 invalid query"
+    return "📋 invalid query"
   end
 
   local phrases = {}
@@ -221,49 +189,7 @@ function M.summarize(ast, count)
     summary = table.concat(phrases, " · ")
   end
 
-  return FOLDTEXT_INDENT .. string.format("📋 %s  (%d)", summary, count)
-end
-
---- Called by Neovim as the foldtext function.
---- Set via: vim.wo.foldtext = 'v:lua.require("obsidian-tasks.render.foldtext").foldtext()'
----
---- Reads v:foldstart (1-indexed), extracts the query text between the opening
---- and closing fence, parses it, looks up the cached result count, and delegates
---- to M.summarize().
----
---- @return string
-function M.foldtext()
-  local bufnr = vim.api.nvim_get_current_buf()
-  local fold_start = vim.v.foldstart -- 1-indexed, the opening ```tasks line
-  local fold_end = vim.v.foldend -- 1-indexed, last line in the fold
-
-  -- 0-indexed fence row (key into _result_cache).
-  local fence_first = fold_start - 1
-
-  -- Extract query lines: everything between the opening fence and the first
-  -- closing fence (```) that falls within the fold.
-  -- nvim_buf_get_lines uses 0-indexed [start, end) so fold_start..fold_end-1
-  -- gives us the lines after the opening fence through the last folded line.
-  local buf_lines = vim.api.nvim_buf_get_lines(bufnr, fold_start, fold_end - 1, false)
-  local query_lines = {}
-  for _, line in ipairs(buf_lines) do
-    if line:match("^%s*```%s*$") then
-      break
-    end
-    query_lines[#query_lines + 1] = line
-  end
-  local query_text = table.concat(query_lines, "\n")
-
-  -- Parse to detect structural errors.
-  local ok, ast = pcall(require("obsidian-tasks.query.parse").parse, query_text)
-  if not ok then
-    return FOLDTEXT_INDENT .. "📋 invalid query"
-  end
-
-  -- Look up the cached result count written by render/init.lua.
-  local count = (_result_cache[bufnr] or {})[fence_first] or 0
-
-  return M.summarize(ast, count)
+  return string.format("📋 %s  (%d)", summary, count)
 end
 
 return M

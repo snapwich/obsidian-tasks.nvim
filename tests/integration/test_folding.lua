@@ -4,16 +4,14 @@
 -- Covers:
 --   • render/folds.lua — setup_window, apply_folds, capture_fold_state,
 --     restore_fold_state.
---   • render/foldtext.lua — set_result_count / clear_buffer lifecycle and the
---     foldtext() callback reading v:foldstart from a real buffer+window.
---   • render/init.lua integration — folds applied after render_buffer().
+--   • render/init.lua integration — folds applied + summary extmark attached
+--     by render_buffer().
 --
 -- All tests run in headless Neovim (window APIs available).
 
 local T = MiniTest.new_set()
 
 local folds_mod = require("obsidian-tasks.render.folds")
-local foldtext_mod = require("obsidian-tasks.render.foldtext")
 local draw_mod = require("obsidian-tasks.render.draw")
 local render = require("obsidian-tasks.render.init")
 
@@ -56,21 +54,6 @@ T["setup_window: sets foldmethod to manual"] = function()
 
   folds_mod.setup_window(winid)
   eq(vim.wo[winid].foldmethod, "manual")
-
-  close_win(winid)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["setup_window: sets foldtext to our Lua function"] = function()
-  local bufnr = make_buf({ "line 1" })
-  local winid = open_in_win(bufnr)
-
-  folds_mod.setup_window(winid)
-  local ft = vim.wo[winid].foldtext
-  -- Must contain the module path so Neovim can call it.
-  -- Use plain-string search (4th arg = true) to avoid Lua pattern issues:
-  -- '-' and '.' in "obsidian-tasks.render.foldtext" are pattern meta-chars.
-  MiniTest.expect.equality(ft:find("obsidian-tasks.render.foldtext", 1, true) ~= nil, true)
 
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -241,90 +224,9 @@ T["restore_fold_state: re-applies fold when state is 'closed'"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── foldtext.foldtext() callback ──────────────────────────────────────────────
-
-T["foldtext: returns summary string for a folded block"] = function()
-  -- Create a buffer with a tasks block and fold it manually, then call foldtext().
-  local bufnr = make_buf({
-    "```tasks", -- line 1 (1-indexed) = fence
-    "not done",
-    "```",
-    "- [ ] Task A",
-    "- [ ] Task B",
-  })
-  local winid = open_in_win(bufnr)
-
-  -- Cache result count for this block (fence_first = 0).
-  foldtext_mod.set_result_count(bufnr, 0, 2)
-
-  -- Apply fold lines 1-5.
-  vim.api.nvim_win_call(winid, function()
-    vim.wo[winid].foldmethod = "manual"
-    vim.cmd("1,5fold")
-  end)
-
-  -- Call foldtext() with v:foldstart=1, v:foldend=5 simulated via nvim_win_call.
-  local result
-  vim.api.nvim_win_call(winid, function()
-    -- Temporarily set v:foldstart and v:foldend so foldtext() can read them.
-    vim.v.foldstart = 1
-    vim.v.foldend = 5
-    result = foldtext_mod.foldtext()
-  end)
-
-  eq(result, "        📋 not done  (2)")
-
-  foldtext_mod.clear_buffer(bufnr)
-  close_win(winid)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["foldtext: empty query → all tasks with cached count"] = function()
-  local bufnr = make_buf({ "```tasks", "```", "- [ ] Task" })
-  local winid = open_in_win(bufnr)
-
-  foldtext_mod.set_result_count(bufnr, 0, 1)
-
-  local result
-  vim.api.nvim_win_call(winid, function()
-    vim.wo[winid].foldmethod = "manual"
-    vim.cmd("1,3fold")
-    vim.v.foldstart = 1
-    vim.v.foldend = 3
-    result = foldtext_mod.foldtext()
-  end)
-
-  eq(result, "        📋 all tasks  (1)")
-
-  foldtext_mod.clear_buffer(bufnr)
-  close_win(winid)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
-T["foldtext: falls back to 0 count when cache is empty"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
-  local winid = open_in_win(bufnr)
-
-  -- Do NOT call set_result_count — count should default to 0.
-  local result
-  vim.api.nvim_win_call(winid, function()
-    vim.wo[winid].foldmethod = "manual"
-    vim.cmd("1,3fold")
-    vim.v.foldstart = 1
-    vim.v.foldend = 3
-    result = foldtext_mod.foldtext()
-  end)
-
-  eq(result, "        📋 not done  (0)")
-
-  foldtext_mod.clear_buffer(bufnr)
-  close_win(winid)
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
 -- ── render/init.lua integration: folds applied after render_buffer ─────────────
 
-T["render_buffer: applies fold and caches result count"] = function()
+T["render_buffer: applies fold and attaches summary virt_lines extmark"] = function()
   -- Ensure default_folded is true for this test regardless of what earlier test
   -- files set.  test_f9_acceptance.lua runs first (alphabetically) and calls
   -- render.configure({ default_folded = false }), leaving the module state dirty.
@@ -377,17 +279,27 @@ T["render_buffer: applies fold and caches result count"] = function()
   -- fc == 1 means line 1 is in a closed fold starting at 1.
   eq(fc, 1)
 
-  -- The result count should be cached (exactly 1 task matched).
-  -- Verify indirectly: foldtext() should include the 📋 prefix and count "(1)".
-  local ft_result
-  vim.api.nvim_win_call(winid, function()
-    vim.v.foldstart = 1
-    vim.v.foldend = #lines
-    ft_result = foldtext_mod.foldtext()
-  end)
-  -- Plain-string find: avoid Lua pattern issues with '-' and '.' meta-chars.
-  MiniTest.expect.equality(ft_result:find("📋", 1, true) ~= nil, true)
-  MiniTest.expect.equality(ft_result:find("(1)", 1, true) ~= nil, true)
+  -- The summary must be attached as a virt_lines_above extmark on the opening
+  -- fence (row 0).  Walk all draw-NS extmarks on that row and look for one whose
+  -- virt_lines includes the 📋 prefix and the result count "(1)".
+  local NS = require("obsidian-tasks.util.extmark").NS
+  local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, { 0, 0 }, { 0, -1 }, { details = true })
+  local summary_found = false
+  for _, em in ipairs(ems) do
+    local details = em[4] or {}
+    local vl = details.virt_lines
+    if details.virt_lines_above and vl then
+      for _, chunks in ipairs(vl) do
+        for _, chunk in ipairs(chunks) do
+          local text = chunk[1] or ""
+          if text:find("📋", 1, true) and text:find("(1)", 1, true) then
+            summary_found = true
+          end
+        end
+      end
+    end
+  end
+  eq(summary_found, true)
 
   -- Cleanup.
   render.clear_buffer(bufnr)
