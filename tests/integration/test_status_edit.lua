@@ -299,4 +299,78 @@ T["status edit: drift detected → resolver refuses, row reverts, no source muta
   vim.fn.delete(src_path)
 end
 
+-- ── two consecutive status edits on the same row both commit ────────────────
+--
+-- Regression: prior to the persist+refresh step in classify_and_commit, the
+-- first `r x` wrote to the source buffer but never saved to disk or refreshed
+-- the index.  meta.task_text on the rerendered row was still the pre-edit
+-- text, so the next edit's drift check compared stale meta vs the now-mutated
+-- source buffer, fired "source drift detected", and locked the row out.
+
+T["status edit: two consecutive edits both commit (no spurious drift)"] = function()
+  -- Set up by hand: use a description filter so the row survives state changes
+  -- (the standard "not done" filter would hide the row after edit 1's [x]).
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile({ "- [ ] Two edits" })
+  local restore_stub = install_file_task_stub(src_path)
+
+  local bufnr = make_buf({ "```tasks", "description includes Two", "```" })
+  render.render_buffer(bufnr, nil)
+
+  local task_row = 3
+
+  -- Bypass read_src_line's buffer-preferred path so we exercise the actual
+  -- regression: the prior code wrote the source *buffer* but never persisted
+  -- to disk or refreshed the index. The drift check on edit 2 then compared
+  -- a stale meta.task_text (from disk, via refresh_file) vs the now-mutated
+  -- source buffer, failed, and locked the row.
+  local function read_disk(path, row0)
+    local ok, lines = pcall(vim.fn.readfile, path)
+    return ok and lines[row0 + 1] or nil
+  end
+
+  -- Sanity: rendered row exists.
+  local canonical = get_line(bufnr, task_row)
+  eq(canonical and canonical:find("Two edits", 1, true) ~= nil, true, "task must render initially")
+
+  -- Edit 1: [ ] → [x]
+  set_line(bufnr, task_row, (canonical:gsub("%[ %]", "[x]", 1)))
+  revert._flush_pending(bufnr)
+  eq(read_disk(src_path, 0), "- [x] Two edits", "first commit must persist to disk")
+
+  -- Capture warns so a drift-style failure is loud.
+  local notify_calls = {}
+  local orig_notify = vim.notify
+  vim.notify = function(msg, level)
+    notify_calls[#notify_calls + 1] = { msg = msg, level = level }
+  end
+
+  -- Edit 2: [x] → [ ] on the rerendered row.
+  local row2 = get_line(bufnr, task_row)
+  eq(row2 and row2:find("%[x%]") ~= nil, true, "rerendered row must reflect [x] from edit 1")
+  set_line(bufnr, task_row, (row2:gsub("%[x%]", "[ ]", 1)))
+  revert._flush_pending(bufnr)
+
+  vim.notify = orig_notify
+
+  eq(read_disk(src_path, 0), "- [ ] Two edits", "second commit must persist to disk")
+
+  -- No drift warnings — a drift here is the regression.
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.WARN and tostring(c.msg):find("drift", 1, true) then
+      eq(true, false, "unexpected drift warning: " .. tostring(c.msg))
+    end
+  end
+
+  render.clear_buffer(bufnr)
+  restore_stub()
+  revert._cleanup(bufnr)
+  local src_buf = vim.fn.bufnr(src_path, false)
+  if src_buf ~= -1 then
+    vim.api.nvim_buf_delete(src_buf, { force = true })
+  end
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+end
+
 return T
