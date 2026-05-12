@@ -109,7 +109,6 @@ T["module shape: instance has required methods"] = function()
   MiniTest.expect.equality(type(inst.get_trigger_characters), "function")
   MiniTest.expect.equality(type(inst.get_completions), "function")
   MiniTest.expect.equality(type(inst.resolve), "function")
-  MiniTest.expect.equality(type(inst.execute), "function")
 end
 
 -- ── get_trigger_characters ────────────────────────────────────────────────────
@@ -154,7 +153,7 @@ T["get_completions: response has is_incomplete_forward and is_incomplete_backwar
   MiniTest.expect.equality(type(got.is_incomplete_backward), "boolean")
 end
 
--- ── resolve / execute pass-throughs ──────────────────────────────────────────
+-- ── resolve pass-through ─────────────────────────────────────────────────────
 
 T["resolve: passes item through to callback"] = function()
   local Source = fresh_source()
@@ -165,16 +164,6 @@ T["resolve: passes item through to callback"] = function()
     got = resolved
   end)
   MiniTest.expect.equality(got, item)
-end
-
-T["execute: calls callback"] = function()
-  local Source = fresh_source()
-  local inst = Source.new({}, {})
-  local called = false
-  inst:execute({}, {}, function()
-    called = true
-  end, function() end)
-  MiniTest.expect.equality(called, true)
 end
 
 -- ── enabled: non-markdown buffer ──────────────────────────────────────────────

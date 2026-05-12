@@ -17,12 +17,19 @@ local root = vim.fn.getcwd()
 local deps_dir = root .. "/.deps"
 local mini_path = deps_dir .. "/mini.nvim"
 local obsidian_path = deps_dir .. "/obsidian.nvim"
+local blink_path = deps_dir .. "/blink.cmp"
 
-local function clone(url, dest, label)
+local function clone(url, dest, label, ref)
   vim.notify("obsidian-tasks integration: cloning " .. label .. "...", vim.log.levels.INFO)
   local out = vim.fn.system({ "git", "clone", "--filter=blob:none", url, dest })
   if vim.v.shell_error ~= 0 then
     error("Failed to clone " .. label .. ":\n" .. out)
+  end
+  if ref then
+    out = vim.fn.system({ "git", "-C", dest, "checkout", "--quiet", ref })
+    if vim.v.shell_error ~= 0 then
+      error("Failed to checkout " .. ref .. " in " .. label .. ":\n" .. out)
+    end
   end
 end
 
@@ -32,9 +39,15 @@ end
 if not vim.uv.fs_stat(obsidian_path) then
   clone("https://github.com/obsidian-nvim/obsidian.nvim", obsidian_path, "obsidian.nvim")
 end
+if not vim.uv.fs_stat(blink_path) then
+  -- Pin to v1.x latest; v2 HEAD requires nvim 0.12+ and a separate blink.lib dep.
+  -- See lua/obsidian-tasks/cmp/source.lua header for the supported blink range.
+  clone("https://github.com/Saghen/blink.cmp", blink_path, "blink.cmp", "v1.10.2")
+end
 
 vim.opt.rtp:prepend(mini_path)
 vim.opt.rtp:prepend(obsidian_path)
+vim.opt.rtp:prepend(blink_path)
 vim.opt.rtp:prepend(root)
 
 -- ── Set up real obsidian.nvim against the fixture vault ──────────────────────
@@ -56,6 +69,23 @@ require("obsidian").setup({
 
 require("obsidian-tasks").setup({
   global_filter = "#task",
+})
+
+-- ── Set up real blink.cmp with our provider registered ──────────────────────
+-- fuzzy.implementation = "lua" avoids the Rust binary download path that
+-- otherwise fails in offline / headless CI.
+
+require("blink.cmp").setup({
+  fuzzy = { implementation = "lua" },
+  sources = {
+    default = { "obsidian-tasks" },
+    providers = {
+      ["obsidian-tasks"] = {
+        module = "obsidian-tasks.cmp.source",
+        name = "ObsidianTasks",
+      },
+    },
+  },
 })
 
 -- ── Run integration_real/test_*.lua ──────────────────────────────────────────

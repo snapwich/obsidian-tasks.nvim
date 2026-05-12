@@ -14,7 +14,7 @@
 --   1. No-field position  → all field icons + tags from stubbed index
 --   2. After 📅           → date suggestions include today/tomorrow/next monday
 --   3. After 🔁 every     → recurrence patterns include every day/week/month
---   4. Typed 'next friday'→ first item is ISO date; simulated execute OK
+--   4. Typed 'next friday'→ first item is ISO date
 --   5. Dataview line      → field icons switch to dataview format
 
 local T = MiniTest.new_set()
@@ -294,25 +294,6 @@ T["S4: simulated accept → line becomes '- [ ] task 📅 <ISO date>'"] = functi
 
   -- The accepted line must look like "- [ ] task 📅 YYYY-MM-DD"
   eq(accepted_line:match("^%- %[.%] task 📅 %d%d%d%d%-%d%d%-%d%d$") ~= nil, true)
-
-  c1()
-end
-
-T["S4: execute pass-through calls callback without error"] = function()
-  local c1 = install_mock("obsidian-tasks.index", make_index_stub({}))
-  local Source = fresh_source()
-  local inst = Source.new({}, {})
-
-  local line = "- [ ] task 📅 next friday"
-  local blink_ctx = ctx_at_end(line)
-  local resp = get_completions_sync(inst, blink_ctx)
-
-  local iso_item = resp.items[1]
-  local called = false
-  inst:execute(blink_ctx, iso_item, function()
-    called = true
-  end, function() end)
-  eq(called, true)
 
   c1()
 end

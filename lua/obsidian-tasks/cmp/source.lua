@@ -16,7 +16,11 @@
 --   get_trigger_characters(self)    → string[]
 --   get_completions(self, ctx, cb)  → cb({ items, is_incomplete_forward, is_incomplete_backward })
 --   resolve(self, item, cb)         → cb(item)   [pass-through]
---   execute(self, ctx, item, cb, _) → cb()        [pass-through]
+--
+-- We do NOT override `execute`.  blink's default execute inserts the item's
+-- `insertText` at the cursor.  Overriding it and not calling the supplied
+-- `default_implementation` silently no-ops the accept (menu closes, preview
+-- reverts, nothing inserted).
 
 local M = {}
 M.__index = M
@@ -174,22 +178,13 @@ function M:get_completions(ctx, callback)
   })
 end
 
--- ── Resolve / execute pass-throughs ──────────────────────────────────────────
+-- ── Resolve pass-through ─────────────────────────────────────────────────────
 
 --- Resolve additional details for a completion item (pass-through).
 --- @param item     table
 --- @param callback fun(resolved_item: table|nil)
 function M:resolve(item, callback)
   callback(item)
-end
-
---- Execute an accepted completion item (pass-through).
---- @param _ctx      table
---- @param _item     table
---- @param callback  fun()
---- @param _default  fun(ctx?: table, item?: table)
-function M:execute(_ctx, _item, callback, _default)
-  callback()
 end
 
 return M
