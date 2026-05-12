@@ -202,6 +202,18 @@ local function classify_and_commit(bufnr)
               end)
               if not ok_write then
                 log.warn("revert: status commit failed: " .. tostring(err))
+              else
+                -- Persist to disk and refresh the index, mirroring the
+                -- <leader>tt → dispatch_and_refresh path.  Without this, the
+                -- next edit's drift check compares the (now-mutated) source
+                -- buffer against the (now-stale) meta.task_text, fails, and
+                -- locks the row out of further toggles.
+                pcall(function()
+                  local lines = vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
+                  vim.fn.writefile(lines, meta.source_file)
+                  vim.bo[src_bufnr].modified = false
+                  require("obsidian-tasks.index").refresh_file(meta.source_file)
+                end)
               end
             end
           end
