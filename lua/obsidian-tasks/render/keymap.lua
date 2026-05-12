@@ -8,6 +8,7 @@
 --     <leader>tp — cycle priority: none → highest → high → medium → low → lowest → none
 --     <leader>td — set due date (vim.ui.input prompt for YYYY-MM-DD)
 --     <leader>tT — edit tags (vim.ui.input, comma-separated)
+--     <leader>tg — jump to source (delegates to :ObsidianTask goto)
 --     <leader>tD — delete task (vim.fn.confirm, then remove source line)
 --     <leader>tr — force re-render all regions in this buffer
 --
@@ -18,9 +19,9 @@
 --
 -- Note on jumping: we deliberately do NOT override <CR> / gf / gd.  All three
 -- are owned by other ecosystems (obsidian.nvim's ftplugin re-registers <CR>
--- after our render; LazyVim/LSP installs gd on LspAttach).  Use the public
--- command `:ObsidianTask goto` to jump from a rendered task row to source;
--- users who want a keybind can wire it in their own config.
+-- after our render; LazyVim/LSP installs gd on LspAttach).  `<leader>tg` is
+-- the safe default for jumping; users who want gd/gD can wire it in their
+-- own LspAttach with vim.schedule to win the race.
 
 local M = {}
 
@@ -117,6 +118,23 @@ local function do_rerender(bufnr)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local ws = safe_workspace(path)
   render.rerender_buffer(bufnr, ws)
+end
+
+-- ── Jump handler (<leader>tg) ────────────────────────────────────────────────
+
+--- Build the `<leader>tg` jump handler closed over *bufnr*.
+--- Delegates to `:ObsidianTask goto` so the keymap and command stay in sync.
+--- @param _bufnr integer
+--- @return fun()
+local function make_jump_handler(_bufnr)
+  return function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    require("obsidian-tasks.cmd").dispatch({
+      fargs = { "goto" },
+      line1 = cursor[1],
+      line2 = cursor[1],
+    })
+  end
 end
 
 -- ── Mutation helpers ──────────────────────────────────────────────────────────
@@ -360,6 +378,7 @@ local LEADER_LHS = {
   "<leader>tp",
   "<leader>td",
   "<leader>tT",
+  "<leader>tg",
   "<leader>tD",
   "<leader>tr",
 }
@@ -397,6 +416,7 @@ function M.attach(bufnr)
   kmap("<leader>tp", make_cycle_priority_handler(bufnr), "cycle task priority")
   kmap("<leader>td", make_due_date_handler(bufnr), "set/edit due date")
   kmap("<leader>tT", make_edit_tags_handler(bufnr), "edit task tags")
+  kmap("<leader>tg", make_jump_handler(bufnr), "jump to source file at task row")
   kmap("<leader>tD", make_delete_handler(bufnr), "delete task (with confirmation)")
   kmap("<leader>tr", make_refresh_handler(bufnr), "force re-render all regions")
 end
