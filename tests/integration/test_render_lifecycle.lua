@@ -464,4 +464,92 @@ T["rerender_buffer: delete non-trailing block, surviving block with tasks render
   eq(post_fc_a, 1)
 end
 
+-- ── T7: rerender_buffer preserves cursor position ────────────────────────────
+-- Regression test for `<leader>tr`, `<leader>tT`, BufWritePost-refresh, etc.
+-- After a rerender the cursor should land where it was, not at column 0 or
+-- pushed to the end of a longer/shorter line.  Row clamps to new line count;
+-- col clamps to the new line's length.
+
+T["rerender_buffer: cursor row and column preserved when line text unchanged"] = function()
+  render.configure({ default_folded = false })
+  local restore_idx = install_one_task_stub()
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local winid = open_in_win(bufnr)
+
+  render.render_buffer(bufnr, nil)
+  -- Rendered task at row 3 (0-indexed) / line 4 (1-indexed).
+  local task_line = vim.api.nvim_buf_get_lines(bufnr, 3, 4, false)[1]
+  MiniTest.expect.equality(task_line:find("Stub task", 1, true) ~= nil, true)
+
+  -- Place cursor mid-line on the rendered task.
+  local target_col = 5
+  vim.api.nvim_win_set_cursor(winid, { 4, target_col })
+
+  render.rerender_buffer(bufnr, nil)
+
+  local after = vim.api.nvim_win_get_cursor(winid)
+  eq(after[1], 4)
+  eq(after[2], target_col)
+
+  render.clear_buffer(bufnr)
+  restore_idx()
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+T["rerender_buffer: cursor column clamped when new line is shorter"] = function()
+  render.configure({ default_folded = false })
+
+  -- Stub returns a long task first render, short task second render.
+  local index_mod = require("obsidian-tasks.index")
+  local task_parse = require("obsidian-tasks.task.parse")
+  local saved_tasks_in = index_mod.tasks_in
+  local saved_set = index_mod.set_render_paths
+  local saved_clear = index_mod.clear_render_paths
+
+  local first_task = task_parse.parse("- [ ] A pretty long task description here")
+  local second_task = task_parse.parse("- [ ] Short")
+  assert(first_task and second_task)
+  local call_count = 0
+  index_mod.tasks_in = function(_)
+    call_count = call_count + 1
+    local task = (call_count == 1) and first_task or second_task
+    local returned = false
+    return function()
+      if not returned then
+        returned = true
+        return task, "/vault/stub.md", 1
+      end
+    end
+  end
+  index_mod.set_render_paths = function() end
+  index_mod.clear_render_paths = function() end
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local winid = open_in_win(bufnr)
+
+  render.render_buffer(bufnr, nil)
+
+  -- Cursor at column 35 on the long task line.
+  vim.api.nvim_win_set_cursor(winid, { 4, 35 })
+
+  -- Rerender swaps in the SHORT task. Cursor col 35 > new line length → must clamp.
+  render.rerender_buffer(bufnr, nil)
+
+  local after = vim.api.nvim_win_get_cursor(winid)
+  local new_line = vim.api.nvim_buf_get_lines(bufnr, after[1] - 1, after[1], false)[1] or ""
+  -- Row unchanged.
+  eq(after[1], 4)
+  -- Column clamped to line length (no crash, no jump to row 1 or row N).
+  eq(after[2] <= #new_line, true)
+
+  render.clear_buffer(bufnr)
+  index_mod.tasks_in = saved_tasks_in
+  index_mod.set_render_paths = saved_set
+  index_mod.clear_render_paths = saved_clear
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
 return T

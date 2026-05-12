@@ -394,6 +394,16 @@ function M.rerender_buffer(bufnr, workspace)
   local folds_mod = require("obsidian-tasks.render.folds")
   local managed_mod = require("obsidian-tasks.render.managed")
 
+  -- ── 0. Snapshot cursor positions for every window showing this buffer ─────
+  -- Restored after the clear+render pass so user-triggered rerenders (`<leader>tr`,
+  -- `<leader>tT`, auto-refresh on save/focus, etc.) don't leave the cursor at
+  -- column 0 or at the end of the buffer.  Row clamped to the new line count
+  -- and column clamped to the new line length on restore.
+  local cursor_saves = {}
+  for _, w in ipairs(vim.fn.win_findbuf(bufnr)) do
+    cursor_saves[w] = vim.api.nvim_win_get_cursor(w)
+  end
+
   -- ── 1. Snapshot fold states keyed by post-clear source-fence-row ──────────
   -- We use LIVE extmark positions for both fences and task regions, so fold
   -- states remain correct even when source lines have been inserted or deleted
@@ -488,6 +498,24 @@ function M.rerender_buffer(bufnr, workspace)
         -- old_state == "closed" → already closed by apply_folds (no action)
         -- old_state == nil      → new block; apply_folds already closed it (default_folded)
       end
+    end
+  end
+
+  -- ── 4. Restore cursor positions ───────────────────────────────────────────
+  -- Row clamped to new line count; column clamped to length of the resulting
+  -- line.  nvim_win_set_cursor rejects out-of-range positions, so the clamps
+  -- ensure the call succeeds even when the rendered task at the old position
+  -- shrank or disappeared.
+  local new_line_count = vim.api.nvim_buf_line_count(bufnr)
+  for w, pos in pairs(cursor_saves) do
+    if vim.api.nvim_win_is_valid(w) then
+      local row = math.min(pos[1], new_line_count)
+      if row < 1 then
+        row = 1
+      end
+      local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
+      local col = math.min(pos[2], #line)
+      pcall(vim.api.nvim_win_set_cursor, w, { row, col })
     end
   end
 end
