@@ -556,6 +556,99 @@ T["render: ignores args and range (whole-buffer operation)"] = function()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- goto
+-- ════════════════════════════════════════════════════════════════════════════
+
+T["goto: render line → jumps to source_file at source_row+1"] = function()
+  local fake_meta = { source_file = "/vault/note.md", source_row = 4, task_text = "- [ ] Rendered" }
+  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return fake_meta
+    end,
+  })
+  local bufnr = make_buf({ "- [ ] Rendered" })
+  local buf_cleanup = mock_current_buf(bufnr)
+  local captured, jump_cleanup = capture_jump()
+
+  require("obsidian-tasks.cmd.goto").run({}, { line1 = 1, line2 = 1 })
+
+  managed_cleanup()
+  buf_cleanup()
+  jump_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  MiniTest.expect.equality(captured.edit_path ~= nil, true)
+  MiniTest.expect.equality(captured.edit_path:find("note%.md") ~= nil, true)
+  -- source_row=4 (0-indexed) → row 5 (1-indexed).
+  MiniTest.expect.equality(captured.cursor_pos[1], 5)
+end
+
+T["goto: non-render line → emits log.info, no jump"] = function()
+  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return nil
+    end,
+  })
+  local bufnr = make_buf({ "- [ ] Source task" })
+  local buf_cleanup = mock_current_buf(bufnr)
+  local captured, jump_cleanup = capture_jump()
+
+  local notify_calls = capture_notify(function()
+    require("obsidian-tasks.cmd.goto").run({}, { line1 = 1, line2 = 1 })
+  end)
+
+  managed_cleanup()
+  buf_cleanup()
+  jump_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  MiniTest.expect.equality(captured.edit_path, nil)
+  local found_info = false
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.INFO and tostring(c.msg):find("no rendered task", 1, true) then
+      found_info = true
+    end
+  end
+  MiniTest.expect.equality(found_info, true)
+end
+
+T["goto: drift → emits info, still jumps"] = function()
+  -- Write a real source file with content differing from meta.task_text.
+  local src_path = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "- [x] Toggled externally" }, src_path)
+
+  local managed_cleanup = install_mock("obsidian-tasks.render.managed", {
+    task_meta_for_row = function()
+      return { source_file = src_path, source_row = 0, task_text = "- [ ] Original" }
+    end,
+  })
+  local bufnr = make_buf({ "rendered line" })
+  local buf_cleanup = mock_current_buf(bufnr)
+  local captured, jump_cleanup = capture_jump()
+
+  local notify_calls = capture_notify(function()
+    require("obsidian-tasks.cmd.goto").run({}, { line1 = 1, line2 = 1 })
+  end)
+
+  managed_cleanup()
+  buf_cleanup()
+  jump_cleanup()
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+
+  -- Must still have jumped.
+  MiniTest.expect.equality(captured.edit_path ~= nil, true)
+  -- Must have emitted an INFO notice about stale position.
+  local found_info = false
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.INFO and tostring(c.msg):find("stale", 1, true) then
+      found_info = true
+    end
+  end
+  MiniTest.expect.equality(found_info, true)
+end
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- new
 -- ════════════════════════════════════════════════════════════════════════════
 

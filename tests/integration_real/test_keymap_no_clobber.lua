@@ -5,7 +5,7 @@
 -- our render attached, we must observe:
 --   • obsidian.nvim's buffer-local <CR> exists (its smart_action).
 --   • NO buffer-local <CR>/gf is installed by us (desc doesn't mention us).
---   • Our `gd` IS installed (with our `obsidian-tasks:` desc prefix).
+--   • Our leader keymaps ARE installed (with our `obsidian-tasks:` desc prefix).
 --
 -- If a future change re-introduces a buffer-local <CR> in render/keymap.lua,
 -- this test fails before the race bug ships.
@@ -73,16 +73,16 @@ end
 T["our leader keymaps ARE installed after render attach"] = function()
   local bufnr = open_and_attach("inbox/queries.md")
   local ours = our_buf_maps(bufnr)
-  -- render/keymap.lua attaches 8 leader keymaps when setup_keymaps != false.
+  -- render/keymap.lua attaches 7 leader keymaps when setup_keymaps != false.
   eq(#ours >= 1, true)
-  -- Specifically the jump keymap must be present (cited in CR-race fix commit).
-  local found_jump = false
+  -- Specifically the toggle keymap must be present.
+  local found_toggle = false
   for _, m in ipairs(ours) do
-    if (m.desc or ""):find("jump to source", 1, true) then
-      found_jump = true
+    if (m.desc or ""):find("toggle task", 1, true) then
+      found_toggle = true
     end
   end
-  eq(found_jump, true)
+  eq(found_toggle, true)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 

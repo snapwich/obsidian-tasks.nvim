@@ -4,7 +4,7 @@
 -- Verifies the full render pipeline end-to-end:
 --   • Rendered buffer text matches expected content.
 --   • Fence concealment extmarks are applied correctly.
---   • gd on a render task line jumps to source file + correct line.
+--   • :ObsidianTask goto on a render task line jumps to source + correct line.
 --   • <CR> on a non-render line falls through to smart_action.
 --   • Two ```tasks blocks in one file render independently.
 --
@@ -231,9 +231,9 @@ T["integration: conceallevel is NOT changed by render"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
--- ── 3. `gd` on render task line → jump to source ─────────────────────────────
+-- ── 3. :ObsidianTask goto on render task line → jump to source ───────────────
 
-T["integration: gd on render task line jumps to source file at correct line"] = function()
+T["integration: :ObsidianTask goto on render task line jumps to source file at correct line"] = function()
   local render = fresh_render()
   local draw_mod = require("obsidian-tasks.render.draw")
   local parse = require("obsidian-tasks.task.parse")
@@ -263,9 +263,7 @@ T["integration: gd on render task line jumps to source file at correct line"] = 
   -- The task line was inserted right after the closing fence (0-indexed line 3 → 1-indexed row 4).
   vim.api.nvim_win_set_cursor(winid, { 4, 0 })
 
-  local cb = find_callback(bufnr, "gd")
-  MiniTest.expect.equality(cb ~= nil, true)
-  cb()
+  require("obsidian-tasks.cmd").dispatch({ fargs = { "goto" }, line1 = 4, line2 = 4 })
 
   -- Current buffer should now be the fixture file.
   local cur_name = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
@@ -292,7 +290,8 @@ end
 -- Earlier F9 prototypes overrode <CR>/gf, but the override raced obsidian.nvim's
 -- ftplugin which re-registers smart_action <CR> after our render fires.  The
 -- override now lives entirely in obsidian.nvim — press <CR> on the trailing
--- wikilink (smart_action follows it) or use `gd` from anywhere on the row.
+-- wikilink (smart_action follows it) or run `:ObsidianTask goto` from anywhere
+-- on the row.
 
 T["integration: render does NOT install a buffer-local <CR> override"] = function()
   local render = fresh_render()
