@@ -133,4 +133,21 @@ function M.path(p)
   return require("obsidian.path").new(p)
 end
 
+-- ── workspace path filter ────────────────────────────────────────────────────
+
+--- Build a path_filter predicate scoped to a workspace root.
+--- Handles Path objects (tostring) and ensures trailing-slash so
+--- "/vault" does not match "/vault-other/file.md".
+--- @param workspace_root string|table  workspace.root (Path object or string)
+--- @return fun(abs_path: string): boolean
+function M.workspace_path_filter(workspace_root)
+  local root = tostring(workspace_root)
+  if root:sub(-1) ~= "/" then
+    root = root .. "/"
+  end
+  return function(abs_path)
+    return abs_path:find(root, 1, true) == 1
+  end
+end
+
 return M

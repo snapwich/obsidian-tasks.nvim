@@ -159,29 +159,20 @@ function M.render_buffer(bufnr, workspace)
     revert.suppress(bufnr)
     local _render_ok, _render_err = pcall(function()
       -- ── 2. Lazy index init ─────────────────────────────────────────────────────
-      -- If this workspace has no indexed tasks yet, kick off a one-shot vault
-      -- walk.  The _lazy_init_started guard prevents re-triggering the walk on
-      -- the recursive render call that fires from the completion callback —
-      -- which would otherwise loop forever when the vault has zero tasks.
+      -- Per-workspace: kick off a vault walk if this workspace has no indexed
+      -- tasks yet.  The _lazy_init_started guard prevents infinite re-trigger
+      -- when the vault genuinely has zero tasks.
       do
         if workspace and not _lazy_init_started[workspace] then
-          local ws_root = tostring(workspace.root)
-          if ws_root:sub(-1) ~= "/" then
-            ws_root = ws_root .. "/"
-          end
-          local any = index.tasks_in(function(p)
-            return p:sub(1, #ws_root) == ws_root
-          end)()
+          local obs = require("obsidian-tasks.util.obsidian")
+          local any = index.tasks_in(obs.workspace_path_filter(workspace.root))()
           if any == nil then
             _lazy_init_started[workspace] = true
-            -- Start async walk; re-render once complete (non-blocking).
             index.refresh_all(workspace, function()
               vim.schedule(function()
                 M.render_buffer(bufnr, workspace)
               end)
             end)
-            -- Fall through: render immediately with empty results so the user sees
-            -- "0 results" rather than a blank block.
           end
         end
       end

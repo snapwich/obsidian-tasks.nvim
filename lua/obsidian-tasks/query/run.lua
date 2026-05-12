@@ -107,18 +107,9 @@ function M.run(ast, index, workspace_root)
     end
   end
 
-  -- 1. Collect tasks from the index, scoped to the current workspace.
-  -- tasks_in() returns (task, abs_path, line_num).
-  local path_filter = nil
-  if workspace_root then
-    local root = tostring(workspace_root)
-    if root:sub(-1) ~= "/" then
-      root = root .. "/"
-    end
-    path_filter = function(abs_path)
-      return abs_path:sub(1, #root) == root
-    end
-  end
+  local path_filter = workspace_root
+    and require("obsidian-tasks.util.obsidian").workspace_path_filter(workspace_root)
+    or nil
   local items = {} -- { task, path, line_num, _idx }
   local iter = index.tasks_in(path_filter)
   local idx = 0
