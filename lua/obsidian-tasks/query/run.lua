@@ -107,8 +107,7 @@ function M.run(ast, index, workspace_root)
     end
   end
 
-  local path_filter = workspace_root
-    and require("obsidian-tasks.util.obsidian").workspace_path_filter(workspace_root)
+  local path_filter = workspace_root and require("obsidian-tasks.util.obsidian").workspace_path_filter(workspace_root)
     or nil
   local items = {} -- { task, path, line_num, _idx }
   local iter = index.tasks_in(path_filter)
