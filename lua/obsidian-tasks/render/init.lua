@@ -529,6 +529,20 @@ function M.rerender_buffer(bufnr, workspace)
   end
 end
 
+--- Drop render state for a buffer WITHOUT mutating buffer lines.
+--- Used on BufReadPre when Neovim is about to overwrite buffer contents from
+--- disk: extmarks would otherwise survive the reload at clamped positions and
+--- the next render's clear_buffer would trust those stale positions and delete
+--- the wrong rows.
+---
+--- @param bufnr integer
+function M.clear_state(bufnr)
+  local draw = require("obsidian-tasks.render.draw")
+  draw.clear_state(bufnr)
+  M._buffer_state[bufnr] = nil
+  require("obsidian-tasks.index").clear_render_paths(bufnr)
+end
+
 --- Clear all renders for a buffer and drop orchestrator state.
 ---
 --- @param bufnr integer

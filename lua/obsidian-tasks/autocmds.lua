@@ -44,6 +44,30 @@ end
 function M.setup(opts)
   local group = vim.api.nvim_create_augroup("obsidian_tasks_render", { clear = true })
 
+  -- ── BufReadPre ──────────────────────────────────────────────────────────────
+  -- A :edit / :edit! reloads the buffer from disk: Neovim replaces buffer
+  -- content but our extmarks survive at clamped positions, and the side tables
+  -- in render/draw + managed still describe the pre-reload render.  Without
+  -- clearing here, the BufReadPost re-render would call clear_buffer which
+  -- trusts the stale region extmarks and deletes the wrong rows from the
+  -- freshly-loaded buffer (eating queries 2..N).
+  --
+  -- clear_state drops state + extmarks WITHOUT touching buffer lines (the
+  -- reload is about to replace them anyway).
+  vim.api.nvim_create_autocmd("BufReadPre", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local render = require("obsidian-tasks.render")
+      -- Defensive against test stubs that don't model _buffer_state.
+      if type(render._buffer_state) == "table" and render._buffer_state[ev.buf] ~= nil then
+        if type(render.clear_state) == "function" then
+          render.clear_state(ev.buf)
+        end
+      end
+    end,
+  })
+
   -- ── BufReadPost ─────────────────────────────────────────────────────────────
   -- Auto-render vault md files that contain ```tasks blocks.
   vim.api.nvim_create_autocmd("BufReadPost", {

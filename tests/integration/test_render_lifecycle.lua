@@ -470,6 +470,72 @@ end
 -- pushed to the end of a longer/shorter line.  Row clamps to new line count;
 -- col clamps to the new line's length.
 
+-- ── T8: :edit-style buffer reload — clear_state before re-render ──────────────
+-- Regression test for the bug where `:e` on a rendered query buffer caused
+-- queries 2..N to disappear. Cause: extmarks survived buffer reload but
+-- collapsed to clamped positions, so clear_buffer trusted those positions and
+-- deleted the wrong rows from the freshly-loaded buffer.
+--
+-- Fix: BufReadPre autocmd calls render.clear_state which drops state + extmarks
+-- WITHOUT touching buffer lines (the reload is about to replace them anyway).
+-- Then BufReadPost re-renders from a clean slate.
+
+T["clear_state + re-render: multi-block buffer survives buffer reload"] = function()
+  render.configure({ default_folded = true })
+  local restore_idx = install_one_task_stub()
+
+  local source_lines = {
+    "```tasks", -- block 1: source lines 1-3
+    "not done",
+    "```",
+    "```tasks", -- block 2: source lines 4-6
+    "not done",
+    "```",
+    "```tasks", -- block 3: source lines 7-9
+    "not done",
+    "```",
+    "```tasks", -- block 4: source lines 10-12
+    "not done",
+    "```",
+    "```tasks", -- block 5: source lines 13-15
+    "not done",
+    "```",
+  }
+
+  local bufnr = make_buf(source_lines)
+  local winid = open_in_win(bufnr)
+
+  render.render_buffer(bufnr, nil)
+  -- After render: 5 fences (3 lines each) + 5 tasks = 20 lines total.
+  local rendered_line_count = #vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
+  -- Simulate `:e` reload: buffer text is fully replaced with source content
+  -- (rendered task lines gone, fences remain).  Without clear_state, our
+  -- managed-region extmarks would collapse onto a single bogus range and the
+  -- next render's clear_buffer would delete real query content.
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, source_lines)
+
+  -- Apply the fix: BufReadPre handler would call render.clear_state here.
+  render.clear_state(bufnr)
+
+  -- Now BufReadPost re-renders from a clean slate.
+  render.render_buffer(bufnr, nil)
+
+  -- All 5 blocks should be rendered: 5 fences (3 each) + 5 tasks = 20 lines.
+  local post_line_count = #vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local managed = require("obsidian-tasks.render.managed")
+  local regions = managed.all_regions(bufnr)
+
+  render.clear_buffer(bufnr)
+  restore_idx()
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  eq(rendered_line_count, 20)
+  eq(post_line_count, 20)
+  eq(#regions, 5)
+end
+
 T["rerender_buffer: cursor row and column preserved when line text unchanged"] = function()
   render.configure({ default_folded = false })
   local restore_idx = install_one_task_stub()

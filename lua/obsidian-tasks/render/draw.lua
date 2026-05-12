@@ -308,6 +308,25 @@ function M.clear(bufnr)
   require("obsidian-tasks.render.keymap").detach(bufnr)
 end
 
+--- Drop all render state for a buffer WITHOUT mutating buffer lines.
+--- Used on BufReadPre: the buffer is about to be rewritten from disk so the
+--- rendered task lines will be erased by Neovim regardless, but our extmarks
+--- and side tables would otherwise persist with stale positions and corrupt the
+--- next render (clear() would trust them and delete the wrong rows).
+---
+--- @param bufnr integer
+function M.clear_state(bufnr)
+  if not _state[bufnr] then
+    return
+  end
+  if vim.api.nvim_buf_is_valid(bufnr) then
+    vim.api.nvim_buf_clear_namespace(bufnr, NS, 0, -1)
+  end
+  managed.clear_buffer(bufnr)
+  _state[bufnr] = nil
+  require("obsidian-tasks.render.keymap").detach(bufnr)
+end
+
 --- Check whether a buffer line is a render-inserted task line.
 --- Uses the live extmark positions (auto-tracked by Neovim), so the result
 --- stays correct even if lines above have been inserted or deleted.
