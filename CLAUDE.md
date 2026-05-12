@@ -26,7 +26,7 @@ task/
   recurrence.lua      v1: parse+preserve; v2: compute next
 
 query/                filter/sort/group/limit/hide AST + evaluation
-index/                in-memory task index + vault watcher
+index/                in-memory task index (refresh on demand)
 render/               extmark-based render + edit-through
 cmd/                  :ObsidianTask dispatcher + subcommand modules
 cmp/                  blink.cmp source + date NL parser

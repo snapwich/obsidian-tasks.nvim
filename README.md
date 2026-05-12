@@ -17,7 +17,7 @@ Render, filter, and edit tasks across your Obsidian vault — directly in Neovim
 
 ```lua
 {
-  "snapwich/obsidian-tasks.nvim",  -- replace with actual repo URL at first publish
+  "snapwich/obsidian-tasks.nvim",
   dependencies = {
     "obsidian-nvim/obsidian.nvim",
     "saghen/blink.cmp",
