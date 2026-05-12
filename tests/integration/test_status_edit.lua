@@ -454,4 +454,56 @@ T["status edit: rapid cycle updates the real index entry every commit"] = functi
   index_mod._reset()
 end
 
+-- ── refuse when source buffer has unsaved changes ───────────────────────────
+--
+-- Disk-truth model: queries reflect disk, edits-from-query persist via
+-- writefile.  If the user has unsaved edits in the source buffer, our
+-- writefile would silently save them along with the toggle — surprising
+-- and potentially destructive of in-progress work.  Instead, refuse the
+-- commit and tell the user to :w first.
+
+T["status edit: source buffer has unsaved changes → refuse, no source mutation"] = function()
+  local bufnr, src_path, cleanup = setup_status_test("- [ ] Pending save")
+  local task_row = 3
+
+  -- Load the source buffer and dirty it WITHOUT writing to disk.  Pick a row
+  -- different from the task row so the buffer-side edit doesn't itself
+  -- trigger a drift-check failure on the task line.
+  local src_buf = vim.fn.bufadd(src_path)
+  vim.fn.bufload(src_buf)
+  vim.api.nvim_buf_set_lines(src_buf, 1, 1, false, { "an unsaved scratch line" })
+  MiniTest.expect.equality(vim.bo[src_buf].modified, true, "fixture must leave source buffer dirty")
+
+  -- Toggle [ ] → [x] from the query.
+  local canonical = get_line(bufnr, task_row)
+  set_line(bufnr, task_row, (canonical:gsub("%[ %]", "[x]", 1)))
+
+  local notify_calls = {}
+  local orig_notify = vim.notify
+  vim.notify = function(msg, level)
+    notify_calls[#notify_calls + 1] = { msg = msg, level = level }
+  end
+  revert._flush_pending(bufnr)
+  vim.notify = orig_notify
+
+  -- Disk must NOT have been written.
+  local function read_disk(path, row0)
+    local ok, lines = pcall(vim.fn.readfile, path)
+    return ok and lines[row0 + 1] or nil
+  end
+  eq(read_disk(src_path, 0), "- [ ] Pending save", "disk must not be mutated while buffer is dirty")
+
+  -- A targeted warning must have been emitted.
+  local saw_warn = false
+  for _, c in ipairs(notify_calls) do
+    if c.level == vim.log.levels.WARN and tostring(c.msg):find("unsaved", 1, true) then
+      saw_warn = true
+      break
+    end
+  end
+  eq(saw_warn, true, "must emit an 'unsaved' warning")
+
+  cleanup()
+end
+
 return T

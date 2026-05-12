@@ -181,16 +181,43 @@ local function classify_and_commit(bufnr)
       if current ~= nil and meta ~= nil and meta.rendered_text ~= nil then
         local new_sym = recognize_status_edit(meta.rendered_text, current)
         if new_sym ~= nil then
-          -- Drift check + source-buffer write.  We have meta.task_text (the
-          -- source line at render time) and meta.source_file/source_row; use
-          -- cmd.resolver helpers indirectly via a synthetic resolve call that
-          -- bypasses managed.task_meta_for_row (its extmark may have moved
-          -- after the user's line replacement).
-          local current_src = cmd._read_source_line(meta.source_file, meta.source_row)
+          -- Disk is source of truth: queries reflect disk state, and edits
+          -- from queries persist to disk via writefile.  The drift check
+          -- compares meta.task_text (the source line at render time) to the
+          -- current ON-DISK line — reading the loaded buffer instead would
+          -- silently mask external concurrent edits AND it would let us
+          -- commit on top of an unrelated unsaved buffer state.  Inline a
+          -- disk-only read; do NOT call cmd._read_source_line (which prefers
+          -- the loaded buffer).
+          local current_src
+          do
+            local ok, lines = pcall(vim.fn.readfile, meta.source_file)
+            if ok and type(lines) == "table" then
+              current_src = lines[meta.source_row + 1]
+            end
+          end
+
+          -- Refuse to commit if the source buffer has unsaved changes:
+          -- otherwise the subsequent writefile would silently save the user's
+          -- in-progress edits along with our toggle, which is surprising and
+          -- can drop data if the user wasn't done. The user must :w the
+          -- source first, after which queries see the new state and commits
+          -- from the query work normally.
+          local existing_bufnr = vim.fn.bufnr(meta.source_file, false)
+          local source_unsaved = existing_bufnr > -1
+            and vim.api.nvim_buf_is_loaded(existing_bufnr)
+            and vim.bo[existing_bufnr].modified
+
           if current_src == nil then
             log.warn("obsidian-tasks: cannot read source file — run <leader>tr to refresh")
           elseif current_src ~= meta.task_text then
             log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+          elseif source_unsaved then
+            log.warn(
+              "obsidian-tasks: source buffer has unsaved changes — save (:w) "
+                .. vim.fn.fnamemodify(meta.source_file, ":t")
+                .. " before toggling from the query"
+            )
           else
             local src_bufnr = cmd._get_or_load_buf(meta.source_file)
             local task = task_parse.parse(meta.task_text)
