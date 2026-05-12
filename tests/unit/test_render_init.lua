@@ -73,10 +73,6 @@ local function make_draw_mock()
     return nil
   end
 
-  function m.set_summary(_bufnr, _fence_first, _summary)
-    -- No-op in unit tests; the real impl attaches a virt_lines_above extmark.
-  end
-
   function m.reset()
     m.draw_calls = {}
     m.clear_calls = {}

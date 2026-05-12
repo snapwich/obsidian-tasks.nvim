@@ -122,8 +122,7 @@ end
 --- If the index is empty when the first render runs, an async vault walk is
 --- kicked off and render is retried once the walk completes (non-blocking).
 ---
---- After rendering, applies manual folds for each block and attaches a summary
---- virt_lines_above extmark on each opening fence (see draw.set_summary).
+--- After rendering, applies manual folds for each block.
 ---
 --- @param bufnr     integer
 --- @param workspace table?  workspace object (required for lazy index init)
@@ -134,7 +133,6 @@ function M.render_buffer(bufnr, workspace)
   local query_run = require("obsidian-tasks.query.run")
   local index = require("obsidian-tasks.index")
   local folds_mod = require("obsidian-tasks.render.folds")
-  local foldtext_mod = require("obsidian-tasks.render.foldtext")
   local revert = require("obsidian-tasks.render.revert")
   local hygiene = require("obsidian-tasks.render.hygiene")
 
@@ -217,14 +215,9 @@ function M.render_buffer(bufnr, workspace)
         end
 
         -- Run pipeline; catch any Lua exceptions.
-        -- `parsed_ast` escapes the pcall scope so we can summarize() after the
-        -- draw call.  On parse-exception paths it stays nil and we fall back to
-        -- an "invalid query" summary.
         local layout_lines
-        local parsed_ast
         local ok, err = pcall(function()
           local ast = query_parse.parse(query_text)
-          parsed_ast = ast
           local result = query_run.run(ast, index)
           layout_lines = layout_mod.layout(result)
         end)
@@ -247,20 +240,13 @@ function M.render_buffer(bufnr, workspace)
         -- Draw the block.
         draw.draw(bufnr, fence_range, layout_lines)
 
-        -- Count tasks inserted for the offset update and result count cache.
+        -- Count tasks inserted for the offset update.
         local n_tasks = 0
         for _, ll in ipairs(layout_lines) do
           if ll.kind == "task" then
             n_tasks = n_tasks + 1
           end
         end
-
-        -- Attach the per-block summary as a virt_lines_above extmark on the
-        -- opening fence.  Falls back to an "invalid query" summary when the
-        -- pipeline pcall above caught a parse exception (parsed_ast == nil).
-        local summary_ast = parsed_ast or { filters = {}, errors = { { kind = "internal_error" } } }
-        local summary_text = foldtext_mod.summarize(summary_ast, n_tasks)
-        draw.set_summary(bufnr, fence_first, summary_text)
 
         -- Build per-block orchestrator state from draw's recorded state.
         local block_state_map = draw.render_state(bufnr)

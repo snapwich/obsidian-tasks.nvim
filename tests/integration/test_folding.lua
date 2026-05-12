@@ -226,7 +226,7 @@ end
 
 -- ── render/init.lua integration: folds applied after render_buffer ─────────────
 
-T["render_buffer: applies fold and attaches summary virt_lines extmark"] = function()
+T["render_buffer: applies fold after rendering tasks block"] = function()
   -- Ensure default_folded is true for this test regardless of what earlier test
   -- files set.  test_f9_acceptance.lua runs first (alphabetically) and calls
   -- render.configure({ default_folded = false }), leaving the module state dirty.
@@ -278,28 +278,6 @@ T["render_buffer: applies fold and attaches summary virt_lines extmark"] = funct
   end)
   -- fc == 1 means line 1 is in a closed fold starting at 1.
   eq(fc, 1)
-
-  -- The summary must be attached as a virt_lines_above extmark on the opening
-  -- fence (row 0).  Walk all draw-NS extmarks on that row and look for one whose
-  -- virt_lines includes the 📋 prefix and the result count "(1)".
-  local NS = require("obsidian-tasks.util.extmark").NS
-  local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, { 0, 0 }, { 0, -1 }, { details = true })
-  local summary_found = false
-  for _, em in ipairs(ems) do
-    local details = em[4] or {}
-    local vl = details.virt_lines
-    if details.virt_lines_above and vl then
-      for _, chunks in ipairs(vl) do
-        for _, chunk in ipairs(chunks) do
-          local text = chunk[1] or ""
-          if text:find("📋", 1, true) and text:find("(1)", 1, true) then
-            summary_found = true
-          end
-        end
-      end
-    end
-  end
-  eq(summary_found, true)
 
   -- Cleanup.
   render.clear_buffer(bufnr)

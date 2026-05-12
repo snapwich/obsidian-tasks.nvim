@@ -27,7 +27,6 @@ local revert = require("obsidian-tasks.render.revert")
 local save = require("obsidian-tasks.render.save")
 local folds_mod = require("obsidian-tasks.render.folds")
 local keymap_mod = require("obsidian-tasks.render.keymap")
-local NS = require("obsidian-tasks.util.extmark").NS
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,37 +73,6 @@ local function fold_closed_at(bufnr, lnum_1)
     result = vim.fn.foldclosed(lnum_1)
   end)
   return result
-end
-
---- Return true iff a draw-NS virt_lines_above extmark on `row0` (0-indexed)
---- contains text matching all `needles` substrings.
---- @param bufnr   integer
---- @param row0    integer  0-indexed buffer row
---- @param needles string[]  list of substrings that must all appear in one chunk
---- @return boolean
-local function virt_lines_above_contains(bufnr, row0, needles)
-  local ems = vim.api.nvim_buf_get_extmarks(bufnr, NS, { row0, 0 }, { row0, -1 }, { details = true })
-  for _, em in ipairs(ems) do
-    local details = em[4] or {}
-    if details.virt_lines_above and details.virt_lines then
-      for _, chunks in ipairs(details.virt_lines) do
-        for _, chunk in ipairs(chunks) do
-          local text = chunk[1] or ""
-          local all_present = true
-          for _, n in ipairs(needles) do
-            if not text:find(n, 1, true) then
-              all_present = false
-              break
-            end
-          end
-          if all_present then
-            return true
-          end
-        end
-      end
-    end
-  end
-  return false
 end
 
 --- Get line at 0-indexed row.
@@ -204,11 +172,10 @@ local function install_mock(name, mock)
 end
 
 -- ── AC1: Default render + fold on open ───────────────────────────────────────
--- Opening a dashboard .md file shows all ```tasks blocks collapsed with a
--- summary virt_lines_above the opening fence, rendered task lines visible
--- below each fold.
+-- Opening a dashboard .md file shows all ```tasks blocks collapsed, with
+-- rendered task lines visible below each fold.
 
-T["AC1: two blocks both folded with summary virt_lines on render"] = function()
+T["AC1: two blocks both folded on render"] = function()
   render.configure({ default_folded = true })
   -- Stub returns one todo task: both "not done" blocks get 1 result each.
   local restore = install_one_task_stub("- [ ] AC1 task")
@@ -240,12 +207,6 @@ T["AC1: two blocks both folded with summary virt_lines on render"] = function()
   local task1_visible = fc_task1 == -1
   local task2_visible = fc_task2 == -1
 
-  -- Summary virt_lines_above on each opening fence must contain 📋 and (1).
-  -- Block 1 opening fence is at row 0; block 2 is at row 4 (after block 1's
-  -- one rendered task line was inserted at row 3).
-  local ft1_ok = virt_lines_above_contains(bufnr, 0, { "📋", "(1)" })
-  local ft2_ok = virt_lines_above_contains(bufnr, 4, { "📋", "(1)" })
-
   -- Rendered task lines are present in the buffer (visible below folds).
   local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local task_line_found = false
@@ -265,8 +226,6 @@ T["AC1: two blocks both folded with summary virt_lines on render"] = function()
   eq(fold2_closed, true, "AC1: block 2 fence fold must be closed")
   eq(task1_visible, true, "AC1: block 1 rendered task must be visible (not folded)")
   eq(task2_visible, true, "AC1: block 2 rendered task must be visible (not folded)")
-  eq(ft1_ok, true, "AC1: block 1 summary virt_lines must contain 📋 and (1)")
-  eq(ft2_ok, true, "AC1: block 2 summary virt_lines must contain 📋 and (1)")
   eq(task_line_found, true, "AC1: rendered task line must be present in buffer")
 end
 
