@@ -197,56 +197,30 @@ local function classify_and_commit(bufnr)
             end
           end
 
-          -- Refuse to commit if the source buffer has unsaved changes:
-          -- otherwise the subsequent writefile would silently save the user's
-          -- in-progress edits along with our toggle, which is surprising and
-          -- can drop data if the user wasn't done. The user must :w the
-          -- source first, after which queries see the new state and commits
-          -- from the query work normally.
-          local existing_bufnr = vim.fn.bufnr(meta.source_file, false)
-          local source_unsaved = existing_bufnr > -1
-            and vim.api.nvim_buf_is_loaded(existing_bufnr)
-            and vim.bo[existing_bufnr].modified
-
           if current_src == nil then
             log.warn("obsidian-tasks: cannot read source file — run <leader>tr to refresh")
           elseif current_src ~= meta.task_text then
             log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-          elseif source_unsaved then
-            log.warn(
-              "obsidian-tasks: source buffer has unsaved changes — save (:w) "
-                .. vim.fn.fnamemodify(meta.source_file, ":t")
-                .. " before toggling from the query"
-            )
           else
-            local src_bufnr = cmd._get_or_load_buf(meta.source_file)
+            -- cmd.apply_source_edit refuses to commit when a loaded source
+            -- buffer has unsaved changes (which would otherwise silently
+            -- commit those pending edits alongside our toggle).  It also
+            -- handles index invalidate+refresh and avoids bufload (so a stale
+            -- swap file from a crashed nvim session cannot truncate the file).
             local task = task_parse.parse(meta.task_text)
             if task then
               task.status_symbol = new_sym
-              local ok_write, err = pcall(function()
-                local new_line = serialize.serialize(task)
-                vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, { new_line })
-              end)
-              if not ok_write then
-                log.warn("revert: status commit failed: " .. tostring(err))
-              else
-                -- Persist to disk and refresh the index, mirroring the
-                -- <leader>tt → dispatch_and_refresh path.  Without this, the
-                -- next edit's drift check compares the (now-mutated) source
-                -- buffer against the (now-stale) meta.task_text, fails, and
-                -- locks the row out of further toggles.
-                pcall(function()
-                  local lines = vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
-                  vim.fn.writefile(lines, meta.source_file)
-                  vim.bo[src_bufnr].modified = false
-                  local index = require("obsidian-tasks.index")
-                  -- invalidate before refresh: rapid cycles ([ ]→[~]→[!])
-                  -- can land within the same second, and refresh_file's mtime
-                  -- no-op would skip the reparse, leaving the index stale
-                  -- and producing a spurious drift on the next press.
-                  index.invalidate(meta.source_file)
-                  index.refresh_file(meta.source_file)
-                end)
+              local new_line = serialize.serialize(task)
+              local ok_commit = cmd.apply_source_edit(meta.source_file, meta.source_row, { new_line })
+              if ok_commit then
+                -- Record a pending linger keyed to the dashboard buffer — the
+                -- same bufnr we're processing here is the one the user typed
+                -- the status edit on, so it satisfies the "originated in this
+                -- buffer" rule.  Promotion is gated on linger_on_filter_exit.
+                local rmod = require("obsidian-tasks.render")
+                if type(rmod._record_pending_linger) == "function" then
+                  rmod._record_pending_linger(bufnr, meta.source_file, meta.source_row + 1, nil, task)
+                end
               end
             end
           end

@@ -6,12 +6,24 @@ local M = {}
 --- Merged opts stored after setup(). Available as obsidian-tasks.opts.
 M.opts = {}
 
+--- Register default highlight groups.  `default = true` lets user colorschemes
+--- win — call this in setup AND on ColorScheme (some colorschemes nuke user
+--- highlights on reload).
+local function register_default_hls()
+  vim.api.nvim_set_hl(0, "ObsidianTasksLinger", { link = "Comment", default = true })
+end
+
 --- Bootstrap the plugin.
 --- @param opts table? User configuration (see config.lua for schema).
 function M.setup(opts)
   opts = opts or {}
   local config = require("obsidian-tasks.config")
   M.opts = config.merge(opts)
+  register_default_hls()
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = vim.api.nvim_create_augroup("obsidian_tasks_highlights", { clear = true }),
+    callback = register_default_hls,
+  })
   -- Merge user status overrides so toggle/done/cancel respect custom statuses.
   local status_mod = require("obsidian-tasks.task.status")
   status_mod.merge(M.opts.statuses)

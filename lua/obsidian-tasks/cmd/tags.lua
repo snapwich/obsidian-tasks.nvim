@@ -76,7 +76,7 @@ local function add_one(resolved, tag)
       task.tags[#task.tags + 1] = tag
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
-    vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
+    require("obsidian-tasks.cmd").commit_line(resolved, { new_line })
   end
 end
 
@@ -97,7 +97,7 @@ local function remove_one(resolved, tag)
       task.description = strip_tag_from_desc(task.description, tag)
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
-    vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
+    require("obsidian-tasks.cmd").commit_line(resolved, { new_line })
   end
 end
 

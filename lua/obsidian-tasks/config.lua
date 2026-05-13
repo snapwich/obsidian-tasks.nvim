@@ -21,6 +21,17 @@ M.defaults = {
   },
   log_level = "info",
   max_file_bytes = 1048576,
+  -- Linger: keep a task visible (dimmed) after its status changes and it would
+  -- otherwise vanish from a `not done`-style query.  Removed by <leader>tr /
+  -- :ObsidianTask refresh, by buffer reload, or when the task re-enters the
+  -- live filter set.  Set false to match obsidian-tasks parity (immediate vanish).
+  linger_on_filter_exit = true,
+  linger_hl_group = "ObsidianTasksLinger",
+  -- Sink completed (Done / Cancelled) tasks to the bottom of each group and
+  -- dim them via linger_hl_group.  Preserves the user's sort within each
+  -- tier (non-completed first, completed below).  Lingered rows slot below
+  -- live-completed for a uniform "deprioritized" visual.
+  dim_completed_tasks = true,
 }
 
 --- Type-check a single field.
@@ -86,6 +97,18 @@ local function check_field(key, value)
     if type(value) ~= "number" or math.floor(value) ~= value or value <= 0 then
       error(("obsidian-tasks: 'max_file_bytes' must be a positive integer, got %s"):format(tostring(value)), 2)
     end
+  elseif key == "linger_on_filter_exit" then
+    if type(value) ~= "boolean" then
+      error(("obsidian-tasks: 'linger_on_filter_exit' must be a boolean, got %s"):format(type(value)), 2)
+    end
+  elseif key == "linger_hl_group" then
+    if type(value) ~= "string" or value == "" then
+      error(("obsidian-tasks: 'linger_hl_group' must be a non-empty string, got %s"):format(type(value)), 2)
+    end
+  elseif key == "dim_completed_tasks" then
+    if type(value) ~= "boolean" then
+      error(("obsidian-tasks: 'dim_completed_tasks' must be a boolean, got %s"):format(type(value)), 2)
+    end
   end
 end
 
@@ -104,6 +127,9 @@ local KNOWN_KEYS = {
   date_input = true,
   log_level = true,
   max_file_bytes = true,
+  linger_on_filter_exit = true,
+  linger_hl_group = true,
+  dim_completed_tasks = true,
 }
 
 --- Validate user opts types and return deep-merged result.

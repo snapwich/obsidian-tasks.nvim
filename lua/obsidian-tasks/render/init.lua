@@ -24,6 +24,49 @@ function M.configure(opts)
   M._opts = opts or {}
 end
 
+--- Record a task that should linger on the next rerender if it exits the
+--- buffer's live filter set.  No-op when linger_on_filter_exit is false.
+---
+--- Called from cmd/{toggle,done,cancel,onHold,inProgress}.lua and from
+--- render/revert.lua's classify_and_commit pass.  `bufnr` is the buffer the
+--- user acted in (i.e. nvim_get_current_buf() at cmd-dispatch time), NOT the
+--- source buffer the cmd writes to — only acting-buffer state can be promoted
+--- to a visible linger.
+---
+--- @param bufnr            integer
+--- @param src_path         string
+--- @param src_line         integer  1-indexed source line at toggle time
+--- @param source_text_hash string|nil  sha256[:16] of the source line
+--- @param task             table    parsed Task post-mutation
+function M._record_pending_linger(bufnr, src_path, src_line, source_text_hash, task)
+  if not M._opts or M._opts.linger_on_filter_exit == false then
+    return
+  end
+  if not src_path or not src_line then
+    return
+  end
+  M._pending_lingers[bufnr] = M._pending_lingers[bufnr] or {}
+  table.insert(M._pending_lingers[bufnr], {
+    src_path = src_path,
+    src_line = src_line,
+    source_text_hash = source_text_hash,
+    task = task,
+  })
+end
+
+--- Refresh a buffer's renders AND clear all linger state.
+--- Used by manual refresh paths (:ObsidianTask refresh, <leader>tr).
+--- Other rerender triggers (BufWritePost, FocusGained, reverse_index) keep
+--- lingers intact via rerender_buffer.
+---
+--- @param bufnr     integer
+--- @param workspace table?
+function M.refresh_with_clear_lingers(bufnr, workspace)
+  M._lingers[bufnr] = nil
+  M._pending_lingers[bufnr] = nil
+  M.rerender_buffer(bufnr, workspace)
+end
+
 -- ── Per-buffer orchestrator state ─────────────────────────────────────────────
 --
 --   M._buffer_state[bufnr] = {
@@ -39,6 +82,28 @@ end
 --   }
 --
 M._buffer_state = {}
+
+-- ── Linger state ─────────────────────────────────────────────────────────────
+-- _pending_lingers[bufnr]:  recently-mutated tasks awaiting linger promotion
+--                           on the next rerender.  Status-change commands
+--                           (toggle/done/cancel/onHold/inProgress) and the
+--                           direct status-edit revert path push here via
+--                           M._record_pending_linger().  Consumed by the
+--                           next render_buffer call.
+-- _lingers[bufnr]:          promoted lingers currently displayed in the
+--                           buffer.  Survive BufWritePost/FocusGained/
+--                           reverse_index re-renders; cleared by manual
+--                           refresh, buffer reload, or task re-entering
+--                           the live filter set.
+--
+-- Entry shape:
+--   { src_path, src_line, source_text_hash, task, block_idx? }
+--
+-- block_idx is set at promotion time (pending → linger).  Lingers are
+-- displayed only in their pre-exit block.  When a task was in multiple
+-- blocks pre-exit, one entry per block is created.
+M._pending_lingers = {}
+M._lingers = {}
 
 -- ── Lazy-init guard ───────────────────────────────────────────────────────────
 -- Tracks workspaces for which a refresh_all walk has already been kicked off.
@@ -177,9 +242,11 @@ function M.render_buffer(bufnr, workspace)
         end
       end
 
-      -- ── 3. Clear previous render ───────────────────────────────────────────────
-      -- Clear draw state (extmarks + inserted lines), drop our own state, and
-      -- remove any reverse-index associations for this buffer.
+      -- ── 3. Capture pre-clear state + clear previous render ─────────────────
+      -- pre_clear_state lets the linger-decision step below find which block(s)
+      -- a now-exited task previously appeared in.  Capture BEFORE clear_buffer
+      -- since clear_buffer wipes M._buffer_state[bufnr].
+      local pre_clear_state = M._buffer_state[bufnr]
       M.clear_buffer(bufnr)
 
       -- ── 4. Find all blocks (positions in now-cleared buffer) ───────────────────
@@ -190,7 +257,123 @@ function M.render_buffer(bufnr, workspace)
         return
       end
 
-      -- ── 5. Render each block ───────────────────────────────────────────────────
+      -- ── 5a. Pass 1: parse + run each block ─────────────────────────────────
+      -- Collect ASTs and query results before any layout/draw so the linger
+      -- decision (5b) can compute the buffer-wide live set.  No buffer
+      -- mutations in this pass, so positions don't need offset adjustment.
+      local per_block = {}
+      for _, block in ipairs(blocks) do
+        local fence_first0 = block.fence_start - 1
+        local fence_last0 = block.fence_end - 1
+
+        local query_text = ""
+        if block.query_start <= block.query_end then
+          local q_lines = vim.api.nvim_buf_get_lines(bufnr, block.query_start - 1, block.query_end, false)
+          query_text = table.concat(q_lines, "\n")
+        end
+
+        local ast, result
+        local ok, err = pcall(function()
+          ast = query_parse.parse(query_text)
+          local ws_root = workspace and workspace.root or nil
+          result = query_run.run(ast, index, ws_root)
+        end)
+
+        per_block[#per_block + 1] = {
+          block = block,
+          fence_first0 = fence_first0,
+          fence_last0 = fence_last0,
+          ast = ok and ast or nil,
+          result = ok and result or nil,
+          parse_ok = ok,
+          parse_err = err,
+        }
+      end
+
+      -- ── 5b. Linger decision ────────────────────────────────────────────────
+      -- Use live tasks from per_block results and pre_clear_state's line_map
+      -- to promote / drop pending entries and existing lingers.  Operates as
+      -- a no-op when linger_on_filter_exit = false (pending is always empty
+      -- and any leftover _lingers is dropped naturally).
+      local function entry_key(p, l)
+        return (p or "") .. "\0" .. tostring(l or 0)
+      end
+
+      -- live_set across all blocks (post-rerender), keyed by (src_path, src_line)
+      local live_set = {}
+      for _, pb in ipairs(per_block) do
+        if pb.result and pb.result.groups then
+          for _, g in ipairs(pb.result.groups) do
+            for _, t in ipairs(g.tasks or {}) do
+              live_set[entry_key(t._src_path, t._src_line)] = true
+            end
+          end
+        end
+      end
+
+      -- pre_clear_map: (src_path, src_line) → set of block indices it appeared in
+      local pre_clear_map = {}
+      if pre_clear_state then
+        for i, blk in ipairs(pre_clear_state) do
+          for _, meta in pairs(blk.line_map or {}) do
+            local key = entry_key(meta.src_path, meta.src_line)
+            pre_clear_map[key] = pre_clear_map[key] or {}
+            pre_clear_map[key][i] = true
+          end
+        end
+      end
+
+      local pending = M._pending_lingers[bufnr] or {}
+      local existing = M._lingers[bufnr] or {}
+      local new_lingers = {}
+
+      -- Keep existing lingers unless their task re-entered the live filter or
+      -- their associated block no longer exists.
+      for _, ent in ipairs(existing) do
+        local key = entry_key(ent.src_path, ent.src_line)
+        local block_present = ent.block_idx == nil or ent.block_idx <= #per_block
+        if not live_set[key] and block_present then
+          new_lingers[#new_lingers + 1] = ent
+        end
+      end
+
+      -- Promote pending entries whose task isn't in the new live set.  Use
+      -- pre_clear_map to determine which block(s) the task previously occupied;
+      -- when a task was in multiple blocks, emit one linger entry per block.
+      if M._opts and M._opts.linger_on_filter_exit ~= false then
+        for _, ent in ipairs(pending) do
+          local key = entry_key(ent.src_path, ent.src_line)
+          if not live_set[key] then
+            local block_set = pre_clear_map[key]
+            if block_set then
+              for i in pairs(block_set) do
+                if i <= #per_block then
+                  local copy = vim.deepcopy(ent)
+                  copy.block_idx = i
+                  new_lingers[#new_lingers + 1] = copy
+                end
+              end
+            end
+            -- else: no pre-clear record (task never visible in this buffer);
+            -- nothing to linger against.
+          end
+        end
+      end
+
+      M._lingers[bufnr] = #new_lingers > 0 and new_lingers or nil
+      M._pending_lingers[bufnr] = nil
+
+      -- Pre-bucket lingers by block_idx for fast Pass-2 filtering.
+      local lingers_by_block = {}
+      for _, l in ipairs(new_lingers) do
+        local i = l.block_idx
+        if i then
+          lingers_by_block[i] = lingers_by_block[i] or {}
+          table.insert(lingers_by_block[i], l)
+        end
+      end
+
+      -- ── 5c. Pass 2: layout + draw each block ───────────────────────────────
       local new_buf_state = {}
       -- `offset` tracks cumulative task lines inserted by prior blocks so we can
       -- adjust fence positions for subsequent blocks.
@@ -199,33 +382,30 @@ function M.render_buffer(bufnr, workspace)
       -- Folds cover ONLY the fence lines; rendered task lines stay visible below.
       local fold_blocks = {}
 
-      for _, block in ipairs(blocks) do
-        -- Convert 1-indexed block positions to 0-indexed, adjusted by offset.
-        local fence_first = block.fence_start - 1 + offset
-        local fence_last = block.fence_end - 1 + offset
+      for i, pb in ipairs(per_block) do
+        local block = pb.block
+        -- 0-indexed positions adjusted by cumulative insertions from prior blocks.
+        local fence_first = pb.fence_first0 + offset
+        local fence_last = pb.fence_last0 + offset
         local fence_range = { fence_first, fence_last }
 
-        -- Extract query text from the adjusted buffer positions.
-        local query_text = ""
-        if block.query_start <= block.query_end then
-          local q_lines =
-            vim.api.nvim_buf_get_lines(bufnr, block.query_start - 1 + offset, block.query_end - 1 + offset + 1, false)
-          query_text = table.concat(q_lines, "\n")
-        end
-
-        -- Run pipeline; catch any Lua exceptions.
+        -- Build layout lines (with this block's filtered lingers).
         local layout_lines
-        local ok, err = pcall(function()
-          local ast = query_parse.parse(query_text)
-          local ws_root = workspace and workspace.root or nil
-          local result = query_run.run(ast, index, ws_root)
-          layout_lines = layout_mod.layout(result)
-        end)
-
-        if not ok then
-          -- Emit a single error line plus footer so the message surfaces in
-          -- the virt_lines flow below the fence.
-          local msg = type(err) == "string" and err or tostring(err)
+        if pb.parse_ok then
+          local ok2, err2 = pcall(function()
+            layout_lines = layout_mod.layout(pb.result, {
+              lingers = lingers_by_block[i] or {},
+              group_by = (pb.ast and pb.ast.group_by) or {},
+              dim_completed = M._opts and M._opts.dim_completed_tasks ~= false,
+            })
+          end)
+          if not ok2 then
+            pb.parse_ok = false
+            pb.parse_err = err2
+          end
+        end
+        if not pb.parse_ok then
+          local msg = type(pb.parse_err) == "string" and pb.parse_err or tostring(pb.parse_err)
           layout_lines = {
             {
               kind = "error",
@@ -263,13 +443,6 @@ function M.render_buffer(bufnr, workspace)
 
         -- Build line_map: lnum (0-indexed) → src metadata.
         local line_map = {}
-        if block_draw_state and block_draw_state.em_map then
-          for _, meta in pairs(block_draw_state.em_map) do
-            -- em_map keys are extmark IDs; line numbers are recovered via is_render_line.
-            -- Store by iterating inserted_range if available.
-            _ = meta -- used below via is_render_line; stored in draw state
-          end
-        end
         -- Populate line_map from inserted_range + layout_lines task order.
         -- `rendered_text` is the canonical buffer line we just wrote; the
         -- revert/commit path compares it against the live row to detect status
@@ -285,6 +458,8 @@ function M.render_buffer(bufnr, workspace)
                 src_line = ll.src_line,
                 src_hash = ll.src_hash,
                 rendered_text = ll.text,
+                linger = ll.linger or nil,
+                dim = ll.dim or nil,
               }
               task_idx = task_idx + 1
             end
@@ -312,6 +487,7 @@ function M.render_buffer(bufnr, workspace)
           render_range = block_draw_state and block_draw_state.inserted_range or nil,
           extmark_ids = extmark_ids,
           line_map = line_map,
+          group_by = (pb.ast and pb.ast.group_by) or {},
         }
 
         offset = offset + n_tasks
@@ -377,7 +553,8 @@ end
 --- @param bufnr     integer
 --- @param workspace table?
 function M.refresh_buffer(bufnr, workspace)
-  M.clear_buffer(bufnr)
+  -- render_buffer does its own internal clear; an explicit clear here would
+  -- wipe pre_clear_state needed for linger promotion.
   M.render_buffer(bufnr, workspace)
 end
 
@@ -483,10 +660,11 @@ function M.rerender_buffer(bufnr, workspace)
     end
   end
 
-  -- ── 2. Clear + re-render ───────────────────────────────────────────────────
-  -- render_buffer applies folds for ALL blocks if default_folded=true,
-  -- or leaves them open if default_folded=false.
-  M.clear_buffer(bufnr)
+  -- ── 2. Re-render ───────────────────────────────────────────────────────────
+  -- render_buffer does its own internal clear_buffer and applies folds for ALL
+  -- blocks if default_folded=true, or leaves them open if default_folded=false.
+  -- Calling clear_buffer here too would wipe M._buffer_state[bufnr] before
+  -- render_buffer can capture it as pre_clear_state for linger promotion.
   M.render_buffer(bufnr, workspace)
 
   -- ── 3. Restore "open" fold states when default_folded=true ─────────────────
@@ -540,6 +718,10 @@ function M.clear_state(bufnr)
   local draw = require("obsidian-tasks.render.draw")
   draw.clear_state(bufnr)
   M._buffer_state[bufnr] = nil
+  -- Linger state is bound to the buffer's render lifecycle: a reload from disk
+  -- (BufReadPre) or BufDelete invalidates any lingered rows, so drop them too.
+  M._lingers[bufnr] = nil
+  M._pending_lingers[bufnr] = nil
   require("obsidian-tasks.index").clear_render_paths(bufnr)
 end
 

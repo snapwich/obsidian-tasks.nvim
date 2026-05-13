@@ -638,13 +638,17 @@ T["<leader>te: happy path — replaces description in source buffer"] = function
   keymap_mod.detach(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  -- Read mutated line from the source buffer opened by get_or_load_buf.
+  -- Read mutated line from disk (apply_source_edit no longer auto-loads a
+  -- source buffer for files that weren't already open).
   local src_buf = vim.fn.bufnr(src_path, false)
   local mutated = nil
   if src_buf ~= -1 then
     local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
     mutated = lines[1]
     vim.api.nvim_buf_delete(src_buf, { force = true })
+  else
+    local lines = vim.fn.readfile(src_path)
+    mutated = lines[1]
   end
   vim.fn.delete(src_path)
 
@@ -939,6 +943,9 @@ T["<leader>tT: auto-prefixes # and updates source buffer"] = function()
     local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
     mutated = lines[1]
     vim.api.nvim_buf_delete(src_buf, { force = true })
+  else
+    local lines = vim.fn.readfile(src_path)
+    mutated = lines[1]
   end
   vim.fn.delete(src_path)
 
@@ -1055,6 +1062,9 @@ T["<leader>tT: empty input — clears all tags from task"] = function()
     local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
     mutated = lines[1]
     vim.api.nvim_buf_delete(src_buf, { force = true })
+  else
+    local lines = vim.fn.readfile(src_path)
+    mutated = lines[1]
   end
   vim.fn.delete(src_path)
 

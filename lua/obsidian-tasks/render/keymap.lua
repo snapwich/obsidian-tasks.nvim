@@ -39,14 +39,14 @@ local function safe_workspace(path)
   return ok and result or nil
 end
 
---- Read a single source line (0-indexed row).
---- Prefers loaded buffer; falls back to readfile.
+--- Read a single source line (0-indexed row).  Disk-only when no buffer is
+--- loaded for the file, so we never trigger bufload's swap detection here.
 --- @param source_file string
 --- @param source_row  integer  0-indexed
 --- @return string|nil
 local function read_source_line(source_file, source_row)
   local src_bufnr = vim.fn.bufnr(source_file, false)
-  if src_bufnr > -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
+  if src_bufnr > -1 and vim.api.nvim_buf_is_loaded(src_bufnr) then
     local lines = vim.api.nvim_buf_get_lines(src_bufnr, source_row, source_row + 1, false)
     return lines[1]
   end
@@ -55,18 +55,6 @@ local function read_source_line(source_file, source_row)
     return lines[source_row + 1]
   end
   return nil
-end
-
---- Get or load source buffer (prefer already-loaded).
---- @param source_file string
---- @return integer  bufnr
-local function get_or_load_buf(source_file)
-  local src_bufnr = vim.fn.bufnr(source_file, false)
-  if src_bufnr == -1 then
-    src_bufnr = vim.fn.bufadd(source_file)
-    vim.fn.bufload(src_bufnr)
-  end
-  return src_bufnr
 end
 
 --- Check for source drift: if current source line ≠ meta.task_text, warn and
@@ -88,19 +76,6 @@ local function no_drift(meta)
   return true
 end
 
---- Write source buffer to disk and refresh the task index.
---- @param source_file string
-local function persist_source(source_file)
-  local src_bufnr = vim.fn.bufnr(source_file, false)
-  if src_bufnr > -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
-    local lines = vim.api.nvim_buf_get_lines(src_bufnr, 0, -1, false)
-    vim.fn.writefile(lines, source_file)
-    vim.bo[src_bufnr].modified = false
-  end
-  -- Update the task index so re-render reflects the mutation.
-  require("obsidian-tasks.index").refresh_file(source_file)
-end
-
 --- Re-render the dashboard buffer.
 ---
 --- Refreshes the index from disk first so externally-edited source files
@@ -118,6 +93,25 @@ local function do_rerender(bufnr)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local ws = safe_workspace(path)
   render.rerender_buffer(bufnr, ws)
+end
+
+--- Manual-refresh variant that clears any lingered rows before re-rendering.
+--- Used by <leader>tr only; mutation handlers (toggle/edit/priority/etc.)
+--- go through do_rerender so newly-completed tasks linger as intended.
+--- @param bufnr integer
+local function do_refresh(bufnr)
+  local index = require("obsidian-tasks.index")
+  if type(index.refresh_all_indexed_sync) == "function" then
+    pcall(index.refresh_all_indexed_sync)
+  end
+  local render = require("obsidian-tasks.render")
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  local ws = safe_workspace(path)
+  if type(render.refresh_with_clear_lingers) == "function" then
+    render.refresh_with_clear_lingers(bufnr, ws)
+  else
+    render.rerender_buffer(bufnr, ws)
+  end
 end
 
 -- ── Jump handler (<leader>tg) ────────────────────────────────────────────────
@@ -154,12 +148,14 @@ local function get_meta_at_cursor(bufnr)
   return meta
 end
 
---- Run an :ObsidianTask subcommand via dispatch, then persist+rerender.
+--- Run an :ObsidianTask subcommand via dispatch, then rerender.
+--- Persistence is handled inside the subcommand (cmd.commit_line →
+--- cmd.apply_source_edit) so no extra writefile is needed here.
 --- The cursor must be positioned on the rendered task line before calling.
 --- @param bufnr   integer  dashboard buffer
 --- @param fargs   table    e.g. {"toggle"} or {"priority", "cycle"}
---- @param source_file string  path used for persist_source
-local function dispatch_and_refresh(bufnr, fargs, source_file)
+--- @param _source_file string  unused (kept for call-site symmetry)
+local function dispatch_and_refresh(bufnr, fargs, _source_file)
   local cursor = vim.api.nvim_win_get_cursor(0)
   local lnum = cursor[1] - 1 -- 0-indexed
   require("obsidian-tasks.cmd").dispatch({
@@ -167,7 +163,6 @@ local function dispatch_and_refresh(bufnr, fargs, source_file)
     line1 = lnum + 1,
     line2 = lnum + 1,
   })
-  persist_source(source_file)
   do_rerender(bufnr)
 end
 
@@ -216,10 +211,9 @@ local function make_edit_desc_handler(bufnr)
       end -- cancelled
       task.description = input
       local new_line = serialize.serialize(task)
-      local src_bufnr = get_or_load_buf(meta.source_file)
-      vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, { new_line })
-      persist_source(meta.source_file)
-      do_rerender(bufnr)
+      if require("obsidian-tasks.cmd").apply_source_edit(meta.source_file, meta.source_row, { new_line }) then
+        do_rerender(bufnr)
+      end
     end)
   end
 end
@@ -314,10 +308,9 @@ local function make_edit_tags_handler(bufnr)
       end
       task.tags = new_tags
       local new_line = serialize.serialize(task)
-      local src_bufnr = get_or_load_buf(meta.source_file)
-      vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, { new_line })
-      persist_source(meta.source_file)
-      do_rerender(bufnr)
+      if require("obsidian-tasks.cmd").apply_source_edit(meta.source_file, meta.source_row, { new_line }) then
+        do_rerender(bufnr)
+      end
     end)
   end
 end
@@ -340,20 +333,20 @@ local function make_delete_handler(bufnr)
       return
     end -- user chose No or dismissed
 
-    local src_bufnr = get_or_load_buf(meta.source_file)
     -- Delete the source line (replace with empty list → remove the row).
-    vim.api.nvim_buf_set_lines(src_bufnr, meta.source_row, meta.source_row + 1, false, {})
-    persist_source(meta.source_file)
-    do_rerender(bufnr)
+    if require("obsidian-tasks.cmd").apply_source_edit(meta.source_file, meta.source_row, {}) then
+      do_rerender(bufnr)
+    end
   end
 end
 
---- <leader>tr — force re-render all regions in the dashboard buffer.
+--- <leader>tr — force re-render all regions in the dashboard buffer AND
+--- clear any lingered rows (dimmed completed tasks awaiting verification).
 --- @param bufnr integer
 --- @return fun()
 local function make_refresh_handler(bufnr)
   return function()
-    do_rerender(bufnr)
+    do_refresh(bufnr)
   end
 end
 

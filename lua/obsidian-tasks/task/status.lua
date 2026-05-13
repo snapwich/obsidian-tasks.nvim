@@ -145,6 +145,20 @@ function M.bridge_obsidian_checkbox_order()
   end
 end
 
+--- Return true when *symbol* maps to a terminal "completed" status
+--- (DONE or CANCELLED).  Used by the layout pipeline to dim-and-sink
+--- completed tasks to the bottom of each group.
+---
+--- @param symbol string  single character
+--- @return boolean
+function M.is_completed(symbol)
+  local entry = M.by_symbol[symbol]
+  if not entry then
+    return false
+  end
+  return entry.type == "DONE" or entry.type == "CANCELLED"
+end
+
 --- Return the next symbol in the cycle for the given symbol.
 --- If the symbol is unknown, returns it unchanged (no-op for caller).
 ---

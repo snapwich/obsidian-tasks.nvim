@@ -22,6 +22,8 @@
 local M = {}
 
 local serialize_mod = require("obsidian-tasks.task.serialize")
+local group_mod = require("obsidian-tasks.query.group")
+local status_mod = require("obsidian-tasks.task.status")
 
 -- ---------------------------------------------------------------------------
 -- Internal helpers
@@ -103,12 +105,35 @@ end
 --- Build the ordered list of render-line records from a QueryResult.
 ---
 --- @param query_result table  QueryResult as returned by query/run.lua
---- @param opts?        table  optional opts (currently unused; reserved)
+--- @param opts?        table  optional opts:
+---                              opts.lingers       — list of linger entries
+---                                                   { task, src_path, src_line,
+---                                                     source_text_hash }
+---                              opts.group_by      — ast.group_by (used to resolve
+---                                                   each linger to its group(s))
+---                              opts.dim_completed — sink + dim live tasks whose
+---                                                   status is Done/Cancelled
 --- @return table[]  ordered list of render-line records
 function M.layout(query_result, opts)
   opts = opts or {}
   local hide = query_result.hide_flags or {}
   local lines = {}
+
+  local lingers = opts.lingers or {}
+  local group_by = opts.group_by or {}
+  local dim_completed = opts.dim_completed ~= false
+
+  -- Pre-resolve each linger to its set of group names (empty string when no
+  -- group_by — matches the unnamed group used by query_run for ungrouped
+  -- results).  Index by group name for cheap lookup during the layout walk.
+  local lingers_by_group = {}
+  for _, ent in ipairs(lingers) do
+    local names = group_mod.resolve(ent.task, ent.src_path, group_by)
+    for _, name in ipairs(names) do
+      lingers_by_group[name] = lingers_by_group[name] or {}
+      table.insert(lingers_by_group[name], ent)
+    end
+  end
 
   local total = query_result.total or 0
 
@@ -126,10 +151,97 @@ function M.layout(query_result, opts)
   end
 
   -- ── 2. Groups (group_header + task lines) ─────────────────────────────────
-  local has_groups = #(query_result.groups or {}) > 0
-  local multi_group = has_groups and (#query_result.groups > 1 or query_result.groups[1].name ~= "")
+  -- Track which linger group-names get drained by the live-groups pass so any
+  -- leftover lingers (whose previous group has no live members) can be emitted
+  -- as ghost groups at the end.
+  local consumed_linger_groups = {}
 
-  for _, group in ipairs(query_result.groups or {}) do
+  local live_groups = query_result.groups or {}
+  -- Ghost groups: linger group-names that are NOT present in the live groups.
+  -- Sorted alphabetically for stable rendering.
+  local ghost_names = {}
+  do
+    local live_set = {}
+    for _, g in ipairs(live_groups) do
+      live_set[g.name or ""] = true
+    end
+    for name in pairs(lingers_by_group) do
+      if not live_set[name] then
+        ghost_names[#ghost_names + 1] = name
+      end
+    end
+    table.sort(ghost_names, function(a, b)
+      return vim.stricmp(a, b) < 0
+    end)
+  end
+
+  local has_groups = #live_groups > 0 or #ghost_names > 0
+  local total_groups = #live_groups + #ghost_names
+  local first_live_name = live_groups[1] and live_groups[1].name or nil
+  local multi_group = has_groups and (total_groups > 1 or (first_live_name ~= nil and first_live_name ~= ""))
+
+  --- Append linger task records that resolve to *group_name*.
+  --- @param group_name string
+  local function append_lingers_for(group_name)
+    local entries = lingers_by_group[group_name]
+    if not entries then
+      return
+    end
+    consumed_linger_groups[group_name] = true
+    for _, ent in ipairs(entries) do
+      local visible_task = apply_hide_flags(ent.task, hide)
+      local task_text = serialize_mod.serialize(visible_task, { format = "preserve" })
+      local source_text_hash = ent.task.raw_line and src_hash(ent.task.raw_line) or src_hash(task_text)
+      local path = ent.src_path or ent.task._src_path
+      if path and not hide.backlinks then
+        local basename = vim.fn.fnamemodify(path, ":t:r")
+        task_text = task_text .. " [[" .. basename .. "]]"
+      end
+      local hash = src_hash(task_text)
+      lines[#lines + 1] = {
+        kind = "task",
+        text = task_text,
+        src_path = path,
+        src_line = ent.src_line or ent.task._src_line,
+        src_hash = hash,
+        source_text_hash = source_text_hash,
+        indent = ent.task.indent or "",
+        -- Lingered rows are always dimmed; `linger` retains the state-tracking
+        -- bit so render/init.lua + tests can distinguish them from live-completed.
+        linger = true,
+        dim = true,
+      }
+    end
+  end
+
+  --- Partition a group's task list into [non_completed..., completed...] while
+  --- preserving the input order within each tier.  No-op (returns the input
+  --- unchanged) when dim_completed is false.
+  --- @param tasks table[]
+  --- @return table[]
+  local function partition_completed(tasks)
+    if not dim_completed then
+      return tasks
+    end
+    local active, done = {}, {}
+    for _, t in ipairs(tasks) do
+      if status_mod.is_completed(t.status_symbol) then
+        done[#done + 1] = t
+      else
+        active[#active + 1] = t
+      end
+    end
+    if #done == 0 then
+      return tasks
+    end
+    -- Concatenate active first, then completed.
+    for _, t in ipairs(done) do
+      active[#active + 1] = t
+    end
+    return active
+  end
+
+  for _, group in ipairs(live_groups) do
     -- Group header: only emit when there is a named group.
     if group.name and group.name ~= "" then
       lines[#lines + 1] = {
@@ -152,8 +264,9 @@ function M.layout(query_result, opts)
       }
     end
 
-    -- Task lines.
-    for _, task in ipairs(group.tasks or {}) do
+    -- Task lines.  Completed-status tasks are sunk to the bottom of the
+    -- group (after the active ones) when dim_completed is on.
+    for _, task in ipairs(partition_completed(group.tasks or {})) do
       -- Apply hide flags to a copy of the task.
       local visible_task = apply_hide_flags(task, hide)
 
@@ -191,7 +304,39 @@ function M.layout(query_result, opts)
         src_hash = hash,
         source_text_hash = source_text_hash,
         indent = task.indent or "",
+        -- Mark completed-live rows as dim so draw applies the linger highlight.
+        dim = dim_completed and status_mod.is_completed(task.status_symbol) or nil,
       }
+    end
+
+    -- Lingered tasks for this group (after live members, in completion order).
+    append_lingers_for(group.name or "")
+  end
+
+  -- Ghost groups: emit a header and the linger rows for each name that had no
+  -- corresponding live group in the current result set.
+  for _, name in ipairs(ghost_names) do
+    if not consumed_linger_groups[name] then
+      if name ~= "" then
+        lines[#lines + 1] = {
+          kind = "group_header",
+          text = "## " .. name,
+          src_path = nil,
+          src_line = nil,
+          src_hash = nil,
+          indent = "",
+        }
+      elseif multi_group then
+        lines[#lines + 1] = {
+          kind = "group_header",
+          text = "## (no group)",
+          src_path = nil,
+          src_line = nil,
+          src_hash = nil,
+          indent = "",
+        }
+      end
+      append_lingers_for(name)
     end
   end
 

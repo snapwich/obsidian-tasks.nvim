@@ -42,10 +42,22 @@ local _HL = {
   group_header = "ObsidianTasksGroupHeader",
   footer = "ObsidianTasksFooter",
   error = "ObsidianTasksError",
+  linger = "ObsidianTasksLinger",
 }
 
 local function hl(kind)
   return _HL[kind] or "Normal"
+end
+
+--- Resolve the highlight group used to dim lingered task lines.
+--- Reads opts.linger_hl_group set via M.setup; falls back to the default name.
+--- @return string
+local function linger_hl_group()
+  local ok, ot = pcall(require, "obsidian-tasks")
+  if ok and ot.opts and type(ot.opts.linger_hl_group) == "string" and ot.opts.linger_hl_group ~= "" then
+    return ot.opts.linger_hl_group
+  end
+  return _HL.linger
 end
 
 -- ── Strip wikilink helper ─────────────────────────────────────────────────────
@@ -189,7 +201,11 @@ function M.draw(bufnr, fence_range, layout_lines)
       end
 
       -- Per-line task extmark (draw NS) — id stored in em_map for keymap lookup.
-      local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, task_lnum, 0, {})
+      -- Dimmed task lines (either lingered or live-completed) get a full-line
+      -- highlight via line_hl_group; other rows get a bare extmark so syntax
+      -- highlighting governs them.
+      local ext_opts = ll.dim and { line_hl_group = linger_hl_group() } or {}
+      local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, task_lnum, 0, ext_opts)
       all_eids[#all_eids + 1] = eid
       em_map[eid] = {
         src_path = ll.src_path,

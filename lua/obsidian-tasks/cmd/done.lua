@@ -35,8 +35,9 @@ end
 
 --- Apply the done mutation to a single resolved task entry.
 ---
---- @param resolved table  result of cmd.resolve_task_at()
-local function done_one(resolved)
+--- @param resolved     table   result of cmd.resolve_task_at()
+--- @param active_bufnr integer buffer the user acted in (for linger recording)
+local function done_one(resolved, active_bufnr)
   if resolved.kind == "source" or resolved.kind == "render" then
     local serialize = require("obsidian-tasks.task.serialize")
     local task = resolved.task
@@ -52,7 +53,11 @@ local function done_one(resolved)
     end
 
     local new_line = serialize.serialize(task)
-    vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
+    local cmd = require("obsidian-tasks.cmd")
+    if not cmd.commit_line(resolved, { new_line }) then
+      return
+    end
+    cmd._record_linger(active_bufnr, resolved, task)
   end
 end
 
@@ -72,7 +77,7 @@ function M.run(_args, range)
   end
 
   for _, resolved in ipairs(resolved_list) do
-    done_one(resolved)
+    done_one(resolved, bufnr)
   end
 end
 

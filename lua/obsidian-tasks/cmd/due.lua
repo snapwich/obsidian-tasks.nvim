@@ -65,21 +65,27 @@ function M.run(args, range)
       return
     end
 
-    -- Append "📅 " to the end of the task line.
-    -- For render lines, resolved.bufnr points to the source buffer (T7 resolver),
-    -- so we read from and write to the source directly (no wikilink strip needed).
-    local target_bufnr = resolved.bufnr
-    local target_lnum = resolved.lnum
-    local lines = vim.api.nvim_buf_get_lines(target_bufnr, target_lnum, target_lnum + 1, false)
-    local base_line = lines[1] or ""
-    local new_line = base_line .. " " .. FIELD_EMOJI .. " "
-    vim.api.nvim_buf_set_lines(target_bufnr, target_lnum, target_lnum + 1, false, { new_line })
-
-    -- For render lines jump to the source buffer; for source lines stay put.
+    -- Append "📅 " to the end of the task line, then enter insert mode.
+    -- For render lines: open the source file first (the natural place for any
+    -- swap-file prompt to fire, since the user is opening the file to type
+    -- into it) and then mutate the now-current buffer.  For source lines:
+    -- mutate the user's buffer in-place.
     if resolved.kind == "render" then
       vim.cmd("edit " .. vim.fn.fnameescape(resolved.src_path))
+      local target_bufnr = vim.api.nvim_get_current_buf()
+      local target_lnum = resolved.lnum
+      local lines = vim.api.nvim_buf_get_lines(target_bufnr, target_lnum, target_lnum + 1, false)
+      local base_line = lines[1] or ""
+      local new_line = base_line .. " " .. FIELD_EMOJI .. " "
+      vim.api.nvim_buf_set_lines(target_bufnr, target_lnum, target_lnum + 1, false, { new_line })
       vim.api.nvim_win_set_cursor(0, { resolved.src_line, #new_line })
     else
+      local target_bufnr = resolved.bufnr
+      local target_lnum = resolved.lnum
+      local lines = vim.api.nvim_buf_get_lines(target_bufnr, target_lnum, target_lnum + 1, false)
+      local base_line = lines[1] or ""
+      local new_line = base_line .. " " .. FIELD_EMOJI .. " "
+      vim.api.nvim_buf_set_lines(target_bufnr, target_lnum, target_lnum + 1, false, { new_line })
       vim.api.nvim_win_set_cursor(0, { range.line1, #new_line })
     end
     vim.cmd("startinsert!")

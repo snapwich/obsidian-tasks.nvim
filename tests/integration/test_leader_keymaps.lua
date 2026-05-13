@@ -345,13 +345,17 @@ T["<leader>tp: cycles priority on source task via managed meta"] = function()
   keymap_mod.detach(dash_bufnr)
   managed.clear_buffer(dash_bufnr)
 
-  -- Read the mutated line from the source buffer.
+  -- Read the mutated line.  apply_source_edit writes through to disk without
+  -- auto-loading a source buffer, so prefer readfile.
   local src_buf = vim.fn.bufnr(src_path, false)
   local mutated_line = nil
   if src_buf ~= -1 then
     local lines = vim.api.nvim_buf_get_lines(src_buf, 0, 1, false)
     mutated_line = lines[1]
     vim.api.nvim_buf_delete(src_buf, { force = true })
+  else
+    local lines = read_file(src_path)
+    mutated_line = lines[1]
   end
   vim.api.nvim_buf_delete(dash_bufnr, { force = true })
   vim.fn.delete(src_path)

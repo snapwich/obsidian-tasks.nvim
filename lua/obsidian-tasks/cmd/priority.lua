@@ -72,7 +72,7 @@ local function priority_one(resolved, level)
       end
     end
     local new_line = require("obsidian-tasks.task.serialize").serialize(task)
-    vim.api.nvim_buf_set_lines(resolved.bufnr, resolved.lnum, resolved.lnum + 1, false, { new_line })
+    require("obsidian-tasks.cmd").commit_line(resolved, { new_line })
   end
 end
 

@@ -203,6 +203,11 @@ function M.setup(opts)
       local bufnr = ev.buf
       local render = require("obsidian-tasks.render")
       render.clear_buffer(bufnr)
+      -- clear_buffer intentionally preserves linger state (it's called inside
+      -- render_buffer/rerender_buffer, where lingers must survive); BufDelete
+      -- is a hard buffer-lifecycle boundary, so drop them explicitly.
+      render._lingers[bufnr] = nil
+      render._pending_lingers[bufnr] = nil
       require("obsidian-tasks.render.hygiene")._cleanup(bufnr)
     end,
   })

@@ -35,8 +35,16 @@ function M.run(_args, _range)
   local bufnr = vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(bufnr)
   local ws = safe_workspace_for_path(path)
-  -- Use rerender_buffer to preserve fold states across the refresh.
-  render.rerender_buffer(bufnr, ws)
+  -- Manual refresh: drop linger state along with the rerender so the user
+  -- can use :ObsidianTask refresh to clear dim'd lingered rows.  Other
+  -- rerender paths (BufWritePost/FocusGained/reverse_index/<leader>tt)
+  -- preserve lingers.  Fall back to rerender_buffer when test stubs replace
+  -- the render module with a partial mock (no linger surface).
+  if type(render.refresh_with_clear_lingers) == "function" then
+    render.refresh_with_clear_lingers(bufnr, ws)
+  else
+    render.rerender_buffer(bufnr, ws)
+  end
 end
 
 return M
