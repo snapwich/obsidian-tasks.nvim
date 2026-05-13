@@ -634,6 +634,14 @@ end
 group_tests["group by filename: returns filename without extension"] = function()
   local t = pt("- [ ] Task")
   local names = group_mod.resolve(t, "/vault/my_note.md", { { key = "filename", reverse = false } })
+  eq(#names, 1)
+  eq(names[1], "my_note")
+end
+
+group_tests["group by backlink: returns filename without extension"] = function()
+  local t = pt("- [ ] Task")
+  local names = group_mod.resolve(t, "/vault/my_note.md", { { key = "backlink", reverse = false } })
+  eq(#names, 1)
   eq(names[1], "my_note")
 end
 

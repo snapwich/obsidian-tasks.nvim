@@ -85,12 +85,14 @@ end
 
 local function filename_group(_task, path)
   local fname = (path or ""):match("[^/]+$") or ""
-  return fname:gsub("%.[^.]+$", "")
+  -- Parens truncate gsub's 2-return (string, count) to just the string;
+  -- without them, the count leaks into `{ filename_group(...) }` callers.
+  return (fname:gsub("%.[^.]+$", ""))
 end
 
 local function backlink_group(_task, path)
   local fname = (path or ""):match("[^/]+$") or ""
-  return fname:gsub("%.[^.]+$", "")
+  return (fname:gsub("%.[^.]+$", ""))
 end
 
 local function heading_group(_task, _path)
