@@ -115,6 +115,11 @@ require("obsidian-tasks").setup({
 
   -- Files larger than this (bytes) are skipped by the vault scanner.
   max_file_bytes = 1048576,        -- positive integer (default 1 MiB)
+
+  -- DateFallback: when true, tasks in files whose basename contains a
+  -- YYYY-MM-DD date inherit it as their scheduled date (only when the
+  -- task has no own ⏳).  Mirrors upstream's `useFilenameAsScheduledDate`.
+  use_filename_as_scheduled_date = false,  -- boolean
 })
 ````
 
@@ -233,16 +238,24 @@ vim.keymap.set("n", "<leader>tr", "<cmd>ObsidianTask refresh<cr>",   { desc = "R
 
 ## Commands
 
-| Command                   | Description                                                   |
-| ------------------------- | ------------------------------------------------------------- |
-| `:ObsidianTask toggle`    | Cycle the status of the task under the cursor                 |
-| `:ObsidianTask done`      | Mark task done and stamp done date                            |
-| `:ObsidianTask cancel`    | Mark task cancelled                                           |
-| `:ObsidianTask due`       | Set / edit the due date (📅)                                  |
-| `:ObsidianTask scheduled` | Set / edit the scheduled date (⏳)                            |
-| `:ObsidianTask new`       | Create a new task (appends to `capture_file` or current file) |
-| `:ObsidianTask refresh`   | Re-render all open query blocks                               |
-| `:ObsidianTask goto`      | Jump to the source line of a rendered task                    |
+| Command                      | Description                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| `:ObsidianTask toggle`       | Cycle the status of the task under the cursor                               |
+| `:ObsidianTask done`         | Mark task done and stamp done date (honors `🏁 delete` to remove the line)  |
+| `:ObsidianTask cancel`       | Mark task cancelled                                                         |
+| `:ObsidianTask inProgress`   | Set status to In Progress (`[/]`)                                           |
+| `:ObsidianTask onHold`       | Set status to On Hold (`[h]`)                                               |
+| `:ObsidianTask due [DATE]`   | Set / edit the due date (📅)                                                |
+| `:ObsidianTask scheduled`    | Set / edit the scheduled date (⏳)                                          |
+| `:ObsidianTask start [DATE]` | Set / edit the start date (🛫)                                              |
+| `:ObsidianTask priority`     | Cycle / set priority                                                        |
+| `:ObsidianTask recurrence`   | Set the recurrence pattern (🔁)                                             |
+| `:ObsidianTask tags`         | Edit the task's tags                                                        |
+| `:ObsidianTask postpone [N]` | Bump primary date by N days (default +1; due > scheduled > start priority)  |
+| `:ObsidianTask id [VAL]`     | Generate (or set) a 6-char base36 task id for use with `depends on` filters |
+| `:ObsidianTask new`          | Create a new task (appends to `capture_file` or current file)               |
+| `:ObsidianTask refresh`      | Re-render all open query blocks                                             |
+| `:ObsidianTask goto`         | Jump to the source line of a rendered task                                  |
 
 ## blink.cmp Registration
 
@@ -316,18 +329,32 @@ re-index from disk.
 - Real-text task rendering in dashboard buffers with manual fold per query block
 - BufWriteCmd save handler — only source content (queries + prose) written to disk
 - In-memory vault index (in-Neovim edits propagate on save; external edits picked up via `:ObsidianTask refresh`)
-- Query blocks: filter, sort, group, limit, hide
-- Status cycling with customizable statuses
+- **Query syntax portable with upstream obsidian-tasks**: bare-infix AND/OR/NOT, case-insensitive operators, optional parens (`A AND B AND C` and `(A) AND (B)` both work)
+- Query filters by field: `done` / `not done`, `status.name`, `status.type`, `priority is/above/below`, date filters with `before` / `after` / `on` / `on or before` / `on or after` / `in` (+ two-date ranges and year/month period shortcuts), `tag includes/does not include`, `path` / `folder` / `root` / `filename` / `backlink` / `description` / `heading` (with regex), `is recurring`, `recurrence includes`, `urgency above/below`, `exclude sub-items`, `random`
+- **Dependency filters**: `id is <X>`, `depends on <X>`, `is blocking`, `is blocked` (with their negated forms)
+- `sort by` and `group by` for all the above keys, including `random`
+- `limit N` (per group + total cap), `hide <subkey>` for 14 metadata subkeys
+- `explain` keyword renders the parsed query summary in the result
+- **Urgency**: full upstream-parity formula across due / scheduled / start / priority
+- Status cycling with customizable statuses; `done` filter aligned with upstream (CANCELLED counts as done)
+- OnCompletion 🏁: `🏁 delete` removes the line when the task is marked done/toggled to a completed status
+- DateFallback: opt-in (`use_filename_as_scheduled_date`) inheritance of `YYYY-MM-DD` filenames as the task's scheduled date
 - Dim completed tasks and linger rows that drop out of the filter after a mutation
 - Leader keymaps for task mutation directly from the dashboard
-- blink.cmp source: field-icon completion, value suggestions, NL date parsing
-- `:ObsidianTask` command suite
+- blink.cmp source: field-icon completion, value suggestions, NL date parsing (with number-word forms: `in two weeks`)
+- `:ObsidianTask` command suite (toggle / done / cancel / inProgress / onHold / due / scheduled / start / priority / recurrence / tags / **postpone [N]** / **id** / refresh / render / new / goto)
 
 **v1 limitations:**
 
 - **Recurrence (🔁):** parsed and preserved as opaque text; `next_occurrence` computation
   is a v2 feature and raises an error if called directly.
-- **Dependency filter queries:** `depends_on:` filter keyword is not yet implemented.
+- **Date period shortcuts:** ISO week (`due 2024-W09`) and quarter (`due 2024-Q1`) are
+  not yet supported. Year (`due 2024`), month (`due 2024-03`), and two-date ranges
+  (`due 2024-01-01 2024-01-31`) all work.
 - **Language:** English-only NL date phrases.
 - **External vault edits:** changes from the Obsidian app, `git pull`, syncthing, or another
   editor are not auto-detected; run `:ObsidianTask refresh` (or `<leader>tr`) to re-index.
+- **Heading-context filter:** `heading includes <X>` operates on an empty heading string in
+  v1 (no surrounding-heading tracking).
+- **JS expression filters (`where filter by function`)** are intentionally not supported —
+  the line emits a structured `unsupported` error in the result.
