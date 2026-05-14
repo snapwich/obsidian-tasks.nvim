@@ -329,7 +329,7 @@ re-index from disk.
 - Real-text task rendering in dashboard buffers with manual fold per query block
 - BufWriteCmd save handler — only source content (queries + prose) written to disk
 - In-memory vault index (in-Neovim edits propagate on save; external edits picked up via `:ObsidianTask refresh`)
-- **Query syntax portable with upstream obsidian-tasks**: bare-infix AND/OR/NOT, case-insensitive operators, optional parens (`A AND B AND C` and `(A) AND (B)` both work)
+- **Query syntax portable with upstream obsidian-tasks**: bare-infix AND/OR/NOT, case-insensitive operators, optional parens (`A AND B AND C` and `(A) AND (B)` both work). `path` / `folder` / `root` match against the **vault-relative** path (e.g. `daily/2024-03-15.md`, not the absolute filesystem path) so query results match Obsidian's behaviour when the same vault is opened in both
 - Query filters by field: `done` / `not done`, `status.name`, `status.type`, `priority is/above/below`, date filters with `before` / `after` / `on` / `on or before` / `on or after` / `in` (+ two-date ranges and year/month period shortcuts), `tag includes/does not include`, `path` / `folder` / `root` / `filename` / `backlink` / `description` / `heading` (with regex), `is recurring`, `recurrence includes`, `urgency above/below`, `exclude sub-items`, `random`
 - **Dependency filters**: `id is <X>`, `depends on <X>`, `is blocking`, `is blocked` (with their negated forms)
 - `sort by` and `group by` for all the above keys, including `random`
