@@ -178,17 +178,29 @@ local function make_leaf_pred(filter)
   local ft = filter.type
 
   -- ── status ─────────────────────────────────────────────────────────────────
+  -- Upstream parity: `done` matches every status type except those still
+  -- "actively pending" (TODO, IN_PROGRESS, ON_HOLD).  CANCELLED, DONE, NON_TASK
+  -- and any custom completed-bucket types all match `done`.  `not done` is the
+  -- inverse — including the "unknown type" case (treated as pending).
   if ft == "done" then
     return function(task)
       local entry = task_status_entry(task)
-      return entry ~= nil and entry.type == "DONE"
+      if entry == nil then
+        return false
+      end
+      local t = entry.type
+      return t ~= "TODO" and t ~= "IN_PROGRESS" and t ~= "ON_HOLD"
     end
   end
 
   if ft == "not_done" then
     return function(task)
       local entry = task_status_entry(task)
-      return entry == nil or entry.type ~= "DONE"
+      if entry == nil then
+        return true
+      end
+      local t = entry.type
+      return t == "TODO" or t == "IN_PROGRESS" or t == "ON_HOLD"
     end
   end
 
