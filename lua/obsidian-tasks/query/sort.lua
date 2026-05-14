@@ -141,6 +141,12 @@ local function extract(task, path, key)
     -- v2 feature; sort by empty string (stable, no-op).
     return "", "str"
   end
+  if key == "random" then
+    -- Sentinel: random is handled in the comparator (needs a wrapper-cached
+    -- value to provide a stable total order to table.sort).  Falling through
+    -- here would crash table.sort with "invalid order function".
+    return nil, "random"
+  end
   return "", "str"
 end
 
@@ -168,6 +174,15 @@ function M.make_comparator(sort_by_list)
     for _, directive in ipairs(sort_by_list) do
       local av, ak = extract(a.task, a.path, directive.key)
       local bv, _ = extract(b.task, b.path, directive.key)
+
+      -- `random` sentinel: assign a stable random value to each wrapper on
+      -- first encounter so successive comparisons see a consistent total
+      -- order.  Without caching, table.sort raises "invalid order function".
+      if ak == "random" then
+        a._random = a._random or math.random()
+        b._random = b._random or math.random()
+        av, bv, ak = a._random, b._random, "num"
+      end
 
       local less
       if ak == "num" then

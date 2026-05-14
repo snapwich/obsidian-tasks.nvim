@@ -187,6 +187,12 @@ local function resolve_key(task, path, key)
   if key == "urgency" then
     return { urgency_group(task) }
   end
+  if key == "random" then
+    -- Random bucket per task.  Useful for "show me one task from each random
+    -- partition" workflows.  Bucket is stable within a single render pass
+    -- because group/sort resolution happens once per task.
+    return { tostring(math.random(1, 1000)) }
+  end
   return { "Unknown" }
 end
 

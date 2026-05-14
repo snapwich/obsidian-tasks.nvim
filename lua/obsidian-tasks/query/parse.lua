@@ -74,6 +74,7 @@ local SORT_KEYS = {
   recurring = true,
   id = true,
   blocking = true,
+  random = true,
 }
 
 --- Group key canonical names (same as sort minus 'description' and 'blocking').
@@ -98,6 +99,7 @@ local GROUP_KEYS = {
   recurrence = true,
   recurring = true,
   id = true,
+  random = true,
 }
 
 --- Hide subkey canonical names (lower-cased multi-word keys).
