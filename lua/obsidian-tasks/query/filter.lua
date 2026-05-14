@@ -62,14 +62,17 @@ local function cmp_date(a, b)
 end
 
 --- Priority level ordering (higher value = higher priority).
---- Matches obsidian-tasks TS: highest > high > medium > low > lowest > none.
+--- Matches obsidian-tasks TS Priority enum (Priority.ts):
+---   Highest=0 > High=1 > Medium=2 > None=3 > Low=4 > Lowest=5
+--- We use inverted (higher value = higher priority) but preserve the
+--- relative ordering: `none` sits BETWEEN medium and low, NOT below lowest.
 local PRIORITY_ORDER = {
   highest = 6,
   high = 5,
   medium = 4,
-  low = 3,
-  lowest = 2,
-  none = 1,
+  none = 3,
+  low = 2,
+  lowest = 1,
 }
 
 --- Return task priority level; nil maps to 'none'.

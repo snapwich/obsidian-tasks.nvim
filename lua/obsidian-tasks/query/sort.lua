@@ -11,19 +11,22 @@ local M = {}
 -- ── helpers ───────────────────────────────────────────────────────────────────
 
 --- Priority ordering (higher number = higher priority, sorts to front by default).
+--- Mirrors obsidian-tasks TS Priority enum: `none` sits BETWEEN medium and
+--- low — see lua/obsidian-tasks/query/filter.lua's PRIORITY_ORDER for the
+--- upstream rationale.
 local PRIORITY_ORDER = {
   highest = 6,
   high = 5,
   medium = 4,
-  low = 3,
-  lowest = 2,
-  none = 1,
+  none = 3,
+  low = 2,
+  lowest = 1,
 }
 
 --- Return a comparable value for a task's priority (higher = more important).
 local function priority_ord(task)
   local p = task.fields and task.fields.priority or "none"
-  return PRIORITY_ORDER[p] or 1
+  return PRIORITY_ORDER[p] or 3
 end
 
 --- Return a date string for a field, or a sentinel string that sorts last.

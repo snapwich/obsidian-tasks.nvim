@@ -606,10 +606,10 @@ group_tests["group by priority: highest task → Priority 1: Highest"] = functio
   eq(names[1], "Priority 1: Highest")
 end
 
-group_tests["group by priority: no priority → Priority 6: None"] = function()
+group_tests["group by priority: no priority → Priority 4: None"] = function()
   local t = pt("- [ ] Plain task")
   local names = group_mod.resolve(t, "/vault/note.md", { { key = "priority", reverse = false } })
-  eq(names[1], "Priority 6: None")
+  eq(names[1], "Priority 4: None")
 end
 
 group_tests["group by due: returns date string"] = function()
@@ -1251,15 +1251,15 @@ int_tests["group by priority: correct group names"] = function()
   local idx = make_index(fixture_index_items("#task"))
   local result = run("not done\ngroup by priority", idx)
   -- not-done #task tasks: Buy milk (none), Call dentist (highest), Another task (none), Fix bug (none), Write tests (none), Deploy app (none)
-  -- Groups: "Priority 1: Highest" (Call dentist), "Priority 6: None" (5 others)
+  -- Groups: "Priority 1: Highest" (Call dentist), "Priority 4: None" (5 others)
   local names = {}
   for _, g in ipairs(result.groups) do
     names[g.name] = #g.tasks
   end
   MiniTest.expect.equality(names["Priority 1: Highest"] ~= nil, true)
-  MiniTest.expect.equality(names["Priority 6: None"] ~= nil, true)
+  MiniTest.expect.equality(names["Priority 4: None"] ~= nil, true)
   eq(names["Priority 1: Highest"], 1) -- Call dentist
-  eq(names["Priority 6: None"], 5) -- remaining 5 not-done #task tasks
+  eq(names["Priority 4: None"], 5) -- remaining 5 not-done #task tasks
 end
 
 int_tests["workspace_root: cross-vault isolation with real fixture files"] = function()

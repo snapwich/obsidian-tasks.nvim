@@ -361,6 +361,17 @@ end
 local parse_filter_expr
 
 --- Parse a filter expression: boolean (and/or/not) or a simple leaf.
+---
+--- Syntax mirrors obsidian-tasks (vaults are portable between the two
+--- implementations).  Accepts:
+---   • bare leaf: `done`, `priority is high`, `tag includes #work`
+---   • binary infix: `A AND B`, `A OR B` — operands need not be wrapped in
+---     parens; left-associative chaining (`A AND B AND C` → ((A AND B) AND C))
+---   • unary prefix: `NOT A` or `NOT (A)` — equivalent
+---   • grouping: `(expr)` — strip wrapping parens; any sub-expression may be
+---     wrapped to override the natural left-association
+---   • case-insensitive operators: `AND`/`and`, `OR`/`or`, `NOT`/`not`
+---
 --- @param s string  trimmed expression string (original case)
 --- @return table|nil  filter node, or nil if unrecognizable
 parse_filter_expr = function(s)
@@ -369,45 +380,76 @@ parse_filter_expr = function(s)
     return nil
   end
 
-  local lower = s:lower()
+  -- ── Top-level OR / AND ────────────────────────────────────────────────
+  -- Find the LAST top-level OR (lowest precedence, left-associative).  Splits
+  -- the line into `left OR right`.  If no OR, look for the last top-level AND.
+  -- find_top_level_bool_op already skips operators inside parens.
+  --
+  -- Splitting on the LAST occurrence builds a left-deep tree that matches
+  -- typical infix evaluation order: `A AND B AND C` parses as `(A AND B) AND C`.
+  local function find_last_op(target_kind)
+    local last_start, last_end
+    local i = 1
+    while true do
+      local op_start, op_end, op_kind = find_top_level_bool_op(s:sub(i))
+      if not op_kind then
+        break
+      end
+      if op_kind == target_kind then
+        last_start = i + op_start - 1
+        last_end = i + op_end - 1
+      end
+      i = i + op_end
+    end
+    return last_start, last_end
+  end
 
-  -- ── not (expr) ────────────────────────────────────────────────────────
-  if lower:sub(1, 4) == "not " then
-    local rest = s:sub(5):match("^%s*(.-)%s*$")
-    if rest:sub(1, 1) == "(" then
-      local close = find_matching_paren(rest, 1)
-      if close and close == #rest then
-        local inner = rest:sub(2, close - 1)
-        local child = parse_filter_expr(inner)
-        if child then
-          return { kind = "not", children = { child } }
-        end
+  for _, op in ipairs({ "or", "and" }) do
+    local op_start, op_end = find_last_op(op)
+    if op_start then
+      local left_str = s:sub(1, op_start - 1)
+      local right_str = s:sub(op_end + 1)
+      local left = parse_filter_expr(left_str)
+      local right = parse_filter_expr(right_str)
+      if left and right then
+        return { kind = op, children = { left, right } }
       end
     end
   end
 
-  -- ── (expr and/or expr) ────────────────────────────────────────────────
+  local lower = s:lower()
+
+  -- ── Leaf filter (tried BEFORE the unary NOT prefix) ───────────────────
+  -- Known leaves like `not done`, `no due date`, `not is low`, `is not
+  -- recurring` begin with "not"/"no" but are recognised as a single leaf
+  -- type by the leaf parser.  We try the leaf parser first so the AST
+  -- doesn't double-wrap them as kind="not" around a kind="leaf" sibling.
+  local filter = parse_leaf_filter(lower, s)
+  if filter then
+    return { kind = "leaf", filter = filter }
+  end
+
+  -- ── NOT <expr> (with or without parens around the operand) ────────────
+  if lower:sub(1, 4) == "not " then
+    local rest = s:sub(5):match("^%s*(.-)%s*$")
+    local child = parse_filter_expr(rest)
+    if child then
+      return { kind = "not", children = { child } }
+    end
+  end
+
+  -- ── Wrapping parens — strip and recurse on the inner expression ──────
+  -- Handles both `(filter)` and `(A AND B)` (the latter handled by the
+  -- recursive call's top-level operator detection above).
   if s:sub(1, 1) == "(" then
     local close = find_matching_paren(s, 1)
     if close and close == #s then
       local inner = s:sub(2, close - 1)
-      local op_start, op_end, op_kind = find_top_level_bool_op(inner)
-      if op_kind then
-        local left_str = inner:sub(1, op_start - 1)
-        local right_str = inner:sub(op_end + 1)
-        local left = parse_filter_expr(left_str)
-        local right = parse_filter_expr(right_str)
-        if left and right then
-          return { kind = op_kind, children = { left, right } }
-        end
+      local child = parse_filter_expr(inner)
+      if child then
+        return child
       end
     end
-  end
-
-  -- ── leaf filter ───────────────────────────────────────────────────────
-  local filter = parse_leaf_filter(lower, s)
-  if filter then
-    return { kind = "leaf", filter = filter }
   end
 
   return nil

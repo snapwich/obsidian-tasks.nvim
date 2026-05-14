@@ -35,18 +35,21 @@ local function date_group(task, field)
   return (v and v ~= "") and v or DATE_NONE
 end
 
+--- Group labels mirror upstream's ordering: None sits BETWEEN Medium and Low
+--- (matches the Priority enum: Highest=0 < High=1 < Medium=2 < None=3 < Low=4 < Lowest=5).
+--- Our 1-based labels make None=4 so it sorts after Medium and before Low.
 local PRIORITY_NAMES = {
   highest = "Priority 1: Highest",
   high = "Priority 2: High",
   medium = "Priority 3: Medium",
-  low = "Priority 4: Low",
-  lowest = "Priority 5: Lowest",
-  none = "Priority 6: None",
+  none = "Priority 4: None",
+  low = "Priority 5: Low",
+  lowest = "Priority 6: Lowest",
 }
 
 local function priority_group(task)
   local p = task.fields and task.fields.priority or "none"
-  return PRIORITY_NAMES[p] or "Priority 6: None"
+  return PRIORITY_NAMES[p] or "Priority 4: None"
 end
 
 local function status_group(task)
