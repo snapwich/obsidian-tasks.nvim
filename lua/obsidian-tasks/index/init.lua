@@ -28,6 +28,28 @@ local function get_mtime(abs_path)
   return stat and stat.mtime.sec
 end
 
+--- Extract a YYYY-MM-DD date from a file's basename when present.
+--- Used by the use_filename_as_scheduled_date setting (upstream parity).
+--- Matches both `YYYY-MM-DD.md` and `prefix-YYYY-MM-DD.md` forms.
+--- @param abs_path string
+--- @return string|nil  "YYYY-MM-DD" or nil
+local function date_from_basename(abs_path)
+  local base = abs_path:match("[^/]+$") or ""
+  -- Strip optional .md extension.
+  base = base:gsub("%.md$", "")
+  -- Search for YYYY-MM-DD anywhere in the (extension-stripped) basename.
+  local y, mo, d = base:match("(%d%d%d%d)%-(%d%d)%-(%d%d)")
+  if not y then
+    return nil
+  end
+  local mn = tonumber(mo)
+  local dn = tonumber(d)
+  if mn < 1 or mn > 12 or dn < 1 or dn > 31 then
+    return nil
+  end
+  return string.format("%s-%s-%s", y, mo, d)
+end
+
 --- Read and parse all task lines from *abs_path* synchronously.
 --- Returns a list of { task = Task, line_num = integer } entries (may be empty).
 --- @param abs_path string
@@ -36,6 +58,8 @@ local function parse_file(abs_path)
   local parse = require("obsidian-tasks.task.parse")
   local opts = require("obsidian-tasks").opts
   local global_filter = opts and opts.global_filter
+  local use_filename_date = opts and opts.use_filename_as_scheduled_date
+  local filename_date = use_filename_date and date_from_basename(abs_path) or nil
 
   local tasks = {}
   local ok = pcall(function()
@@ -55,6 +79,11 @@ local function parse_file(abs_path)
           end
         end
         if task then
+          -- DateFallback: inherit the filename's date as scheduled when the
+          -- task does not have its own scheduled date.
+          if filename_date and (task.fields.scheduled == nil or task.fields.scheduled == "") then
+            task.fields.scheduled = filename_date
+          end
           tasks[#tasks + 1] = { task = task, line_num = line_num }
         end
       end
@@ -257,6 +286,13 @@ end
 --- @return table
 function M._raw_reverse()
   return _reverse_index
+end
+
+--- Exposed for unit testing of the use_filename_as_scheduled_date helper.
+--- @param abs_path string
+--- @return string|nil
+function M._date_from_basename(abs_path)
+  return date_from_basename(abs_path)
 end
 
 return M

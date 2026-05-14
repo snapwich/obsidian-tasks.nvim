@@ -32,6 +32,11 @@ M.defaults = {
   -- tier (non-completed first, completed below).  Lingered rows slot below
   -- live-completed for a uniform "deprioritized" visual.
   dim_completed_tasks = true,
+  -- When true: tasks in files whose basename is a date pattern (YYYY-MM-DD,
+  -- with an optional prefix) inherit that date as their scheduled date if
+  -- they don't already have one.  Mirrors upstream's
+  -- `useFilenameAsScheduledDate` setting (off by default).
+  use_filename_as_scheduled_date = false,
 }
 
 --- Type-check a single field.
@@ -130,6 +135,7 @@ local KNOWN_KEYS = {
   linger_on_filter_exit = true,
   linger_hl_group = true,
   dim_completed_tasks = true,
+  use_filename_as_scheduled_date = true,
 }
 
 --- Validate user opts types and return deep-merged result.
