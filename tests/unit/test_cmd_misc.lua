@@ -913,7 +913,7 @@ end
 -- Dispatcher: all 15 subcommands route correctly (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["dispatcher: all 15 subcommands route without 'unknown' error"] = function()
+T["dispatcher: all 16 subcommands route without 'unknown' error"] = function()
   local cmd = require("obsidian-tasks.cmd")
 
   local subcmds = {
@@ -928,6 +928,7 @@ T["dispatcher: all 15 subcommands route without 'unknown' error"] = function()
     "priority",
     "recurrence",
     "tags",
+    "postpone",
     "refresh",
     "render",
     "new",
@@ -1008,10 +1009,10 @@ T["dispatcher: new subcmd calls new.run"] = function()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
--- Tab completion: all 15 subcmds returned (feature verification)
+-- Tab completion: all 16 subcmds returned (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["completion: all 15 subcommands present in empty-prefix result"] = function()
+T["completion: all 16 subcommands present in empty-prefix result"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local result = cmd._completion("", "ObsidianTask ", 13)
 
@@ -1027,6 +1028,7 @@ T["completion: all 15 subcommands present in empty-prefix result"] = function()
     "priority",
     "recurrence",
     "tags",
+    "postpone",
     "refresh",
     "render",
     "new",

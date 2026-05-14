@@ -31,6 +31,7 @@ local VALID_SUBCMDS = {
   "priority",
   "recurrence",
   "tags",
+  "postpone",
   "refresh",
   "render",
   "new",
