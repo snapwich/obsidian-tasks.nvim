@@ -445,6 +445,100 @@ local function make_leaf_pred(filter)
     end
   end
 
+  -- ── dependency filters ──────────────────────────────────────────────────
+  -- Split a comma-separated `depends_on` field into a list of trimmed ids.
+  local function split_dep_list(s)
+    if not s or s == "" then
+      return {}
+    end
+    local out = {}
+    for part in (s .. ","):gmatch("([^,]+),") do
+      local trimmed = part:match("^%s*(.-)%s*$")
+      if trimmed ~= "" then
+        out[#out + 1] = trimmed
+      end
+    end
+    return out
+  end
+
+  if ft == "id_is" then
+    local want = filter.value
+    return function(task)
+      return task.fields and task.fields.id == want
+    end
+  end
+
+  if ft == "depends_on" then
+    local want = filter.value
+    return function(task)
+      for _, dep in ipairs(split_dep_list(task.fields and task.fields.depends_on)) do
+        if dep == want then
+          return true
+        end
+      end
+      return false
+    end
+  end
+
+  -- `is blocking` / `is blocked` need access to the full index for reverse
+  -- lookup.  We compute the maps lazily on first predicate call and memoise
+  -- per query-run.  The index module exports tasks_in() which lets us
+  -- enumerate every indexed task.
+  local function build_dependency_maps()
+    local index = require("obsidian-tasks.index")
+    local blockers = {} -- id → true (any other task lists this id in its depends_on)
+    local id_to_done = {} -- id → boolean (is the task with this id done?)
+    for t in index.tasks_in(nil) do
+      if t.fields and t.fields.id and t.fields.id ~= "" then
+        local entry = require("obsidian-tasks.task.status").by_symbol[t.status_symbol]
+        local is_done = entry and (entry.type ~= "TODO" and entry.type ~= "IN_PROGRESS" and entry.type ~= "ON_HOLD")
+        id_to_done[t.fields.id] = is_done or false
+      end
+      if t.fields and t.fields.depends_on then
+        for _, dep in ipairs(split_dep_list(t.fields.depends_on)) do
+          blockers[dep] = true
+        end
+      end
+    end
+    return blockers, id_to_done
+  end
+
+  if ft == "is_blocking" or ft == "is_not_blocking" then
+    return function(task)
+      local id = task.fields and task.fields.id
+      if not id or id == "" then
+        return ft == "is_not_blocking"
+      end
+      local blockers = build_dependency_maps()
+      local blocking = blockers[id] == true
+      if ft == "is_blocking" then
+        return blocking
+      else
+        return not blocking
+      end
+    end
+  end
+
+  if ft == "is_blocked" or ft == "is_not_blocked" then
+    return function(task)
+      local deps = split_dep_list(task.fields and task.fields.depends_on)
+      if #deps == 0 then
+        return ft == "is_not_blocked"
+      end
+      local _, id_to_done = build_dependency_maps()
+      -- A task is blocked iff ANY of its declared dependencies is still
+      -- not-done.  When a dependency id isn't present in id_to_done at all
+      -- (the dependency task is missing from the index), treat it as
+      -- still-not-done — the conservative answer is "blocked".
+      for _, dep in ipairs(deps) do
+        if id_to_done[dep] ~= true then
+          return ft == "is_blocked"
+        end
+      end
+      return ft == "is_not_blocked"
+    end
+  end
+
   -- Unknown filter type — exclude task (safe default).
   return function(_)
     return false

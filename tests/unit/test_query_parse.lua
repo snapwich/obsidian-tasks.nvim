@@ -571,27 +571,35 @@ T["error: filter by function → parsing continues after error"] = function()
   eq(ast.filters[1].filter.type, "not_done")
 end
 
-T["error: is blocked → v2_feature kind"] = function()
+-- (Was: v2_feature errors for dependency filters.)  Dependency filters are
+-- now first-class — see tests/unit/test_query_filter_dependency.lua for the
+-- behavioural coverage.  These keywords no longer raise errors.
+
+T["dependency filter: is blocked parses as a leaf"] = function()
   local ast = parse("is blocked")
-  eq(#ast.errors, 1)
-  eq(ast.errors[1].kind, "v2_feature")
-  eq(ast.errors[1].msg, "Dependency filters are a v2 feature")
+  eq(#ast.errors, 0)
+  eq(#ast.filters, 1)
+  eq(ast.filters[1].filter.type, "is_blocked")
 end
 
-T["error: is not blocked → v2_feature kind"] = function()
-  err1("is not blocked", "v2_feature")
+T["dependency filter: is blocking parses as a leaf"] = function()
+  local ast = parse("is blocking")
+  eq(#ast.errors, 0)
+  eq(ast.filters[1].filter.type, "is_blocking")
 end
 
-T["error: is blocking → v2_feature kind"] = function()
-  err1("is blocking", "v2_feature")
+T["dependency filter: depends on <id> parses as a leaf"] = function()
+  local ast = parse("depends on abc123")
+  eq(#ast.errors, 0)
+  eq(ast.filters[1].filter.type, "depends_on")
+  eq(ast.filters[1].filter.value, "abc123")
 end
 
-T["error: is not blocking → v2_feature kind"] = function()
-  err1("is not blocking", "v2_feature")
-end
-
-T["error: blocked by includes → v2_feature kind"] = function()
-  err1("blocked by includes xyz", "v2_feature")
+T["dependency filter: id is <x> parses as a leaf"] = function()
+  local ast = parse("id is xyz789")
+  eq(#ast.errors, 0)
+  eq(ast.filters[1].filter.type, "id_is")
+  eq(ast.filters[1].filter.value, "xyz789")
 end
 
 T["error: unknown keyword → parse_error kind"] = function()
@@ -608,10 +616,12 @@ T["error: unknown keyword records line number"] = function()
 end
 
 T["error: multiple errors accumulate without aborting"] = function()
+  -- `is blocked` is now a first-class filter, so only the scripting and the
+  -- unknown-keyword lines produce errors.
   local ast = parse("filter by function foo\nis blocked\nbad line\nnot done")
-  eq(#ast.errors, 3)
-  eq(#ast.filters, 1)
-  eq(ast.filters[1].filter.type, "not_done")
+  eq(#ast.errors, 2)
+  -- Two filters now parse successfully: is_blocked and not_done.
+  eq(#ast.filters, 2)
 end
 
 -- ── full multi-line query ──────────────────────────────────────────────────

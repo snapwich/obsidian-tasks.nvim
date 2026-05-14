@@ -870,17 +870,11 @@ run_tests["filter by function: result.errors contains unsupported"] = function()
   eq(found, true)
 end
 
-run_tests["is blocked: result.errors contains v2_feature"] = function()
+run_tests["is blocked: no longer a v2_feature error (first-class filter)"] = function()
+  -- Was: dependency filters errored with v2_feature.  Now: real filter.
   local idx = make_index({})
   local result = run("is blocked", idx)
-  MiniTest.expect.equality(#result.errors >= 1, true)
-  local found = false
-  for _, e in ipairs(result.errors) do
-    if e.kind == "v2_feature" then
-      found = true
-    end
-  end
-  eq(found, true)
+  eq(#result.errors, 0)
 end
 
 run_tests["limit: caps total across groups"] = function()
@@ -945,12 +939,14 @@ run_tests["hide flags: propagated to result"] = function()
 end
 
 run_tests["errors forwarded from ast"] = function()
+  -- Use `filter by function` (still unsupported) to exercise the
+  -- error-forwarding path that previously relied on `is blocked`.
   local idx = make_index({
     { task = task_open_due, path = PATH_A },
   })
-  local result = run("is blocked\nnot done", idx)
+  local result = run("filter by function task.urgency > 5\nnot done", idx)
   MiniTest.expect.equality(#result.errors, 1)
-  eq(result.errors[1].kind, "v2_feature")
+  eq(result.errors[1].kind, "unsupported")
   -- The valid 'not done' filter still works
   eq(result.total, 1)
 end
@@ -977,13 +973,13 @@ run_tests["parse_error: short-circuits to zero results"] = function()
   eq(found_parse_err, true)
 end
 
-run_tests["parse_error: degrade-and-run kinds (v2_feature) still produce tasks"] = function()
-  -- Companion to the above: confirm that non-parse_error kinds keep the legacy
-  -- behaviour so existing v2_feature / unsupported callers don't regress.
+run_tests["parse_error: degrade-and-run kinds (unsupported) still produce tasks"] = function()
+  -- Confirm that non-parse_error kinds (e.g. `unsupported` for scripting
+  -- filters) don't suppress otherwise-valid filters.
   local idx = make_index({
     { task = task_open_due, path = PATH_A },
   })
-  local result = run("is blocked\nnot done", idx)
+  local result = run("filter by function ...\nnot done", idx)
   eq(result.total, 1)
 end
 
@@ -1176,16 +1172,13 @@ int_tests["filter by function: result.errors contains unsupported [unit-like]"] 
   eq(found, true)
 end
 
-int_tests["is blocked: result.errors contains v2_feature [unit-like]"] = function()
+int_tests["is blocked: parses and runs as a real filter (no v2_feature error)"] = function()
   local idx = make_index(fixture_index_items(nil))
   local result = run("is blocked", idx)
-  local found = false
-  for _, e in ipairs(result.errors) do
-    if e.kind == "v2_feature" then
-      found = true
-    end
-  end
-  eq(found, true)
+  eq(#result.errors, 0)
+  -- With the fixture vault we don't have explicit id/depends_on relations, so
+  -- nothing is blocked.  The filter should run successfully with 0 results.
+  eq(result.total, 0)
 end
 
 int_tests["global_filter='#task': tasks without #task excluded from query"] = function()

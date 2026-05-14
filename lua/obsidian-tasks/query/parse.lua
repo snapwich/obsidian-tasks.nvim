@@ -244,6 +244,30 @@ local function parse_leaf_filter(s, orig)
     return { type = "is_not_recurring" }
   end
 
+  -- ── dependency filters ─────────────────────────────────────────────────
+  if s == "is blocking" then
+    return { type = "is_blocking" }
+  end
+  if s == "is not blocking" then
+    return { type = "is_not_blocking" }
+  end
+  if s == "is blocked" then
+    return { type = "is_blocked" }
+  end
+  if s == "is not blocked" then
+    return { type = "is_not_blocked" }
+  end
+  do
+    local id_val = s:match("^id is (.+)$")
+    if id_val then
+      return { type = "id_is", value = id_val }
+    end
+    local dep_val = s:match("^depends on (.+)$")
+    if dep_val then
+      return { type = "depends_on", value = dep_val }
+    end
+  end
+
   -- ── priority ────────────────────────────────────────────────────────────
   local pri_is = s:match("^priority is (.+)$")
   if pri_is and PRIORITY_LEVELS[pri_is] then
@@ -530,19 +554,6 @@ end
 
 -- ── Line-level directive parser ─────────────────────────────────────────────
 
---- Return true if `s` (lower-cased) is a v2 dependency filter keyword.
---- @param s string
---- @return boolean
-local function is_v2_filter(s)
-  if s == "is blocked" or s == "is not blocked" or s == "is blocking" or s == "is not blocking" then
-    return true
-  end
-  if s:sub(1, 19) == "blocked by includes" then
-    return true
-  end
-  return false
-end
-
 --- Parse one non-blank, non-comment line into the AST.  Mutates `ast`.
 --- @param ast      table
 --- @param line     string  original-case trimmed
@@ -555,16 +566,6 @@ local function parse_line(ast, line, line_num)
     ast.errors[#ast.errors + 1] = {
       kind = "unsupported",
       msg = "Scripting filters not supported in nvim",
-      line = line_num,
-    }
-    return
-  end
-
-  -- ── v2 dependency filters ────────────────────────────────────────────
-  if is_v2_filter(lower) then
-    ast.errors[#ast.errors + 1] = {
-      kind = "v2_feature",
-      msg = "Dependency filters are a v2 feature",
       line = line_num,
     }
     return
