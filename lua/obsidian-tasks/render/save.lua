@@ -26,6 +26,18 @@ local log = require("obsidian-tasks.log")
 
 -- ── Internal helpers ──────────────────────────────────────────────────────────
 
+--- Return on-disk mtime (seconds) for *path*, or nil if stat fails.
+--- Used by the BUG 3 fix to detect "file changed since the buffer was read".
+--- @param path string
+--- @return number|nil
+local function disk_mtime(path)
+  local ok, stat = pcall(vim.uv.fs_stat, path)
+  if not ok or not stat or not stat.mtime then
+    return nil
+  end
+  return stat.mtime.sec
+end
+
 --- Drop buffer lines that fall inside any of the managed ranges.
 --- Ranges are 0-indexed inclusive; lines are iterated with 1-indexed ipairs.
 ---
@@ -83,6 +95,15 @@ function M.set_acwrite(bufnr)
     return -- handler already registered on first draw
   end
   vim.bo[bufnr].buftype = "acwrite"
+
+  -- Snapshot disk mtime now so on_write_cmd can detect external edits that
+  -- occur after the buffer is loaded.  Re-snapshotted after each successful
+  -- write and on every BufReadPost (handles :e! reloads).
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if path and path ~= "" then
+    vim.b[bufnr].obsidian_tasks_disk_mtime = disk_mtime(path)
+  end
+
   -- Register a buffer-local BufWriteCmd so only this specific buffer is
   -- intercepted; unmanaged .md files are not affected.
   vim.api.nvim_create_autocmd("BufWriteCmd", {
@@ -90,6 +111,19 @@ function M.set_acwrite(bufnr)
     desc = "obsidian-tasks: write only source content (skip rendered task lines)",
     callback = function(ev)
       M.on_write_cmd(ev)
+    end,
+  })
+
+  -- Keep the stored mtime fresh across :e/:e! reloads so the file-changed
+  -- check in on_write_cmd doesn't refuse legitimate writes after a reload.
+  vim.api.nvim_create_autocmd("BufReadPost", {
+    buffer = bufnr,
+    desc = "obsidian-tasks: refresh stored disk mtime after reload",
+    callback = function(ev)
+      local p = vim.api.nvim_buf_get_name(ev.buf)
+      if p and p ~= "" then
+        vim.b[ev.buf].obsidian_tasks_disk_mtime = disk_mtime(p)
+      end
     end,
   })
 end
@@ -112,6 +146,24 @@ function M.on_write_cmd(args)
   local bufnr = args.buf
   local filepath = args.file
 
+  -- Refuse :w when the file changed on disk since the buffer was last read,
+  -- matching Vim's E13 protection (acwrite bypasses Vim's built-in check, so
+  -- we re-implement it).  Override with :w! via v:cmdbang.
+  local bang = vim.v.cmdbang == 1
+  if not bang then
+    local stored = vim.b[bufnr].obsidian_tasks_disk_mtime
+    local current = disk_mtime(filepath)
+    if stored and current and current > stored then
+      log.warn(
+        "obsidian-tasks: "
+          .. vim.fn.fnamemodify(filepath, ":t")
+          .. " changed on disk since reading — use :e! to reload or :w! to override"
+      )
+      -- Leave modified = true so the user can retry.
+      return
+    end
+  end
+
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local ranges = M.compute_managed_ranges(bufnr)
   local kept = filter_out_managed(lines, ranges)
@@ -125,6 +177,9 @@ function M.on_write_cmd(args)
   end
 
   vim.bo[bufnr].modified = false
+  -- Refresh stored mtime to reflect the just-written state so the next :w
+  -- isn't refused as a phantom external edit.
+  vim.b[bufnr].obsidian_tasks_disk_mtime = disk_mtime(filepath)
   -- Disk is now authoritative — no pending user edits to protect.
   require("obsidian-tasks.render.hygiene").mark_clean(bufnr)
 
