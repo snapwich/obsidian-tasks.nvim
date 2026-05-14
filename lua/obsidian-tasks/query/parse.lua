@@ -292,8 +292,67 @@ local function parse_leaf_filter(s, orig)
     for _, op in ipairs(ops) do
       local prefix = field .. " " .. op.syntax .. " "
       if #s > #prefix and s:sub(1, #prefix) == prefix then
-        local date_val = parse_date(orig:sub(#prefix + 1))
+        local raw = orig:sub(#prefix + 1):match("^%s*(.-)%s*$")
+        -- Two-date range: `due in 2024-01-01 2024-02-01` — `in` / `on` /
+        -- `before` / `after` / `on or before` / `on or after` all accept a
+        -- second date as the range upper-bound when followed by space + ISO.
+        local d1, d2 = raw:match("^(%d%d%d%d%-%d%d%-%d%d)%s+(%d%d%d%d%-%d%d%-%d%d)$")
+        if d1 and d2 then
+          return {
+            type = "date",
+            field = field,
+            operator = op.canon,
+            value = d1,
+            value_end = d2,
+          }
+        end
+        local date_val = parse_date(raw)
         return { type = "date", field = field, operator = op.canon, value = date_val }
+      end
+    end
+    -- ── Period shortcuts: `<field> 2024`, `<field> 2024-03` ────────────
+    -- The implicit "in" form: no operator, the value is a year/month range.
+    local prefix_bare = field .. " "
+    if #s > #prefix_bare and s:sub(1, #prefix_bare) == prefix_bare then
+      local rest = orig:sub(#prefix_bare + 1):match("^%s*(.-)%s*$")
+      -- Year (`due 2024`).
+      local y = rest:match("^(%d%d%d%d)$")
+      if y then
+        return {
+          type = "date",
+          field = field,
+          operator = "in",
+          value = y .. "-01-01",
+          value_end = y .. "-12-31",
+        }
+      end
+      -- Month (`due 2024-03`).
+      local ym_y, ym_m = rest:match("^(%d%d%d%d)%-(%d%d)$")
+      if ym_y and ym_m then
+        local mn = tonumber(ym_m)
+        if mn and mn >= 1 and mn <= 12 then
+          -- Last day of month: jump to first of next month and subtract a day.
+          local last_day_t = os.time({ year = tonumber(ym_y), month = mn + 1, day = 0, hour = 12 })
+          local last_day_iso = os.date("%Y-%m-%d", last_day_t) --[[@as string]]
+          return {
+            type = "date",
+            field = field,
+            operator = "in",
+            value = ym_y .. "-" .. ym_m .. "-01",
+            value_end = last_day_iso,
+          }
+        end
+      end
+      -- Bare two-date range without operator (`due 2024-01-01 2024-02-01`).
+      local rd1, rd2 = rest:match("^(%d%d%d%d%-%d%d%-%d%d)%s+(%d%d%d%d%-%d%d%-%d%d)$")
+      if rd1 and rd2 then
+        return {
+          type = "date",
+          field = field,
+          operator = "in",
+          value = rd1,
+          value_end = rd2,
+        }
       end
     end
   end

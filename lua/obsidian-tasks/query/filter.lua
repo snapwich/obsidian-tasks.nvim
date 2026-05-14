@@ -292,6 +292,7 @@ local function make_leaf_pred(filter)
     local field = filter.field
     local op = filter.operator
     local date_val = filter.value
+    local ref_end = filter.value_end -- two-date range upper-bound, optional
     return function(task)
       local tv = task_date_field(task, field)
       if tv == nil or tv == "" then
@@ -300,6 +301,29 @@ local function make_leaf_pred(filter)
       local ref = resolve_date(date_val)
       if ref == nil then
         return false
+      end
+      -- Two-date range: the upper-bound semantically combines with the
+      -- operator.  Map operator + range:
+      --   in            → ref <= tv <= ref_end
+      --   on            → same as `in` (point-or-range)
+      --   before        → tv < ref
+      --   after         → tv > ref_end
+      --   on_or_before  → tv <= ref_end
+      --   on_or_after   → tv >= ref
+      if ref_end then
+        local lower = cmp_date(tv, ref)
+        local upper = cmp_date(tv, ref_end)
+        if op == "before" then
+          return lower < 0
+        elseif op == "after" then
+          return upper > 0
+        elseif op == "on_or_before" then
+          return upper <= 0
+        elseif op == "on_or_after" then
+          return lower >= 0
+        else -- on / in / fallback
+          return lower >= 0 and upper <= 0
+        end
       end
       local c = cmp_date(tv, ref)
       if op == "before" then
@@ -313,7 +337,7 @@ local function make_leaf_pred(filter)
       elseif op == "on_or_after" then
         return c >= 0
       elseif op == "in" then
-        -- 'in' is treated as 'on' for v1 (two-date range syntax not yet supported).
+        -- Single-date `in`: treat as `on` for back-compat with prior v1 behaviour.
         return c == 0
       end
       return false

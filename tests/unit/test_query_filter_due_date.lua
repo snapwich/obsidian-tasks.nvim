@@ -4,11 +4,8 @@
 -- Covers the supported v1 operators: has/no/before/after/on/in/date_invalid.
 --
 -- KNOWN GAPS vs upstream (tracked for Bucket B / Phase 2):
---   • Two-date range syntax (`due 2024-01-01 2024-01-31`) — not yet supported
---   • Period shortcuts (`due 2024`, `due 2024-03`, `due 2024-W09`, `due 2024-Q1`)
---   • Number words (`due in two weeks`) — not yet supported
---
--- Once those features land, this file will be expanded to cover them.
+--   • ISO-week period (`due 2024-W09`) — not yet supported
+--   • Quarter period (`due 2024-Q1`) — not yet supported
 
 local T = MiniTest.new_set()
 
@@ -171,10 +168,56 @@ end
 -- ── due in <range> (single-date semantics in v1) ──────────────────────────
 
 T["due in <date>: matches when due equals the date"] = function()
-  -- v1 supports `due in <single-date>` as a synonym for `due on <date>`.
-  -- Upstream's two-date range syntax (`due in 2024-01-01 2024-01-31`) is
-  -- not yet supported.
+  -- Single-date `in` is a synonym for `on`.
   eq(matches("due in 2024-04-20", pt("- [ ] Task 📅 2024-04-20")), true)
+end
+
+-- ── Two-date range syntax (`<field> [op] <start> <end>`) ──────────────────
+
+T["due 2024-01-01 2024-01-31: matches dates within the range (inclusive)"] = function()
+  eq(matches("due 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-01-15")), true)
+  eq(matches("due 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-01-01")), true) -- inclusive lower
+  eq(matches("due 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-01-31")), true) -- inclusive upper
+  eq(matches("due 2024-01-01 2024-01-31", pt("- [ ] T 📅 2023-12-31")), false)
+  eq(matches("due 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-02-01")), false)
+end
+
+T["due in 2024-01-01 2024-01-31: explicit `in` operator with range"] = function()
+  eq(matches("due in 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-01-15")), true)
+end
+
+T["due on or before 2024-01-01 2024-01-31: tv <= range_end"] = function()
+  -- Matches anything ≤ 2024-01-31 (the range upper-bound).
+  eq(matches("due on or before 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-01-31")), true)
+  eq(matches("due on or before 2024-01-01 2024-01-31", pt("- [ ] T 📅 2024-02-01")), false)
+end
+
+-- ── Year shortcut: `<field> YYYY` ────────────────────────────────────────
+
+T["due 2024: matches any date in calendar year"] = function()
+  eq(matches("due 2024", pt("- [ ] T 📅 2024-01-01")), true)
+  eq(matches("due 2024", pt("- [ ] T 📅 2024-06-15")), true)
+  eq(matches("due 2024", pt("- [ ] T 📅 2024-12-31")), true)
+  eq(matches("due 2024", pt("- [ ] T 📅 2023-12-31")), false)
+  eq(matches("due 2024", pt("- [ ] T 📅 2025-01-01")), false)
+end
+
+-- ── Month shortcut: `<field> YYYY-MM` ────────────────────────────────────
+
+T["due 2024-03: matches any date in March 2024"] = function()
+  eq(matches("due 2024-03", pt("- [ ] T 📅 2024-03-01")), true)
+  eq(matches("due 2024-03", pt("- [ ] T 📅 2024-03-31")), true)
+  eq(matches("due 2024-03", pt("- [ ] T 📅 2024-02-29")), false)
+  eq(matches("due 2024-03", pt("- [ ] T 📅 2024-04-01")), false)
+end
+
+T["due 2024-02: month with 29 days in leap year"] = function()
+  eq(matches("due 2024-02", pt("- [ ] T 📅 2024-02-29")), true)
+end
+
+T["due 2023-02: non-leap year February ends on 28"] = function()
+  eq(matches("due 2023-02", pt("- [ ] T 📅 2023-02-28")), true)
+  eq(matches("due 2023-02", pt("- [ ] T 📅 2023-03-01")), false)
 end
 
 return T
