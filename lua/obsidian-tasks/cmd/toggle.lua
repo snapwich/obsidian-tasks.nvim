@@ -19,8 +19,16 @@ local function toggle_one(resolved, active_bufnr)
     local serialize = require("obsidian-tasks.task.serialize")
     local task = resolved.task
     task.status_symbol = status_mod.next(task.status_symbol)
-    local new_line = serialize.serialize(task)
     local cmd = require("obsidian-tasks.cmd")
+
+    -- 🏁 delete + toggle landed on a completed status: remove the line.
+    -- Linger is skipped — there's no surviving task to linger.
+    if task.fields.on_completion == "delete" and status_mod.is_completed(task.status_symbol) then
+      cmd.commit_line(resolved, {})
+      return
+    end
+
+    local new_line = serialize.serialize(task)
     if not cmd.commit_line(resolved, { new_line }) then
       return
     end

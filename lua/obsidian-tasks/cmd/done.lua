@@ -52,8 +52,19 @@ local function done_one(resolved, active_bufnr)
       task._origin.done = "emoji"
     end
 
-    local new_line = serialize.serialize(task)
     local cmd = require("obsidian-tasks.cmd")
+
+    -- 🏁 delete: the task line is removed from its source file instead of
+    -- being stamped done.  Matches upstream's onCompletion=Delete behavior.
+    -- The linger pass is skipped because there is no longer a task to linger.
+    if task.fields.on_completion == "delete" then
+      if not cmd.commit_line(resolved, {}) then
+        return
+      end
+      return
+    end
+
+    local new_line = serialize.serialize(task)
     if not cmd.commit_line(resolved, { new_line }) then
       return
     end
