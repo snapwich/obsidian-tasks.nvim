@@ -278,4 +278,40 @@ T["suggestions: default list is a copy (mutation-safe)"] = function()
   MiniTest.expect.equality(#s1 ~= #s2, true)
 end
 
+-- ── Number-words: "one"..."ten" map to digits 1...10 ─────────────────────
+
+T["number_word: 'in two days' equals 'in 2 days'"] = function()
+  eq(date_nl.parse("in two days"), date_nl.parse("in 2 days"))
+end
+
+T["number_word: 'in three weeks' equals 'in 3 weeks'"] = function()
+  eq(date_nl.parse("in three weeks"), date_nl.parse("in 3 weeks"))
+end
+
+T["number_word: 'in ten months' equals 'in 10 months'"] = function()
+  eq(date_nl.parse("in ten months"), date_nl.parse("in 10 months"))
+end
+
+T["number_word: covers one..ten"] = function()
+  for word, digit in pairs({
+    one = "1",
+    two = "2",
+    three = "3",
+    four = "4",
+    five = "5",
+    six = "6",
+    seven = "7",
+    eight = "8",
+    nine = "9",
+    ten = "10",
+  }) do
+    eq(date_nl.parse("in " .. word .. " days"), date_nl.parse("in " .. digit .. " days"))
+  end
+end
+
+T["number_word: 'in eleven days' is NOT supported (number > 10)"] = function()
+  -- Upstream supports 1-10.  Beyond that, users write digits.
+  eq(date_nl.parse("in eleven days"), nil)
+end
+
 return T

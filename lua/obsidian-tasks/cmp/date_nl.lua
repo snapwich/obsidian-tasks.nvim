@@ -104,6 +104,25 @@ function M.parse(arg)
   end
   local lower = trimmed:lower()
 
+  -- Number-word substitution: `in two weeks` → `in 2 weeks`.  Upstream covers
+  -- one..ten.  Run before any "in N <unit>" pattern matches.
+  local NUMBER_WORDS = {
+    one = "1",
+    two = "2",
+    three = "3",
+    four = "4",
+    five = "5",
+    six = "6",
+    seven = "7",
+    eight = "8",
+    nine = "9",
+    ten = "10",
+  }
+  local nw_word, nw_unit = lower:match("^in (%a+) (%a+)$")
+  if nw_word and NUMBER_WORDS[nw_word] then
+    lower = "in " .. NUMBER_WORDS[nw_word] .. " " .. nw_unit
+  end
+
   -- ── relative keywords ──────────────────────────────────────────────────────
   if lower == "today" then
     return fmt(today_midnight())
