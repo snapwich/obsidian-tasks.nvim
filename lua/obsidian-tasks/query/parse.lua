@@ -275,11 +275,23 @@ local function parse_leaf_filter(s, orig)
     if s == field .. " date is invalid" then
       return { type = "date_invalid", field = field }
     end
-    for _, op in ipairs({ "before", "after", "on", "in" }) do
-      local prefix = field .. " " .. op .. " "
+    -- Operator list is ordered longest-first so the multi-word `on or before`
+    -- / `on or after` match BEFORE the single-word `on` does.  Operator
+    -- canonical names use underscores so the filter dispatcher can switch on
+    -- them safely.
+    local ops = {
+      { syntax = "on or before", canon = "on_or_before" },
+      { syntax = "on or after", canon = "on_or_after" },
+      { syntax = "before", canon = "before" },
+      { syntax = "after", canon = "after" },
+      { syntax = "on", canon = "on" },
+      { syntax = "in", canon = "in" },
+    }
+    for _, op in ipairs(ops) do
+      local prefix = field .. " " .. op.syntax .. " "
       if #s > #prefix and s:sub(1, #prefix) == prefix then
         local date_val = parse_date(orig:sub(#prefix + 1))
-        return { type = "date", field = field, operator = op, value = date_val }
+        return { type = "date", field = field, operator = op.canon, value = date_val }
       end
     end
   end

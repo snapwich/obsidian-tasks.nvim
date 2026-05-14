@@ -4,7 +4,6 @@
 -- Covers the supported v1 operators: has/no/before/after/on/in/date_invalid.
 --
 -- KNOWN GAPS vs upstream (tracked for Bucket B / Phase 2):
---   • `due on or before <date>` / `due on or after <date>` — not yet supported
 --   • Two-date range syntax (`due 2024-01-01 2024-01-31`) — not yet supported
 --   • Period shortcuts (`due 2024`, `due 2024-03`, `due 2024-W09`, `due 2024-Q1`)
 --   • Number words (`due in two weeks`) — not yet supported
@@ -133,6 +132,40 @@ T["due date is invalid: false when field is absent"] = function()
   -- Upstream: a task with no due date is NOT 'date invalid' (it has no date
   -- to be invalid).  Verify our parity.
   eq(matches("due date is invalid", pt("- [ ] Task without due")), false)
+end
+
+-- ── due on or before <date> / due on or after <date> ─────────────────────
+
+T["due on or before: true when date is strictly earlier"] = function()
+  eq(matches("due on or before 2024-04-20", pt("- [ ] Task 📅 2024-04-15")), true)
+end
+
+T["due on or before: true when date is EQUAL"] = function()
+  eq(matches("due on or before 2024-04-20", pt("- [ ] Task 📅 2024-04-20")), true)
+end
+
+T["due on or before: false when date is later"] = function()
+  eq(matches("due on or before 2024-04-20", pt("- [ ] Task 📅 2024-04-25")), false)
+end
+
+T["due on or before: false when no due date"] = function()
+  eq(matches("due on or before 2024-04-20", pt("- [ ] Task without due")), false)
+end
+
+T["due on or after: true when date is strictly later"] = function()
+  eq(matches("due on or after 2024-04-20", pt("- [ ] Task 📅 2024-04-25")), true)
+end
+
+T["due on or after: true when date is EQUAL"] = function()
+  eq(matches("due on or after 2024-04-20", pt("- [ ] Task 📅 2024-04-20")), true)
+end
+
+T["due on or after: false when date is earlier"] = function()
+  eq(matches("due on or after 2024-04-20", pt("- [ ] Task 📅 2024-04-15")), false)
+end
+
+T["due on or after: false when no due date"] = function()
+  eq(matches("due on or after 2024-04-20", pt("- [ ] Task without due")), false)
 end
 
 -- ── due in <range> (single-date semantics in v1) ──────────────────────────

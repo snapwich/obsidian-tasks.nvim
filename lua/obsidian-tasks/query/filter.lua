@@ -308,8 +308,12 @@ local function make_leaf_pred(filter)
         return c > 0
       elseif op == "on" then
         return c == 0
+      elseif op == "on_or_before" then
+        return c <= 0
+      elseif op == "on_or_after" then
+        return c >= 0
       elseif op == "in" then
-        -- 'in' is treated as 'on' for v1 (NL date range not yet supported).
+        -- 'in' is treated as 'on' for v1 (two-date range syntax not yet supported).
         return c == 0
       end
       return false
