@@ -109,16 +109,52 @@ function M.run(ast, index, workspace_root)
 
   local path_filter = workspace_root and require("obsidian-tasks.util.obsidian").workspace_path_filter(workspace_root)
     or nil
-  local items = {} -- { task, path, line_num, _idx }
+
+  -- Strip the workspace-root prefix so filter / sort / group see a
+  -- vault-relative path matching Obsidian's `task.path`.  Queries like
+  -- `path includes /daily` then resolve identically on the desktop vault
+  -- and in our dashboards — a v1 portability requirement.  The original
+  -- absolute path is preserved on `_src_path` for render/jump.
+  --
+  -- workspace_root may arrive as an obsidian.nvim Path object (with a
+  -- :__tostring metamethod) rather than a plain string; coerce to string
+  -- before any string ops.
+  local ws_prefix
+  if workspace_root and workspace_root ~= "" then
+    local root_str = tostring(workspace_root)
+    if root_str ~= "" then
+      ws_prefix = root_str
+      if ws_prefix:sub(-1) ~= "/" then
+        ws_prefix = ws_prefix .. "/"
+      end
+    end
+  end
+  local function to_relative(abs_path)
+    if not ws_prefix then
+      return abs_path
+    end
+    if abs_path:sub(1, #ws_prefix) == ws_prefix then
+      return abs_path:sub(#ws_prefix + 1)
+    end
+    return abs_path
+  end
+
+  local items = {} -- { task, path = vault-relative, abs_path, line_num, _idx }
   local iter = index.tasks_in(path_filter)
   local idx = 0
   while true do
-    local task, path, line_num = iter()
+    local task, abs_path, line_num = iter()
     if not task then
       break
     end
     idx = idx + 1
-    items[#items + 1] = { task = task, path = path, line_num = line_num, _idx = idx }
+    items[#items + 1] = {
+      task = task,
+      path = to_relative(abs_path), -- used by filter/sort/group
+      abs_path = abs_path, -- preserved for render/jump
+      line_num = line_num,
+      _idx = idx,
+    }
   end
 
   -- 2. Filter.
@@ -140,10 +176,10 @@ function M.run(ast, index, workspace_root)
   local group_map = {} -- name → { tasks = [] }
 
   for _, item in ipairs(filtered) do
-    -- Attach source metadata so layout.lua can build wikilinks and the resolver can jump.
-    -- We stamp directly onto the task object; index entries are per-file so
-    -- mutation is safe.  Duplicated tasks (multi-group) share the same path/line.
-    item.task._src_path = item.path
+    -- _src_path must remain ABSOLUTE — render uses it to read/write disk
+    -- and to resolve buffer references.  Filter/sort/group operate on the
+    -- vault-relative `item.path` set above.
+    item.task._src_path = item.abs_path
     item.task._src_line = item.line_num
     local names = group_mod.resolve(item.task, item.path, ast.group_by)
     for _, name in ipairs(names) do

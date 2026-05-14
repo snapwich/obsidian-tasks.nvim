@@ -300,21 +300,21 @@ end
 
 filter_tests["root includes: matches first subfolder in vault"] = function()
   local t = pt("- [ ] My task")
-  -- /vault/sub/note.md → root = "sub"
-  eq(matches("root includes sub", t, "/vault/sub/note.md"), true)
+  -- vault-relative `sub/note.md` → root = "sub"
+  eq(matches("root includes sub", t, "sub/note.md"), true)
 end
 
 filter_tests["root includes: false when file directly in vault (no subfolder)"] = function()
   local t = pt("- [ ] My task")
-  -- /vault/note.md → root = "" → does not include "sub"
-  eq(matches("root includes sub", t, "/vault/note.md"), false)
+  -- vault-relative `note.md` → root = "" → does not include "sub"
+  eq(matches("root includes sub", t, "note.md"), false)
 end
 
 filter_tests["root includes: nested path returns first subfolder only"] = function()
   local t = pt("- [ ] My task")
-  -- /vault/a/b/note.md → root = "a", not "b"
-  eq(matches("root includes a", t, "/vault/a/b/note.md"), true)
-  eq(matches("root includes b", t, "/vault/a/b/note.md"), false)
+  -- vault-relative `a/b/note.md` → root = "a", not "b"
+  eq(matches("root includes a", t, "a/b/note.md"), true)
+  eq(matches("root includes b", t, "a/b/note.md"), false)
 end
 
 -- Tag filters --
@@ -511,17 +511,18 @@ sort_tests["sort by path asc: alphabetical by path"] = function()
 end
 
 sort_tests["sort by root: first subfolder used, not last"] = function()
+  -- Vault-relative paths: root is the first directory above the filename.
   local items = wrap({
-    { task = pt("- [ ] Task"), path = "/vault/b/deep/note.md" },
-    { task = pt("- [ ] Task"), path = "/vault/a/deep/note.md" },
-    { task = pt("- [ ] Task"), path = "/vault/note.md" },
+    { task = pt("- [ ] Task"), path = "b/deep/note.md" },
+    { task = pt("- [ ] Task"), path = "a/deep/note.md" },
+    { task = pt("- [ ] Task"), path = "note.md" },
   })
   local cmp = sort_mod.make_comparator({ { key = "root", reverse = false } })
   table.sort(items, cmp)
   -- "" (no subfolder) < "a" < "b" lexicographically
-  eq(items[1].path, "/vault/note.md") -- root = ""
-  eq(items[2].path, "/vault/a/deep/note.md") -- root = "a"
-  eq(items[3].path, "/vault/b/deep/note.md") -- root = "b"
+  eq(items[1].path, "note.md") -- root = ""
+  eq(items[2].path, "a/deep/note.md") -- root = "a"
+  eq(items[3].path, "b/deep/note.md") -- root = "b"
 end
 
 sort_tests["no sort directives: stable (original idx order)"] = function()
@@ -715,23 +716,23 @@ group_tests["multi-key with tags: tags expand each combo"] = function()
   eq(found_b, true)
 end
 
-group_tests["group by root: first subfolder for /vault/sub/note.md"] = function()
+group_tests["group by root: first subfolder for vault-relative `sub/note.md`"] = function()
   local t = pt("- [ ] Task")
-  local names = group_mod.resolve(t, "/vault/sub/note.md", { { key = "root", reverse = false } })
+  local names = group_mod.resolve(t, "sub/note.md", { { key = "root", reverse = false } })
   eq(#names, 1)
   eq(names[1], "sub")
 end
 
-group_tests["group by root: empty string when file directly in vault"] = function()
+group_tests["group by root: empty string when file directly in vault root"] = function()
   local t = pt("- [ ] Task")
-  local names = group_mod.resolve(t, "/vault/note.md", { { key = "root", reverse = false } })
+  local names = group_mod.resolve(t, "note.md", { { key = "root", reverse = false } })
   eq(#names, 1)
   eq(names[1], "")
 end
 
 group_tests["group by root: deep path returns first subfolder only"] = function()
   local t = pt("- [ ] Task")
-  local names = group_mod.resolve(t, "/vault/a/b/c/note.md", { { key = "root", reverse = false } })
+  local names = group_mod.resolve(t, "a/b/c/note.md", { { key = "root", reverse = false } })
   eq(#names, 1)
   eq(names[1], "a")
 end

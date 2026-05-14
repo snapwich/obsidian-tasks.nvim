@@ -96,8 +96,10 @@ local function extract(task, path, key)
     return (path or ""):match("^(.*)/[^/]*$") or "", "str"
   end
   if key == "root" then
-    -- Top-level subfolder within the vault.
-    -- /vault/sub/note.md → "sub";  /vault/note.md → "" (directly in vault).
+    -- First directory below the vault root.  Vault-relative semantics:
+    --   daily/2024-03-15.md → "daily"
+    --   daily/sub/note.md   → "daily"
+    --   note.md             → ""
     local parts = vim.split(path or "", "/", { plain = true })
     local dirs = {}
     for _, p in ipairs(parts) do
@@ -105,10 +107,10 @@ local function extract(task, path, key)
         dirs[#dirs + 1] = p
       end
     end
-    if #dirs <= 2 then
+    if #dirs <= 1 then
       return "", "str"
     end
-    return dirs[2], "str"
+    return dirs[1], "str"
   end
   if key == "filename" then
     return (path or ""):match("[^/]+$") or "", "str"

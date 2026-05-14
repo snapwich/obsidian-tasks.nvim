@@ -119,7 +119,7 @@ end
 
 --- Return a string value for a text field from the task or path.
 --- @param task table
---- @param path string  absolute file path
+--- @param path string  vault-relative file path (run.lua strips workspace root)
 --- @param field string  canonical field name
 --- @return string|nil
 local function task_text_field(task, path, field)
@@ -127,13 +127,15 @@ local function task_text_field(task, path, field)
     return path
   end
   if field == "folder" then
-    -- Everything up to (but not including) the filename.
+    -- Everything up to (but not including) the filename.  For a vault-root
+    -- file like `note.md`, the match fails and we return "".
     return path:match("^(.*)/[^/]*$") or ""
   end
   if field == "root" then
-    -- Top-level subfolder within the vault.
-    -- Assumption: absolute path with one directory component as vault root.
-    -- /vault/a/b/note.md → "a";  /vault/note.md → "" (file directly in vault).
+    -- First directory below the vault root.  Vault-relative semantics:
+    --   daily/2024-03-15.md → "daily"
+    --   daily/sub/note.md   → "daily" (first dir only)
+    --   note.md             → ""      (file directly in vault root)
     local parts = vim.split(path, "/", { plain = true })
     local dirs = {}
     for _, p in ipairs(parts) do
@@ -141,12 +143,10 @@ local function task_text_field(task, path, field)
         dirs[#dirs + 1] = p
       end
     end
-    -- dirs[1]=vault, dirs[2]=first subfolder (if present), last=filename
-    -- If only vault + filename (no subfolder), return "".
-    if #dirs <= 2 then
-      return ""
+    if #dirs <= 1 then
+      return "" -- only a filename (no directory above it)
     end
-    return dirs[2]
+    return dirs[1]
   end
   if field == "filename" then
     return path:match("[^/]+%.%w+$") or path:match("[^/]+$") or ""

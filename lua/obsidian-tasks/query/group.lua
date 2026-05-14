@@ -71,8 +71,10 @@ local function folder_group(_task, path)
 end
 
 local function root_group(_task, path)
-  -- Top-level subfolder within the vault.
-  -- /vault/sub/note.md → "sub";  /vault/note.md → "" (directly in vault).
+  -- First directory below the vault root.  Vault-relative semantics:
+  --   daily/2024-03-15.md → "daily"
+  --   daily/sub/note.md   → "daily"
+  --   note.md             → ""
   local parts = vim.split(path or "", "/", { plain = true })
   local dirs = {}
   for _, p in ipairs(parts) do
@@ -80,10 +82,10 @@ local function root_group(_task, path)
       dirs[#dirs + 1] = p
     end
   end
-  if #dirs <= 2 then
+  if #dirs <= 1 then
     return ""
   end
-  return dirs[2]
+  return dirs[1]
 end
 
 local function filename_group(_task, path)
