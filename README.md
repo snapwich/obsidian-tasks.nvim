@@ -75,6 +75,22 @@ require("obsidian-tasks").setup({
   -- Hide the `tasks:` / `filter:` metadata lines in rendered query blocks.
   hide_query_metadata = false,     -- boolean
 
+  -- Keep a task visible (dimmed) after a mutation drops it from the live
+  -- filter set — e.g. completing a task in a `not done` query. Cleared by
+  -- :ObsidianTask refresh / <leader>tr, by buffer reload, or when the task
+  -- re-enters the filter. Set false for obsidian-tasks-style instant vanish.
+  linger_on_filter_exit = true,    -- boolean
+
+  -- Highlight group applied to lingered rows (and, with dim_completed_tasks,
+  -- live Done/Cancelled rows). Linked to `Comment` by default; override the
+  -- link in your colorscheme or point this at a different group.
+  linger_hl_group = "ObsidianTasksLinger", -- string
+
+  -- Sink live Done / Cancelled tasks to the bottom of each group and apply
+  -- linger_hl_group to them. User sort is preserved within each tier
+  -- (non-completed first, completed below).
+  dim_completed_tasks = true,      -- boolean
+
   -- blink.cmp source integration.
   blink_cmp = {
     enabled = true,                -- boolean: set false to disable the cmp source entirely
@@ -154,6 +170,27 @@ status change, navigate to the source buffer and undo there.
 Saving a dashboard buffer (`:w`) writes **only the source content** — query blocks and
 prose — to disk. Rendered task lines are never written to the file. Reopening the file
 produces the same visual state.
+
+### Dim completed / linger on filter exit
+
+Two visual options control how completed and "just-changed" tasks appear in a query:
+
+- **`dim_completed_tasks`** (default `true`) — live Done/Cancelled tasks are sunk to the
+  bottom of their group and rendered with `linger_hl_group`. Your `sort` order is
+  preserved within each tier.
+- **`linger_on_filter_exit`** (default `true`) — when a mutation (e.g. `<leader>tt` to
+  toggle done) would cause a task to drop out of the query's filter, the row stays
+  visible but dimmed instead of vanishing. Lingered rows clear on `:ObsidianTask refresh`
+  / `<leader>tr`, on buffer reload, or when the task re-enters the filter.
+
+Both effects use the `ObsidianTasksLinger` highlight group, linked to `Comment` by
+default. Override with e.g.:
+
+```lua
+vim.api.nvim_set_hl(0, "ObsidianTasksLinger", { fg = "#666666", italic = true })
+```
+
+Set either option to `false` for obsidian-tasks-desktop parity (immediate vanish, no dim).
 
 ## Keymaps
 
@@ -281,6 +318,7 @@ re-index from disk.
 - In-memory vault index (in-Neovim edits propagate on save; external edits picked up via `:ObsidianTask refresh`)
 - Query blocks: filter, sort, group, limit, hide
 - Status cycling with customizable statuses
+- Dim completed tasks and linger rows that drop out of the filter after a mutation
 - Leader keymaps for task mutation directly from the dashboard
 - blink.cmp source: field-icon completion, value suggestions, NL date parsing
 - `:ObsidianTask` command suite
