@@ -208,6 +208,10 @@ function M.run(ast, index, workspace_root)
     -- Exposed for render/layout.lua footer formatting.
     _ast_sort = ast.sort_by,
     limit = ast.limit,
+    -- `explain` keyword: when true, the renderer should prepend a
+    -- human-readable summary of the parsed query above the result list.
+    -- The summary text is already in header_summary.
+    explain = ast.explain or false,
   }
 end
 

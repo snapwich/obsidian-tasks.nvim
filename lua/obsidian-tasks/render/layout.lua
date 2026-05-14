@@ -137,6 +137,20 @@ function M.layout(query_result, opts)
 
   local total = query_result.total or 0
 
+  -- ── 0. Explanation line (when `explain` keyword is in the query) ────────
+  if query_result.explain then
+    local exp_text = "ℹ explain: "
+      .. (query_result.header_summary ~= "" and query_result.header_summary or "(no filters)")
+    lines[#lines + 1] = {
+      kind = "explain",
+      text = exp_text,
+      src_path = nil,
+      src_line = nil,
+      src_hash = nil,
+      indent = "",
+    }
+  end
+
   -- ── 1. Error lines ─────────────────────────────────────────────────────────
   for _, err in ipairs(query_result.errors or {}) do
     local err_text = "▼ " .. (err.kind or "error") .. ": " .. (err.msg or "unknown error")

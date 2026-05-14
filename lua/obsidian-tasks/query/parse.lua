@@ -557,6 +557,15 @@ local function parse_line(ast, line, line_num)
     end
   end
 
+  -- ── explain ──────────────────────────────────────────────────────────
+  -- Flag the AST so the renderer can prepend a human-readable summary of
+  -- the parsed query to the result list.  Matches upstream's `explain`
+  -- keyword.
+  if lower == "explain" then
+    ast.explain = true
+    return
+  end
+
   -- ── filter expression (leaf or boolean) ──────────────────────────────
   local node = parse_filter_expr(line)
   if node then
@@ -586,6 +595,7 @@ function M.parse(query_text)
     limit = nil,
     hide = {},
     errors = {},
+    explain = false,
   }
 
   if not query_text or query_text == "" then
