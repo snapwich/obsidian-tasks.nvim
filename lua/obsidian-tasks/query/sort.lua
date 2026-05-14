@@ -129,7 +129,7 @@ local function extract(task, path, key)
     return tags[1] and tags[1]:lower() or "", "str"
   end
   if key == "urgency" then
-    return 0, "num" -- not computed in v1
+    return require("obsidian-tasks.task.urgency").calculate(task), "num"
   end
   if key == "recurrence" or key == "recurring" then
     return (task.fields and task.fields.recurrence or ""):lower(), "str"

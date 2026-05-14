@@ -118,8 +118,11 @@ local function id_group(task)
   return "No ID"
 end
 
-local function urgency_group(_task)
-  return "0.00" -- not computed in v1
+local function urgency_group(task)
+  -- Bucket by the integer portion to keep group counts manageable.
+  -- Format: "Urgency: 8" for a score of 8.31, etc.
+  local u = require("obsidian-tasks.task.urgency").calculate(task)
+  return string.format("Urgency: %d", math.floor(u))
 end
 
 -- ── single-key resolver ───────────────────────────────────────────────────────

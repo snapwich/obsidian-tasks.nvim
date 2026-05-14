@@ -400,8 +400,16 @@ local function make_leaf_pred(filter)
   end
 
   if ft == "urgency" then
-    -- Urgency is not computed in v1; always return false so tasks are excluded.
-    return function(_)
+    local urgency_mod = require("obsidian-tasks.task.urgency")
+    local op = filter.operator -- "above" / "below"
+    local threshold = tonumber(filter.value) or 0
+    return function(task)
+      local u = urgency_mod.calculate(task)
+      if op == "above" then
+        return u > threshold
+      elseif op == "below" then
+        return u < threshold
+      end
       return false
     end
   end
