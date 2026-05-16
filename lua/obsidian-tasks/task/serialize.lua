@@ -37,10 +37,13 @@ local FIELD_ORDER = {
 
 --- Emit one field token in emoji format.
 --- Priority encodes the level as its emoji; all others: emoji + " " + value.
---- Returns nil if value is nil or unknown.
+--- Returns the token string plus the byte range of the value WITHIN that token
+--- (1-indexed, end-exclusive) so callers can highlight the value range.
+--- For priority emoji the value range is the emoji itself.
+--- Returns nil when value is nil or unknown.
 --- @param key string
 --- @param value string
---- @return string|nil
+--- @return string|nil, integer|nil, integer|nil
 local function emit_emoji(key, value)
   if value == nil then
     return nil
@@ -50,16 +53,22 @@ local function emit_emoji(key, value)
     return nil
   end
   if key == "priority" then
-    return fields_mod.priority_levels[value]
+    local lvl = fields_mod.priority_levels[value]
+    if not lvl then
+      return nil
+    end
+    return lvl, 1, #lvl + 1
   end
-  return fd.emoji .. " " .. value
+  local token = fd.emoji .. " " .. value
+  local val_start = #fd.emoji + 2 -- emoji + space
+  return token, val_start, val_start + #value
 end
 
 --- Emit one field token in dataview format: `[dv_key:: value]`.
---- Returns nil if value is nil or unknown.
+--- Returns the token plus the byte range of the value WITHIN that token.
 --- @param key string
 --- @param value string
---- @return string|nil
+--- @return string|nil, integer|nil, integer|nil
 local function emit_dataview(key, value)
   if value == nil then
     return nil
@@ -68,12 +77,112 @@ local function emit_dataview(key, value)
   if not fd then
     return nil
   end
-  return "[" .. fd.dataview .. ":: " .. value .. "]"
+  local prefix = "[" .. fd.dataview .. ":: "
+  local token = prefix .. value .. "]"
+  local val_start = #prefix + 1
+  return token, val_start, val_start + #value
 end
 
 -- ---------------------------------------------------------------------------
 -- Public API
 -- ---------------------------------------------------------------------------
+
+--- Build the {text, invalid_ranges} representation of *task*.
+---
+--- A field value comes from `task.fields[key]` when present; otherwise from
+--- `task._raw_fields[key]` (set by parse.lua when validation failed) so that
+--- invalid values round-trip verbatim through the renderer.  Fields sourced
+--- from `_raw_fields` produce an entry in `invalid_ranges` indicating the
+--- byte range of the value WITHIN the final serialized line (1-indexed,
+--- end-exclusive) so downstream renderers can apply an invalid-field
+--- highlight.
+---
+--- @param task table  Task returned by parse.parse()
+--- @param opts? { format?: 'emoji' | 'dataview' | 'preserve' }
+--- @return { text: string, invalid_ranges: { [1]: integer, [2]: integer }[] }
+local function build(task, opts)
+  opts = opts or {}
+  local format = opts.format or "preserve"
+  local raw_fields = task._raw_fields or {}
+
+  -- ── field tokens in canonical order ────────────────────────────────────────
+  local field_parts = {}
+  for _, key in ipairs(FIELD_ORDER) do
+    local value = task.fields[key]
+    local is_invalid = false
+    if value == nil and raw_fields[key] ~= nil then
+      value = raw_fields[key]
+      is_invalid = true
+    end
+    if value ~= nil then
+      local fmt = format
+      if fmt == "preserve" then
+        fmt = task._origin[key] or "emoji"
+      end
+      local token, val_s, val_e
+      if fmt == "emoji" then
+        token, val_s, val_e = emit_emoji(key, value)
+      else
+        token, val_s, val_e = emit_dataview(key, value)
+      end
+      if token then
+        field_parts[#field_parts + 1] = {
+          text = token,
+          invalid = is_invalid and val_s ~= nil,
+          val_start = val_s,
+          val_end = val_e,
+        }
+      end
+    end
+  end
+
+  -- ── trailing tags ─────────────────────────────────────────────────────────
+  local desc = task.description or ""
+  local embedded = {}
+  for tag in desc:gmatch(TAG_PAT) do
+    embedded[tag] = (embedded[tag] or 0) + 1
+  end
+  local trailing_tags = {}
+  for _, tag in ipairs(task.tags or {}) do
+    if (embedded[tag] or 0) > 0 then
+      embedded[tag] = embedded[tag] - 1
+    else
+      table.insert(trailing_tags, tag)
+    end
+  end
+
+  -- ── assemble while tracking byte positions of invalid value ranges ────────
+  local prefix = task.indent .. task.marker .. " [" .. task.status_symbol .. "]"
+  local chunks = { prefix }
+  local current_len = #prefix
+  local invalid_ranges = {}
+
+  local function append_part(text, invalid, val_s, val_e)
+    chunks[#chunks + 1] = " "
+    current_len = current_len + 1
+    local token_start = current_len + 1 -- 1-indexed position of `text` in line
+    chunks[#chunks + 1] = text
+    current_len = current_len + #text
+    if invalid and val_s then
+      invalid_ranges[#invalid_ranges + 1] = {
+        token_start + val_s - 1,
+        token_start + val_e - 1,
+      }
+    end
+  end
+
+  if desc ~= "" then
+    append_part(desc, false)
+  end
+  for _, p in ipairs(field_parts) do
+    append_part(p.text, p.invalid, p.val_start, p.val_end)
+  end
+  for _, tag in ipairs(trailing_tags) do
+    append_part(tag, false)
+  end
+
+  return { text = table.concat(chunks), invalid_ranges = invalid_ranges }
+end
 
 --- Serialize a Task table (as returned by parse.parse) into a markdown line.
 ---
@@ -93,71 +202,17 @@ end
 --- @param opts? { format?: 'emoji' | 'dataview' | 'preserve' }
 --- @return string
 function M.serialize(task, opts)
-  opts = opts or {}
-  local format = opts.format or "preserve"
+  return build(task, opts).text
+end
 
-  -- ── field tokens in canonical order ────────────────────────────────────────
-  local field_tokens = {}
-  for _, key in ipairs(FIELD_ORDER) do
-    local value = task.fields[key]
-    if value ~= nil then
-      local fmt = format
-      if fmt == "preserve" then
-        fmt = task._origin[key] or "emoji"
-      end
-      local token
-      if fmt == "emoji" then
-        token = emit_emoji(key, value)
-      else
-        token = emit_dataview(key, value)
-      end
-      if token then
-        table.insert(field_tokens, token)
-      end
-    end
-  end
-
-  -- ── trailing tags ─────────────────────────────────────────────────────────
-  -- Build a multiset of tags found inside task.description via the same TAG_PAT
-  -- regex used by parse.lua.  For each entry in task.tags we consume one slot
-  -- from the multiset; any tag that has no remaining embedded slot is trailing.
-  -- This correctly handles:
-  --   • a trailing tag that is a prefix of an embedded tag (#foo vs #foobar)
-  --   • hierarchical tags where the parent appears trailing (#project/api + #project)
-  --   • the same tag appearing both embedded and trailing (duplicate case)
-  local desc = task.description or ""
-  local embedded = {}
-  for tag in desc:gmatch(TAG_PAT) do
-    embedded[tag] = (embedded[tag] or 0) + 1
-  end
-  local trailing_tags = {}
-  for _, tag in ipairs(task.tags or {}) do
-    if (embedded[tag] or 0) > 0 then
-      embedded[tag] = embedded[tag] - 1
-    else
-      table.insert(trailing_tags, tag)
-    end
-  end
-
-  -- ── assemble ───────────────────────────────────────────────────────────────
-  local line = task.indent .. task.marker .. " [" .. task.status_symbol .. "]"
-
-  local body_parts = {}
-  if desc ~= "" then
-    table.insert(body_parts, desc)
-  end
-  for _, tok in ipairs(field_tokens) do
-    table.insert(body_parts, tok)
-  end
-  for _, tag in ipairs(trailing_tags) do
-    table.insert(body_parts, tag)
-  end
-
-  if #body_parts > 0 then
-    line = line .. " " .. table.concat(body_parts, " ")
-  end
-
-  return line
+--- Like M.serialize, but returns `{text, invalid_ranges}`.  `invalid_ranges`
+--- is a list of `{byte_start, byte_end}` tuples (1-indexed, end-exclusive)
+--- marking the value bytes of each field whose value failed parse validation.
+--- @param task table
+--- @param opts? { format?: 'emoji' | 'dataview' | 'preserve' }
+--- @return { text: string, invalid_ranges: { [1]: integer, [2]: integer }[] }
+function M.serialize_with_meta(task, opts)
+  return build(task, opts)
 end
 
 return M

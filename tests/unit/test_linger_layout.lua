@@ -223,6 +223,367 @@ T["linger: no opts = no lingers (backward compatible)"] = function()
   eq(#lingers_of(rendered), 0)
 end
 
+-- ── prior_index splicing (new positioning) ──────────────────────────────────
+
+T["prior_index: linger at index 0 appears at top of group"] = function()
+  local a = with_src(pt("- [ ] live a"), "/vault/x.md", 1)
+  local b = with_src(pt("- [ ] live b"), "/vault/x.md", 2)
+  local moved = with_src(pt("- [x] moved"), "/vault/x.md", 5)
+  local result = make_result({ groups = { { name = "", tasks = { a, b } } }, total = 2 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = moved,
+        src_path = "/vault/x.md",
+        src_line = 5,
+        prior_group_name = "",
+        prior_index_within_group = 0,
+      },
+    },
+    group_by = {},
+  })
+
+  -- Collect task records in order.
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  eq(#tasks, 3)
+  eq(tasks[1].linger, true) -- linger slotted at index 0 (top of group)
+  eq(tasks[1].src_line, 5)
+  eq(tasks[2].src_line, 1) -- live a, bumped to index 1
+  eq(tasks[3].src_line, 2) -- live b, bumped to index 2
+end
+
+T["prior_index: linger splices between live tasks"] = function()
+  local a = with_src(pt("- [ ] live a"), "/vault/x.md", 1)
+  local b = with_src(pt("- [ ] live b"), "/vault/x.md", 2)
+  local moved = with_src(pt("- [x] moved"), "/vault/x.md", 5)
+  local result = make_result({ groups = { { name = "", tasks = { a, b } } }, total = 2 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = moved,
+        src_path = "/vault/x.md",
+        src_line = 5,
+        prior_group_name = "",
+        prior_index_within_group = 1,
+      },
+    },
+    group_by = {},
+  })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  eq(#tasks, 3)
+  eq(tasks[1].src_line, 1) -- live a at 0
+  eq(tasks[2].linger, true) -- linger at 1
+  eq(tasks[2].src_line, 5)
+  eq(tasks[3].src_line, 2) -- live b bumped from 1 to 2
+end
+
+T["prior_index: linger past live count appended after"] = function()
+  local a = with_src(pt("- [ ] live a"), "/vault/x.md", 1)
+  local moved = with_src(pt("- [x] moved"), "/vault/x.md", 5)
+  local result = make_result({ groups = { { name = "", tasks = { a } } }, total = 1 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = moved,
+        src_path = "/vault/x.md",
+        src_line = 5,
+        prior_group_name = "",
+        prior_index_within_group = 99,
+      },
+    },
+    group_by = {},
+  })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  eq(#tasks, 2)
+  eq(tasks[1].linger, nil) -- live first
+  eq(tasks[2].linger, true) -- linger spills after live (clamp to end)
+end
+
+T["prior_index: multiple lingers slot in ascending order"] = function()
+  local a = with_src(pt("- [ ] live a"), "/vault/x.md", 1)
+  local b = with_src(pt("- [ ] live b"), "/vault/x.md", 2)
+  local c = with_src(pt("- [ ] live c"), "/vault/x.md", 3)
+  local first_done = with_src(pt("- [x] done one"), "/vault/x.md", 10)
+  local second_done = with_src(pt("- [x] done two"), "/vault/x.md", 11)
+  local result = make_result({ groups = { { name = "", tasks = { a, b, c } } }, total = 3 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = second_done,
+        src_path = "/vault/x.md",
+        src_line = 11,
+        prior_group_name = "",
+        prior_index_within_group = 2,
+      },
+      {
+        task = first_done,
+        src_path = "/vault/x.md",
+        src_line = 10,
+        prior_group_name = "",
+        prior_index_within_group = 1,
+      },
+    },
+    group_by = {},
+  })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  -- Lingers had consecutive prior_indices (1, 2) — in the prior render they
+  -- were neighbors.  New render preserves that adjacency: both lingers bunch
+  -- between live a and live b/c.
+  -- Expected: a(0), first_done(1), second_done(2), b(3), c(4).
+  eq(#tasks, 5)
+  eq(tasks[1].src_line, 1)
+  eq(tasks[2].linger, true)
+  eq(tasks[2].src_line, 10)
+  eq(tasks[3].linger, true)
+  eq(tasks[3].src_line, 11)
+  eq(tasks[4].src_line, 2)
+  eq(tasks[5].src_line, 3)
+end
+
+T["prior_index: tasks carry group_name + group_index on their records"] = function()
+  local a = with_src(pt("- [ ] live a"), "/vault/x.md", 1)
+  local b = with_src(pt("- [ ] live b"), "/vault/x.md", 2)
+  local result = make_result({ groups = { { name = "g1", tasks = { a, b } } }, total = 2 })
+
+  local rendered = layout_mod.layout(result, { group_by = { { key = "path" } } })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  eq(#tasks, 2)
+  eq(tasks[1].group_name, "g1")
+  eq(tasks[1].group_index, 0)
+  eq(tasks[2].group_name, "g1")
+  eq(tasks[2].group_index, 1)
+end
+
+-- ── Q8 dedup: linger wins within same query ──────────────────────────────────
+
+T["dedup: live task suppressed when also lingered in same group"] = function()
+  local same = with_src(pt("- [ ] same task"), "/vault/x.md", 5)
+  -- Same src_path/src_line appears both as live AND lingered.
+  local result = make_result({ groups = { { name = "", tasks = { same } } }, total = 1 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = same,
+        src_path = "/vault/x.md",
+        src_line = 5,
+        prior_group_name = "",
+        prior_index_within_group = 0,
+      },
+    },
+    group_by = {},
+  })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  -- Live render suppressed; only the lingered (dim) row remains.
+  eq(#tasks, 1)
+  eq(tasks[1].linger, true)
+end
+
+T["dedup: different src_line, same path → both render (not deduped)"] = function()
+  local live = with_src(pt("- [ ] live"), "/vault/x.md", 1)
+  local lingered = with_src(pt("- [x] lingered"), "/vault/x.md", 2)
+  local result = make_result({ groups = { { name = "", tasks = { live } } }, total = 1 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = lingered,
+        src_path = "/vault/x.md",
+        src_line = 2,
+        prior_group_name = "",
+        prior_index_within_group = 1,
+      },
+    },
+    group_by = {},
+  })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  eq(#tasks, 2)
+end
+
+-- ── ghost groups with prior_index ────────────────────────────────────────────
+
+T["prior_index: ghost group lingers preserve prior_index order"] = function()
+  local first = with_src(pt("- [x] first"), "/vault/x.md", 1)
+  local second = with_src(pt("- [x] second"), "/vault/x.md", 2)
+  -- No live members in the group; both tasks are lingered.
+  local result = make_result({ groups = {}, total = 0 })
+
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = second,
+        src_path = "/vault/x.md",
+        src_line = 2,
+        prior_group_name = "ghostgrp",
+        prior_index_within_group = 1,
+      },
+      {
+        task = first,
+        src_path = "/vault/x.md",
+        src_line = 1,
+        prior_group_name = "ghostgrp",
+        prior_index_within_group = 0,
+      },
+    },
+    group_by = {},
+  })
+
+  local tasks = {}
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      tasks[#tasks + 1] = l
+    end
+  end
+  eq(#tasks, 2)
+  eq(tasks[1].src_line, 1) -- prior_index 0 first
+  eq(tasks[2].src_line, 2) -- prior_index 1 second
+end
+
+-- ── source_text preservation (drift-check correctness) ──────────────────────
+--
+-- Regression: the dashboard reorders fields per FIELD_ORDER, so the rendered
+-- text differs from a source line whose fields are in a non-canonical order.
+-- Drift detection compares meta.task_text to the disk source line via string
+-- equality, so layout must emit a `source_text` field carrying the VERBATIM
+-- source line (= task.raw_line) — not the canonicalized render.
+
+T["source_text: live task carries verbatim raw_line, not canonicalized render"] = function()
+  -- Non-canonical field order: 🆔 (id) before ⏫ (priority) before 📅 (due).
+  -- Canonical order per FIELD_ORDER is priority → due → id.
+  local raw = "- [ ] task #t 🆔 web1 ⏫ 📅 2026-05-14"
+  local task = parse_task.parse(raw)
+  task._src_path = "/vault/web-app.md"
+  task._src_line = 7
+
+  local result = make_result({ groups = { { name = "", tasks = { task } } }, total = 1 })
+  local rendered = layout_mod.layout(result, {})
+
+  -- Find the rendered task row.
+  local row
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      row = l
+      break
+    end
+  end
+  eq(row ~= nil, true)
+  -- Rendered text is canonicalized (priority comes before id).
+  -- This is the user-visible text in the dashboard.
+  eq(row.text:find("⏫.*🆔") ~= nil, true)
+  -- But source_text MUST be the verbatim source line so drift compares correctly.
+  eq(row.source_text, raw)
+end
+
+T["source_text: linger entry carries verbatim raw_line"] = function()
+  local raw = "- [x] done #t 🆔 abc ⏫ 📅 2026-05-14"
+  local task = parse_task.parse(raw)
+  task._src_path = "/vault/notes.md"
+  task._src_line = 3
+
+  local result = make_result({ groups = {}, total = 0 })
+  local rendered = layout_mod.layout(result, {
+    lingers = {
+      {
+        task = task,
+        src_path = "/vault/notes.md",
+        src_line = 3,
+        prior_group_name = "",
+        prior_index_within_group = 0,
+      },
+    },
+    group_by = {},
+  })
+
+  local row
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      row = l
+      break
+    end
+  end
+  eq(row ~= nil, true)
+  eq(row.source_text, raw)
+end
+
+-- ── post-mutation raw_line refresh ──────────────────────────────────────────
+-- After a status-change command mutates a task, the task object still carries
+-- its pre-mutation raw_line (set by parse).  _record_pending_linger must
+-- refresh raw_line on the stored entry so subsequent drift checks (e.g. a
+-- second toggle on the lingered row) compare against the post-mutation source.
+
+T["_record_pending_linger: refreshes raw_line to post-mutation serialize"] = function()
+  local render = require("obsidian-tasks.render")
+  -- Save + restore state so other tests aren't affected.
+  local prev_opts = render._opts
+  local prev_pending = render._pending_lingers
+  render._opts = { linger_on_filter_exit = true }
+  render._pending_lingers = {}
+
+  -- Parse a pre-mutation task; mutate status_symbol (as toggle would).
+  local raw = "- [ ] task 📅 2026-05-20"
+  local task = parse_task.parse(raw)
+  eq(task.raw_line, raw)
+  task.status_symbol = "x" -- toggle to done (pre-record mutation)
+
+  render._record_pending_linger(99, "/vault/note.md", 1, nil, task)
+
+  -- Stored entry's task.raw_line should reflect post-mutation serialize
+  -- ("- [x] task 📅 2026-05-20"), not the original "- [ ]".
+  local entries = render._pending_lingers[99]
+  eq(#entries, 1)
+  eq(entries[1].task.raw_line, "- [x] task 📅 2026-05-20")
+  -- Caller's task object is NOT mutated (deepcopy isolates).
+  eq(task.raw_line, raw)
+
+  render._opts = prev_opts
+  render._pending_lingers = prev_pending
+end
+
 -- ── tags expansion ───────────────────────────────────────────────────────────
 
 T["linger: multi-tag task lingers in both tag groups when group by tags"] = function()

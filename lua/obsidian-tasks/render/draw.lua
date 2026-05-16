@@ -43,6 +43,7 @@ local _HL = {
   footer = "ObsidianTasksFooter",
   error = "ObsidianTasksError",
   linger = "ObsidianTasksLinger",
+  field_invalid = "ObsidianTasksFieldInvalid",
 }
 
 local function hl(kind)
@@ -58,6 +59,16 @@ local function linger_hl_group()
     return ot.opts.linger_hl_group
   end
   return _HL.linger
+end
+
+--- Resolve the highlight group used to mark invalid field values.
+--- @return string
+local function field_invalid_hl_group()
+  local ok, ot = pcall(require, "obsidian-tasks")
+  if ok and ot.opts and type(ot.opts.field_invalid_hl_group) == "string" and ot.opts.field_invalid_hl_group ~= "" then
+    return ot.opts.field_invalid_hl_group
+  end
+  return _HL.field_invalid
 end
 
 -- ── Strip wikilink helper ─────────────────────────────────────────────────────
@@ -215,13 +226,41 @@ function M.draw(bufnr, fence_range, layout_lines)
         render_lnum = task_lnum,
       }
 
+      -- Per-range extmarks for fields whose value failed parse validation.
+      -- invalid_ranges entries are 1-indexed byte ranges (end-exclusive) into
+      -- the serialized text; convert to 0-indexed end-exclusive cols for
+      -- nvim_buf_set_extmark.  The wikilink suffix was appended after the
+      -- ranges were captured, so existing ranges remain valid; we just need
+      -- to clamp to current line length defensively.
+      if ll.invalid_ranges then
+        local line_len = #ll.text
+        local invalid_hl = field_invalid_hl_group()
+        for _, range in ipairs(ll.invalid_ranges) do
+          local col_start = math.max(0, range[1] - 1)
+          local col_end = math.min(line_len, range[2] - 1)
+          if col_end > col_start then
+            local iid = vim.api.nvim_buf_set_extmark(bufnr, NS, task_lnum, col_start, {
+              end_col = col_end,
+              hl_group = invalid_hl,
+            })
+            all_eids[#all_eids + 1] = iid
+          end
+        end
+      end
+
       -- Per-task extmark in managed namespace (consumed by T6/T7).
       -- rendered_text is the canonical buffer line including wikilink suffix;
       -- the read-only revert / status-edit detector compares against it.
+      --
+      -- task_text MUST be the verbatim source-file line so the drift check
+      -- in cmd.resolve_task_at compares like-for-like.  Prefer ll.source_text
+      -- (= task.raw_line, set by layout from the parser); fall back to
+      -- strip_wikilink on the rendered text for synthesized tasks that lack
+      -- raw_line (e.g. tests, generated rows).
       managed.add_task(bufnr, task_lnum, {
         source_file = ll.src_path,
         source_row = (ll.src_line or 1) - 1, -- convert 1-indexed → 0-indexed
-        task_text = strip_wikilink(ll.text, ll.src_path),
+        task_text = ll.source_text or strip_wikilink(ll.text, ll.src_path),
         rendered_text = ll.text,
       })
 

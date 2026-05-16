@@ -25,6 +25,23 @@ table.sort(emoji_list, function(a, b)
   return #a > #b
 end)
 
+--- Validate ISO date format (YYYY-MM-DD).  Accepts any month/day with 2 digits
+--- between 01-12 / 01-31 (no calendar-aware day-of-month check — leap years
+--- and 30-day months are accepted; this matches obsidian-tasks' lax format).
+--- @param s string
+--- @return boolean
+local function is_valid_iso_date(s)
+  if type(s) ~= "string" then
+    return false
+  end
+  local y, m, d = s:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+  if not y then
+    return false
+  end
+  local mi, di = tonumber(m), tonumber(d)
+  return mi >= 1 and mi <= 12 and di >= 1 and di <= 31
+end
+
 -- ---------------------------------------------------------------------------
 -- Internal helpers
 -- ---------------------------------------------------------------------------
@@ -143,12 +160,27 @@ end
 ---   tags,                 -- list of '#tag' strings found anywhere on the line
 ---   raw_line,             -- original input unchanged
 ---   _origin,              -- { field_key = 'emoji'|'dataview', ... }
+---   _raw_fields,          -- { field_key = "raw_string" } for fields whose value
+---                         --   failed validation (parsed value is nil but the
+---                         --   source string is preserved so serialize can re-
+---                         --   emit verbatim).
+---   _errors,              -- { field_key = "human-readable reason" } for fields
+---                         --   that failed validation; filters/sorts treat such
+---                         --   fields as absent, renderer marks the value range
+---                         --   with ObsidianTasksFieldInvalid.
 --- }
 --- ```
 ---
 --- @param line string
 --- @return table|nil
 function M.parse(line)
+  -- Normalize line endings: some callers (e.g. index/scan.lua's ripgrep
+  -- wrapper) hand us lines with trailing \n or \r\n still attached.  Strip
+  -- so raw_line — and any string comparison against disk-read content
+  -- (vim.fn.readfile / nvim_buf_get_lines, both of which strip endings) —
+  -- compare correctly.  Drift detection relies on raw_line == disk_line.
+  line = line:gsub("\r?\n$", "")
+
   local indent, list_marker, status_sym, body = line:match(PREFIX_PAT)
   if not indent then
     return nil
@@ -177,6 +209,8 @@ function M.parse(line)
     tags = {},
     raw_line = line,
     _origin = {},
+    _raw_fields = {},
+    _errors = {},
   }
 
   local markers = find_markers(body)
@@ -189,13 +223,51 @@ function M.parse(line)
   -- Tags: collect from the entire body (description + field regions).
   task.tags = collect_tags(body)
 
+  -- Validate a parsed field value against its kind.  When validation fails,
+  -- nil out task.fields[fkey] and stash the raw string under _raw_fields[fkey]
+  -- with a human-readable reason in _errors[fkey].  Filters/sorts then treat
+  -- this field as absent, while the renderer marks the value range as invalid
+  -- and the serializer emits the raw verbatim.
+  --- @param fkey  string
+  --- @param kind  string  field_entry.kind
+  --- @param value string  the trimmed value string from source
+  local function set_field_value(fkey, kind, value)
+    if kind == "date" then
+      if is_valid_iso_date(value) then
+        task.fields[fkey] = value
+      else
+        task.fields[fkey] = nil
+        task._raw_fields[fkey] = value
+        task._errors[fkey] = "invalid date (expected YYYY-MM-DD)"
+      end
+    elseif kind == "priority" then
+      -- Dataview priority: value is a level name like "high".  Emoji priority
+      -- never enters this branch (handled separately below from priority_by_emoji).
+      if fields.priority_levels[value] then
+        task.fields[fkey] = value
+      else
+        task.fields[fkey] = nil
+        task._raw_fields[fkey] = value
+        task._errors[fkey] = "invalid priority (expected highest|high|medium|low|lowest)"
+      end
+    else
+      -- string, tag-list — no validation, pass through.
+      task.fields[fkey] = value
+    end
+  end
+
   -- Process markers to populate task.fields.
   for i, m in ipairs(markers) do
     local fkey = m.field_entry.key
+    local kind = m.field_entry.kind
 
     if m.kind == "dataview" then
       local value = vim.trim(m.raw_value)
-      task.fields[fkey] = value ~= "" and value or nil
+      if value == "" then
+        task.fields[fkey] = nil
+      else
+        set_field_value(fkey, kind, value)
+      end
       task._origin[fkey] = "dataview"
     elseif m.kind == "emoji" then
       if fkey == "priority" then
@@ -209,7 +281,11 @@ function M.parse(line)
         local raw_region = body:sub(val_start, val_end)
         -- Strip any #tag tokens that trail within this region.
         local value = strip_tags(raw_region)
-        task.fields[fkey] = value ~= "" and value or nil
+        if value == "" then
+          task.fields[fkey] = nil
+        else
+          set_field_value(fkey, kind, value)
+        end
         task._origin[fkey] = "emoji"
       end
     end

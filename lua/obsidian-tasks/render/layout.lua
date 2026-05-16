@@ -126,12 +126,27 @@ function M.layout(query_result, opts)
   -- Pre-resolve each linger to its set of group names (empty string when no
   -- group_by — matches the unnamed group used by query_run for ungrouped
   -- results).  Index by group name for cheap lookup during the layout walk.
+  --
+  -- Two resolution paths:
+  --  (1) New shape: linger entries carry ent.prior_group_name + (optionally)
+  --      ent.prior_index_within_group already-keyed to a specific group from
+  --      the prior render.  Use them directly — one entry, one group.
+  --  (2) Legacy shape: no prior_group_name → resolve via group_mod.  May
+  --      resolve to multiple group names (group-by-tags expansion); the same
+  --      linger entry appears in each bucket and lands at the bottom of each
+  --      group (no prior_index → unindexed fallback path in emit_group_body).
   local lingers_by_group = {}
   for _, ent in ipairs(lingers) do
-    local names = group_mod.resolve(ent.task, ent.src_path, group_by)
-    for _, name in ipairs(names) do
+    if ent.prior_group_name ~= nil then
+      local name = ent.prior_group_name
       lingers_by_group[name] = lingers_by_group[name] or {}
       table.insert(lingers_by_group[name], ent)
+    else
+      local names = group_mod.resolve(ent.task, ent.src_path, group_by)
+      for _, name in ipairs(names) do
+        lingers_by_group[name] = lingers_by_group[name] or {}
+        table.insert(lingers_by_group[name], ent)
+      end
     end
   end
 
@@ -194,37 +209,154 @@ function M.layout(query_result, opts)
   local first_live_name = live_groups[1] and live_groups[1].name or nil
   local multi_group = has_groups and (total_groups > 1 or (first_live_name ~= nil and first_live_name ~= ""))
 
-  --- Append linger task records that resolve to *group_name*.
+  --- Build a render record for a lingered task in *group_name* at
+  --- *group_index* (0-based position within the rendered group body).
+  --- @param ent        table
   --- @param group_name string
-  local function append_lingers_for(group_name)
-    local entries = lingers_by_group[group_name]
-    if not entries then
-      return
+  --- @param group_index integer
+  --- @return table
+  local function build_linger_line(ent, group_name, group_index)
+    local visible_task = apply_hide_flags(ent.task, hide)
+    local ser = serialize_mod.serialize_with_meta(visible_task, { format = "preserve" })
+    local task_text = ser.text
+    local invalid_ranges = ser.invalid_ranges
+    local source_text_hash = ent.task.raw_line and src_hash(ent.task.raw_line) or src_hash(task_text)
+    local path = ent.src_path or ent.task._src_path
+    if path and not hide.backlinks then
+      local basename = vim.fn.fnamemodify(path, ":t:r")
+      task_text = task_text .. " [[" .. basename .. "]]"
     end
+    local hash = src_hash(task_text)
+    return {
+      kind = "task",
+      text = task_text,
+      src_path = path,
+      src_line = ent.src_line or ent.task._src_line,
+      src_hash = hash,
+      source_text_hash = source_text_hash,
+      -- source_text is the VERBATIM source-file line content (preserved by
+      -- parse.lua as task.raw_line).  draw.lua uses this as managed.task_text
+      -- so the drift check compares like-for-like: the canonicalized render
+      -- often reorders fields per FIELD_ORDER, which would falsely trigger
+      -- drift against a source whose field order differs.
+      source_text = ent.task.raw_line,
+      indent = ent.task.indent or "",
+      group_name = group_name,
+      group_index = group_index,
+      invalid_ranges = (invalid_ranges and #invalid_ranges > 0) and invalid_ranges or nil,
+      -- Lingered rows are always dimmed; `linger` retains the state-tracking
+      -- bit so render/init.lua + tests can distinguish them from live-completed.
+      linger = true,
+      dim = true,
+    }
+  end
+
+  --- Build a render record for a live task in *group_name* at *group_index*.
+  --- @param task        table
+  --- @param group_name  string
+  --- @param group_index integer
+  --- @return table
+  local function build_live_line(task, group_name, group_index)
+    local visible_task = apply_hide_flags(task, hide)
+    local ser = serialize_mod.serialize_with_meta(visible_task, { format = "preserve" })
+    local task_text = ser.text
+    local invalid_ranges = ser.invalid_ranges
+    local source_text_hash = task.raw_line and src_hash(task.raw_line) or src_hash(task_text)
+    local path = task._src_path
+    if path and not hide.backlinks then
+      local basename = vim.fn.fnamemodify(path, ":t:r")
+      task_text = task_text .. " [[" .. basename .. "]]"
+    end
+    local hash = src_hash(task_text)
+    return {
+      kind = "task",
+      text = task_text,
+      src_path = path,
+      src_line = task._src_line,
+      src_hash = hash,
+      source_text_hash = source_text_hash,
+      -- VERBATIM source-file line (preserved by parse.lua as task.raw_line).
+      -- See build_linger_line for why this matters (drift check correctness).
+      source_text = task.raw_line,
+      indent = task.indent or "",
+      group_name = group_name,
+      group_index = group_index,
+      invalid_ranges = (invalid_ranges and #invalid_ranges > 0) and invalid_ranges or nil,
+      -- Mark completed-live rows as dim so draw applies the linger highlight.
+      dim = dim_completed and status_mod.is_completed(task.status_symbol) or nil,
+    }
+  end
+
+  --- Emit a group's body (task rows + lingered rows) into the *lines* output.
+  --- Interleaves lingers at their prior_index_within_group, dedups live tasks
+  --- against active lingers (per-block-query: linger wins, live suppressed).
+  ---
+  --- @param group_name      string  current group name (may be "")
+  --- @param live_tasks      table[]  partitioned live task list for this group
+  --- @param linger_entries  table[]|nil  linger entries pre-bucketed for this group
+  local function emit_group_body(group_name, live_tasks, linger_entries)
+    linger_entries = linger_entries or {}
     consumed_linger_groups[group_name] = true
-    for _, ent in ipairs(entries) do
-      local visible_task = apply_hide_flags(ent.task, hide)
-      local task_text = serialize_mod.serialize(visible_task, { format = "preserve" })
-      local source_text_hash = ent.task.raw_line and src_hash(ent.task.raw_line) or src_hash(task_text)
-      local path = ent.src_path or ent.task._src_path
-      if path and not hide.backlinks then
-        local basename = vim.fn.fnamemodify(path, ":t:r")
-        task_text = task_text .. " [[" .. basename .. "]]"
+
+    -- Build dedup key set from active lingers in this group.
+    local linger_keys = {}
+    for _, ent in ipairs(linger_entries) do
+      local path = ent.src_path or (ent.task and ent.task._src_path) or ""
+      local line_nr = ent.src_line or (ent.task and ent.task._src_line) or 0
+      linger_keys[path .. ":" .. tostring(line_nr)] = true
+    end
+
+    -- Filter live tasks: drop those whose (src_path, src_line) matches an active
+    -- linger entry in this group (Q8 dedup: linger wins within same query).
+    local filtered_live = {}
+    for _, task in ipairs(live_tasks) do
+      local key = (task._src_path or "") .. ":" .. tostring(task._src_line or 0)
+      if not linger_keys[key] then
+        filtered_live[#filtered_live + 1] = task
       end
-      local hash = src_hash(task_text)
-      lines[#lines + 1] = {
-        kind = "task",
-        text = task_text,
-        src_path = path,
-        src_line = ent.src_line or ent.task._src_line,
-        src_hash = hash,
-        source_text_hash = source_text_hash,
-        indent = ent.task.indent or "",
-        -- Lingered rows are always dimmed; `linger` retains the state-tracking
-        -- bit so render/init.lua + tests can distinguish them from live-completed.
-        linger = true,
-        dim = true,
-      }
+    end
+
+    -- Partition linger entries: indexed (have prior_index_within_group) get
+    -- spliced at their captured position; unindexed (legacy / no prior render
+    -- context) fall back to appending at the end of the group.
+    local indexed, unindexed = {}, {}
+    for _, ent in ipairs(linger_entries) do
+      if ent.prior_index_within_group ~= nil then
+        indexed[#indexed + 1] = ent
+      else
+        unindexed[#unindexed + 1] = ent
+      end
+    end
+    table.sort(indexed, function(a, b)
+      return a.prior_index_within_group < b.prior_index_within_group
+    end)
+
+    -- Interleave: walk filtered_live with running output_idx.  Before emitting
+    -- each live task, drain indexed lingers whose prior_index ≤ output_idx
+    -- (linger holds its prior slot; live task gets bumped one position).
+    local output_idx = 0
+    local linger_i = 1
+    for _, task in ipairs(filtered_live) do
+      while linger_i <= #indexed and indexed[linger_i].prior_index_within_group <= output_idx do
+        lines[#lines + 1] = build_linger_line(indexed[linger_i], group_name, output_idx)
+        linger_i = linger_i + 1
+        output_idx = output_idx + 1
+      end
+      lines[#lines + 1] = build_live_line(task, group_name, output_idx)
+      output_idx = output_idx + 1
+    end
+
+    -- Remaining indexed lingers whose prior_index exceeded the live count.
+    while linger_i <= #indexed do
+      lines[#lines + 1] = build_linger_line(indexed[linger_i], group_name, output_idx)
+      linger_i = linger_i + 1
+      output_idx = output_idx + 1
+    end
+
+    -- Unindexed (legacy fallback) lingers appended at end.
+    for _, ent in ipairs(unindexed) do
+      lines[#lines + 1] = build_linger_line(ent, group_name, output_idx)
+      output_idx = output_idx + 1
     end
   end
 
@@ -256,11 +388,12 @@ function M.layout(query_result, opts)
   end
 
   for _, group in ipairs(live_groups) do
+    local group_name = group.name or ""
     -- Group header: only emit when there is a named group.
-    if group.name and group.name ~= "" then
+    if group_name ~= "" then
       lines[#lines + 1] = {
         kind = "group_header",
-        text = "## " .. group.name,
+        text = "## " .. group_name,
         src_path = nil,
         src_line = nil,
         src_hash = nil,
@@ -278,53 +411,10 @@ function M.layout(query_result, opts)
       }
     end
 
-    -- Task lines.  Completed-status tasks are sunk to the bottom of the
-    -- group (after the active ones) when dim_completed is on.
-    for _, task in ipairs(partition_completed(group.tasks or {})) do
-      -- Apply hide flags to a copy of the task.
-      local visible_task = apply_hide_flags(task, hide)
-
-      -- Serialize using preserve format (keeps original emoji/dataview style).
-      local task_text = serialize_mod.serialize(visible_task, { format = "preserve" })
-
-      -- source_text_hash must match the unmodified source-file line so that
-      -- keymap.lua content-match scan can locate the task regardless of which
-      -- fields are hidden.  Use task.raw_line (the verbatim original text
-      -- preserved by parse.lua) rather than task_text (post-hide-flags
-      -- serialized text, which omits hidden fields and therefore diverges from
-      -- the source file when any field-hide flag is active).
-      -- Fall back to task_text only for synthesized tasks that lack raw_line.
-      local source_text_hash = task.raw_line and src_hash(task.raw_line) or src_hash(task_text)
-
-      -- Append wikilink backlink unless hidden.
-      -- src_path is set by the render orchestrator on each task before calling layout.
-      -- If absent (e.g. in tests or when orchestrator hasn't populated it), skip the wikilink.
-      local path = task._src_path
-      if path and not hide.backlinks then
-        local basename = vim.fn.fnamemodify(path, ":t:r")
-        task_text = task_text .. " [[" .. basename .. "]]"
-      end
-
-      -- src_hash is the hash of the final RENDERED text (with wikilink when
-      -- present).  edit.lua diff uses this to detect in-place edits in the
-      -- render buffer, where task lines DO include the wikilink.
-      local hash = src_hash(task_text)
-
-      lines[#lines + 1] = {
-        kind = "task",
-        text = task_text,
-        src_path = path,
-        src_line = task._src_line,
-        src_hash = hash,
-        source_text_hash = source_text_hash,
-        indent = task.indent or "",
-        -- Mark completed-live rows as dim so draw applies the linger highlight.
-        dim = dim_completed and status_mod.is_completed(task.status_symbol) or nil,
-      }
-    end
-
-    -- Lingered tasks for this group (after live members, in completion order).
-    append_lingers_for(group.name or "")
+    -- Interleaved emission: live tasks partitioned by completion, lingers
+    -- spliced at prior_index_within_group, dedup of live tasks that match
+    -- active lingers in this group.
+    emit_group_body(group_name, partition_completed(group.tasks or {}), lingers_by_group[group_name])
   end
 
   -- Ghost groups: emit a header and the linger rows for each name that had no
@@ -350,7 +440,7 @@ function M.layout(query_result, opts)
           indent = "",
         }
       end
-      append_lingers_for(name)
+      emit_group_body(name, {}, lingers_by_group[name])
     end
   end
 

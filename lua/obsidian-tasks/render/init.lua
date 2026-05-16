@@ -45,12 +45,20 @@ function M._record_pending_linger(bufnr, src_path, src_line, source_text_hash, t
   if not src_path or not src_line then
     return
   end
+  -- Deep-copy the task and refresh raw_line to reflect the post-mutation
+  -- state.  task.raw_line was captured by parse.lua at parse time (PRE-
+  -- mutation), so without this the linger entry's source_text would mismatch
+  -- the actual disk content — drift would fire on any subsequent operation
+  -- against the lingered row (e.g. a second <leader>tt to un-toggle).
+  local task_copy = vim.deepcopy(task)
+  local serialize = require("obsidian-tasks.task.serialize")
+  task_copy.raw_line = serialize.serialize(task_copy)
   M._pending_lingers[bufnr] = M._pending_lingers[bufnr] or {}
   table.insert(M._pending_lingers[bufnr], {
     src_path = src_path,
     src_line = src_line,
     source_text_hash = source_text_hash,
-    task = task,
+    task = task_copy,
   })
 end
 
@@ -64,6 +72,12 @@ end
 function M.refresh_with_clear_lingers(bufnr, workspace)
   M._lingers[bufnr] = nil
   M._pending_lingers[bufnr] = nil
+  -- Manual refresh is the user's explicit "discard plugin history" gesture —
+  -- drop the per-dashboard undo/redo rings too.
+  local ok, cmd = pcall(require, "obsidian-tasks.cmd")
+  if ok and type(cmd.clear_dashboard_undo) == "function" then
+    cmd.clear_dashboard_undo(bufnr)
+  end
   M.rerender_buffer(bufnr, workspace)
 end
 
@@ -76,7 +90,7 @@ end
 --       managed_fence_id  = integer|nil, -- managed-NS extmark ID for the opening fence (live-tracked)
 --       render_range      = { first, last } | nil,  -- 0-indexed inserted task lines (stale after edits)
 --       extmark_ids       = { eid, ... },            -- task extmark IDs (draw NS)
---       line_map          = { [lnum] = {src_path, src_line, src_hash, rendered_text} },
+--       line_map          = { [lnum] = {src_path, src_line, src_hash, rendered_text, group_name, group_index, linger?, dim?} },
 --     },
 --     ...
 --   }
@@ -97,11 +111,16 @@ M._buffer_state = {}
 --                           the live filter set.
 --
 -- Entry shape:
---   { src_path, src_line, source_text_hash, task, block_idx? }
+--   { src_path, src_line, source_text_hash, task,
+--     block_idx?, prior_group_name?, prior_index_within_group? }
 --
--- block_idx is set at promotion time (pending → linger).  Lingers are
--- displayed only in their pre-exit block.  When a task was in multiple
--- blocks pre-exit, one entry per block is created.
+-- block_idx, prior_group_name, prior_index_within_group are set at
+-- promotion time (pending → linger).  Lingers are displayed only in their
+-- pre-exit block.  When a task was in multiple blocks/groups pre-exit, one
+-- entry per (block, group) appearance is created (group-by-tags can yield
+-- multiple appearances per block).  prior_index_within_group is the 0-based
+-- position within the prior render's group body; layout uses it to splice
+-- the linger back at its prior slot (linger holds position).
 M._pending_lingers = {}
 M._lingers = {}
 
@@ -311,14 +330,22 @@ function M.render_buffer(bufnr, workspace)
         end
       end
 
-      -- pre_clear_map: (src_path, src_line) → set of block indices it appeared in
+      -- pre_clear_map: (src_path, src_line) → block_idx → list of
+      -- {group_name, group_index} tuples (one per appearance in that block;
+      -- group-by-tags can yield multiple appearances of the same task per
+      -- block).  Used to recover prior position context when promoting a
+      -- pending linger so it slots back at its prior visual index.
       local pre_clear_map = {}
       if pre_clear_state then
         for i, blk in ipairs(pre_clear_state) do
           for _, meta in pairs(blk.line_map or {}) do
             local key = entry_key(meta.src_path, meta.src_line)
             pre_clear_map[key] = pre_clear_map[key] or {}
-            pre_clear_map[key][i] = true
+            pre_clear_map[key][i] = pre_clear_map[key][i] or {}
+            table.insert(pre_clear_map[key][i], {
+              group_name = meta.group_name,
+              group_index = meta.group_index,
+            })
           end
         end
       end
@@ -338,19 +365,25 @@ function M.render_buffer(bufnr, workspace)
       end
 
       -- Promote pending entries whose task isn't in the new live set.  Use
-      -- pre_clear_map to determine which block(s) the task previously occupied;
-      -- when a task was in multiple blocks, emit one linger entry per block.
+      -- pre_clear_map to determine which block(s) and group(s) the task
+      -- previously occupied; emit one linger entry per (block, group)
+      -- appearance, carrying prior_group_name + prior_index_within_group so
+      -- layout can splice it back at its prior position.
       if M._opts and M._opts.linger_on_filter_exit ~= false then
         for _, ent in ipairs(pending) do
           local key = entry_key(ent.src_path, ent.src_line)
           if not live_set[key] then
-            local block_set = pre_clear_map[key]
-            if block_set then
-              for i in pairs(block_set) do
+            local block_map = pre_clear_map[key]
+            if block_map then
+              for i, appearances in pairs(block_map) do
                 if i <= #per_block then
-                  local copy = vim.deepcopy(ent)
-                  copy.block_idx = i
-                  new_lingers[#new_lingers + 1] = copy
+                  for _, appearance in ipairs(appearances) do
+                    local copy = vim.deepcopy(ent)
+                    copy.block_idx = i
+                    copy.prior_group_name = appearance.group_name
+                    copy.prior_index_within_group = appearance.group_index
+                    new_lingers[#new_lingers + 1] = copy
+                  end
                 end
               end
             end
@@ -460,6 +493,10 @@ function M.render_buffer(bufnr, workspace)
                 rendered_text = ll.text,
                 linger = ll.linger or nil,
                 dim = ll.dim or nil,
+                -- Captured at layout time so promotion can recover the prior
+                -- group/position when this task is later lingered.
+                group_name = ll.group_name,
+                group_index = ll.group_index,
               }
               task_idx = task_idx + 1
             end

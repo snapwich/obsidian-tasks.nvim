@@ -359,21 +359,40 @@ T["missing fields: partial — only due set"] = function()
   eq(t.fields.priority, nil)
 end
 
--- ── malformed / unusual dates preserved verbatim ──────────────────────────
+-- ── malformed / unusual dates: fields.due nil, raw preserved, error set ─────
 
-T["malformed date: not-a-date string preserved"] = function()
+T["malformed date: not-a-date string captured under _raw_fields/_errors"] = function()
   local t = parse.parse("- [ ] Task 📅 not-a-date")
-  eq(t.fields.due, "not-a-date")
+  eq(t.fields.due, nil)
+  eq(t._raw_fields.due, "not-a-date")
+  eq(type(t._errors.due), "string")
 end
 
-T["malformed date: partial date preserved"] = function()
+T["malformed date: partial date captured under _raw_fields/_errors"] = function()
   local t = parse.parse("- [ ] Task 📅 2024-13")
-  eq(t.fields.due, "2024-13")
+  eq(t.fields.due, nil)
+  eq(t._raw_fields.due, "2024-13")
+  eq(type(t._errors.due), "string")
 end
 
-T["malformed date: extra characters preserved"] = function()
+T["malformed date: extra characters captured under _raw_fields/_errors"] = function()
   local t = parse.parse("- [ ] Task 📅 2024-01-99-extra")
-  eq(t.fields.due, "2024-01-99-extra")
+  eq(t.fields.due, nil)
+  eq(t._raw_fields.due, "2024-01-99-extra")
+  eq(type(t._errors.due), "string")
+end
+
+T["malformed date: day 99 in well-shaped string rejected"] = function()
+  local t = parse.parse("- [ ] Task 📅 2024-01-99")
+  eq(t.fields.due, nil)
+  eq(t._raw_fields.due, "2024-01-99")
+end
+
+T["valid date: ISO YYYY-MM-DD accepted unchanged"] = function()
+  local t = parse.parse("- [ ] Task 📅 2025-12-01")
+  eq(t.fields.due, "2025-12-01")
+  eq(t._raw_fields.due, nil)
+  eq(t._errors.due, nil)
 end
 
 -- ── tag extraction ─────────────────────────────────────────────────────────

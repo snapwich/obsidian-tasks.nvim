@@ -69,22 +69,32 @@ function M.setup(opts)
   })
 
   -- ── BufReadPost ─────────────────────────────────────────────────────────────
-  -- Auto-render vault md files that contain ```tasks blocks.
+  -- For every .md file in a configured vault:
+  --   (a) install the universal task-editing leader keymaps so <leader>t*
+  --       works on any task line, not just rendered dashboard rows;
+  --   (b) auto-render the buffer if it contains a ```tasks block.
   vim.api.nvim_create_autocmd("BufReadPost", {
     group = group,
     pattern = "*.md",
     callback = function(ev)
-      -- Respect auto_render = false.
-      if not opts.auto_render then
-        return
-      end
-
       local bufnr = ev.buf
       local path = vim.api.nvim_buf_get_name(bufnr)
 
       -- Skip files not in any configured vault.
       local ws = safe_workspace_for_path(path)
       if ws == nil then
+        return
+      end
+
+      -- (a) Universal keymap attach: every md in a workspace gets <leader>t*
+      -- so users can act on task lines anywhere, not just on dashboards.
+      -- The attach itself respects opts.setup_keymaps internally.
+      pcall(function()
+        require("obsidian-tasks.render.keymap").attach_universal(bufnr)
+      end)
+
+      -- (b) Auto-render — gated by opts.auto_render.
+      if not opts.auto_render then
         return
       end
 
@@ -99,6 +109,26 @@ function M.setup(opts)
         if vim.api.nvim_buf_is_valid(bufnr) then
           render.render_buffer(bufnr, ws)
         end
+      end)
+    end,
+  })
+
+  -- ── BufNewFile ──────────────────────────────────────────────────────────────
+  -- Newly-created md buffers (path doesn't exist on disk yet) don't trigger
+  -- BufReadPost.  Attach the universal keymaps here so <leader>t* is wired
+  -- before the user even saves; auto-render lands on the first BufWritePost
+  -- (handled in the BufWritePost callback below).
+  vim.api.nvim_create_autocmd("BufNewFile", {
+    group = group,
+    pattern = "*.md",
+    callback = function(ev)
+      local bufnr = ev.buf
+      local path = vim.api.nvim_buf_get_name(bufnr)
+      if safe_workspace_for_path(path) == nil then
+        return
+      end
+      pcall(function()
+        require("obsidian-tasks.render.keymap").attach_universal(bufnr)
       end)
     end,
   })
@@ -159,10 +189,19 @@ function M.setup(opts)
         return
       end
 
-      -- (1) Re-render this buffer if it has an active render (ordered first
-      -- so a broken index call below cannot block the visible refresh).
+      -- (1) Render this buffer.  Two cases:
+      --   • Active render exists → rerender_buffer (preserves fold state +
+      --     handles block lifecycle).
+      --   • No state yet but the buffer now contains a ```tasks block →
+      --     render_buffer (initial draw).  Covers the case where the user
+      --     wrote a new note that includes a query block: BufReadPost fired
+      --     when the file didn't exist yet, so there was nothing to render
+      --     at read time.
+      -- Ordered first so a broken index call below cannot block the visible refresh.
       if render._buffer_state[bufnr] ~= nil then
         render.rerender_buffer(bufnr, ws)
+      elseif opts.auto_render and render.has_tasks_block(bufnr) then
+        render.render_buffer(bufnr, ws)
       end
 
       -- (2) Refresh the index entry for the written file, then propagate
@@ -208,6 +247,11 @@ function M.setup(opts)
       -- is a hard buffer-lifecycle boundary, so drop them explicitly.
       render._lingers[bufnr] = nil
       render._pending_lingers[bufnr] = nil
+      -- Drop the per-dashboard undo/redo history too.
+      local ok, cmd = pcall(require, "obsidian-tasks.cmd")
+      if ok and type(cmd.clear_dashboard_undo) == "function" then
+        cmd.clear_dashboard_undo(bufnr)
+      end
       require("obsidian-tasks.render.hygiene")._cleanup(bufnr)
     end,
   })

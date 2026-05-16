@@ -44,6 +44,35 @@ for _, v in ipairs(VALID_SUBCMDS) do
   VALID_SUBCMDS_SET[v] = true
 end
 
+-- ── Per-dashboard undo / redo ring ────────────────────────────────────────────
+-- apply_source_edit appends each plugin-driven mutation to the undo ring keyed
+-- by the dashboard buffer the user acted in.  dashboard_undo / dashboard_redo
+-- pop entries and replay the inverse via apply_source_edit{skip_record=true}.
+--
+-- Ring entry shape:
+--   { src_path, src_row, old_count, old_lines, new_count, new_lines }
+--
+-- Cleared on BufDelete (autocmds.lua) and on manual refresh (refresh_with_clear_lingers).
+
+local UNDO_RING_CAP = 50
+
+M._undo_ring = {} -- dashboard_bufnr → list of entries (push at end)
+M._redo_ring = {} -- dashboard_bufnr → list of entries (push at end)
+
+local function record_undo_edit(dashboard_bufnr, entry)
+  if not dashboard_bufnr or dashboard_bufnr <= 0 then
+    return
+  end
+  M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
+  local r = M._undo_ring[dashboard_bufnr]
+  r[#r + 1] = entry
+  while #r > UNDO_RING_CAP do
+    table.remove(r, 1)
+  end
+  -- A new forward edit invalidates the redo history for this dashboard.
+  M._redo_ring[dashboard_bufnr] = nil
+end
+
 -- ── Resolver helpers ─────────────────────────────────────────────────────────
 
 --- Read a single line (0-indexed row) from a source file.
@@ -106,10 +135,27 @@ end
 --- can't fire here because writefile doesn't trigger BufWritePost.
 ---
 --- @param file_path string
---- @param row       integer    0-indexed row to replace
+--- @param row       integer    0-indexed first row affected
 --- @param new_lines string[]   replacement lines (0 = delete, 1 = replace, N = expand)
+--- @param opts?     table      optional:
+---                               count            — rows to remove starting at `row`
+---                                                  (default 1).  0 = pure insert
+---                                                  before `row`.
+---                               dashboard_bufnr  — bufnr to record this edit
+---                                                  against in the undo ring
+---                                                  (default current_buf).
+---                               skip_record      — when true, do not push this
+---                                                  edit into the undo ring.
+---                                                  Used by undo/redo replays.
 --- @return boolean ok
-function M.apply_source_edit(file_path, row, new_lines)
+function M.apply_source_edit(file_path, row, new_lines, opts)
+  opts = opts or {}
+  local count = opts.count or 1
+  if type(count) ~= "number" or count < 0 then
+    log.warn("obsidian-tasks: invalid count " .. tostring(count))
+    return false
+  end
+
   local src_bufnr = loaded_source_buf(file_path)
 
   if src_bufnr and vim.bo[src_bufnr].modified then
@@ -129,13 +175,29 @@ function M.apply_source_edit(file_path, row, new_lines)
     log.warn("obsidian-tasks: failed to read " .. file_path)
     return false
   end
-  if row < 0 or row >= #disk_lines then
-    log.warn("obsidian-tasks: edit row " .. row .. " out of range (file has " .. #disk_lines .. " lines)")
+  -- count=0 (pure insert) accepts row ∈ [0, #disk_lines] so we can append at end.
+  -- count>=1 requires row + count <= #disk_lines.
+  if row < 0 or row + count > #disk_lines then
+    log.warn(
+      "obsidian-tasks: edit at row "
+        .. row
+        .. " (count "
+        .. count
+        .. ") out of range (file has "
+        .. #disk_lines
+        .. " lines)"
+    )
     return false
   end
 
+  -- Capture the about-to-be-removed lines for the undo ring (before mutation).
+  local old_lines = {}
+  for i = 1, count do
+    old_lines[i] = disk_lines[row + i]
+  end
+
   -- Detect external disk edits: buffer's view differs from on-disk pre-mutation
-  -- content.  When they match, only the mutation row needs to change in the
+  -- content.  When they match, only the mutation rows need to change in the
   -- buffer — narrow replace preserves stored cursors (visible AND hidden).
   -- When they differ, the buffer needs a full-content refresh and cursor
   -- preservation becomes best-effort (the user's external edits got applied).
@@ -154,8 +216,11 @@ function M.apply_source_edit(file_path, row, new_lines)
     end
   end
 
-  -- Apply the mutation to the disk-side lines (0=delete, 1=replace, N=expand).
-  table.remove(disk_lines, row + 1)
+  -- Apply the mutation to the disk-side lines: remove `count` rows at `row`,
+  -- then insert `new_lines` at the same position.
+  for _ = 1, count do
+    table.remove(disk_lines, row + 1)
+  end
   for i = #new_lines, 1, -1 do
     table.insert(disk_lines, row + 1, new_lines[i])
   end
@@ -188,17 +253,18 @@ function M.apply_source_edit(file_path, row, new_lines)
       -- Sync the entire buffer to disk so the external edits are reflected.
       vim.api.nvim_buf_set_lines(src_bufnr, 0, -1, false, disk_lines)
     else
-      -- No external edit: replace only the mutation row.  Visible windows
+      -- No external edit: replace only the mutation range.  Visible windows
       -- keep their cursors naturally; hidden cursors are restored on the
       -- next BufEnter (see below).
-      vim.api.nvim_buf_set_lines(src_bufnr, row, row + 1, false, new_lines)
+      vim.api.nvim_buf_set_lines(src_bufnr, row, row + count, false, new_lines)
     end
     vim.bo[src_bufnr].modified = false
 
     -- Row-adjustment helper.  When the saved cursor was strictly below the
-    -- mutation row, shift by (#new_lines - 1).  Cursors at-or-above unchanged.
-    local mut_row_1 = row + 1
-    local shift = #new_lines - 1
+    -- last mutation row, shift by (#new_lines - count).  Cursors at-or-above
+    -- the first mutation row are unchanged.
+    local mut_row_1 = row + count -- 1-indexed: cursors > this shift
+    local shift = #new_lines - count
     local total = #disk_lines
     local function adjust(cr, cc)
       if cr > mut_row_1 then
@@ -278,7 +344,131 @@ function M.apply_source_edit(file_path, row, new_lines)
     end
   end
 
+  -- Record this edit into the per-dashboard undo ring.  Skipped for
+  -- inverse replays from undo/redo (skip_record=true) and for callers that
+  -- explicitly opt out.  Forward edits clear the redo ring (new branch).
+  if not opts.skip_record then
+    local dash = opts.dashboard_bufnr or vim.api.nvim_get_current_buf()
+    record_undo_edit(dash, {
+      src_path = file_path,
+      src_row = row,
+      old_count = count,
+      old_lines = old_lines,
+      new_count = #new_lines,
+      new_lines = vim.deepcopy(new_lines),
+    })
+  end
+
   return true
+end
+
+--- Compare current disk content at *src_row* for *new_count* lines against
+--- *expected*.  Returns true iff every line matches (no drift).
+---
+--- Used by dashboard_undo / dashboard_redo to refuse a replay when the source
+--- file changed between the forward edit and the inverse — mirroring the
+--- existing `no_drift` pattern in render/keymap.lua.
+---
+--- @param src_path   string
+--- @param src_row    integer  0-indexed
+--- @param expected   string[]  lines we wrote at src_row in the forward edit
+--- @return boolean   true = matches (safe to replay)
+local function disk_lines_match(src_path, src_row, expected)
+  local ok, lines = pcall(vim.fn.readfile, src_path)
+  if not ok or type(lines) ~= "table" then
+    -- Cannot verify — fail safe (refuse the undo).
+    return false
+  end
+  for i, line in ipairs(expected) do
+    if lines[src_row + i] ~= line then
+      return false
+    end
+  end
+  return true
+end
+
+--- Pop the most recent edit from *dashboard_bufnr*'s undo ring and replay
+--- the inverse via apply_source_edit (skip_record=true).  Refuses when the
+--- disk content at the recorded position no longer matches what we wrote
+--- (drift).  Pushes the popped entry onto the redo ring on success.
+---
+--- @param dashboard_bufnr integer
+--- @return boolean ok
+function M.dashboard_undo(dashboard_bufnr)
+  local r = M._undo_ring[dashboard_bufnr]
+  if not r or #r == 0 then
+    return false
+  end
+  local entry = r[#r]
+  if not disk_lines_match(entry.src_path, entry.src_row, entry.new_lines) then
+    log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+    return false
+  end
+  r[#r] = nil
+  local ok = M.apply_source_edit(entry.src_path, entry.src_row, entry.old_lines, {
+    count = entry.new_count,
+    dashboard_bufnr = dashboard_bufnr,
+    skip_record = true,
+  })
+  if not ok then
+    r[#r + 1] = entry -- restore so the user can retry
+    return false
+  end
+  M._redo_ring[dashboard_bufnr] = M._redo_ring[dashboard_bufnr] or {}
+  local rr = M._redo_ring[dashboard_bufnr]
+  rr[#rr + 1] = entry
+  -- Rerender the dashboard so the visual state reconciles with the new source.
+  local render = require("obsidian-tasks.render")
+  if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
+    pcall(render.rerender_buffer, dashboard_bufnr)
+  end
+  return true
+end
+
+--- Pop the most recent entry from *dashboard_bufnr*'s redo ring and replay
+--- it forward via apply_source_edit (skip_record=true).  Same drift refusal
+--- as dashboard_undo, but compared against old_lines (what the row held
+--- before the forward edit / after the undo).
+---
+--- @param dashboard_bufnr integer
+--- @return boolean ok
+function M.dashboard_redo(dashboard_bufnr)
+  local rr = M._redo_ring[dashboard_bufnr]
+  if not rr or #rr == 0 then
+    return false
+  end
+  local entry = rr[#rr]
+  if not disk_lines_match(entry.src_path, entry.src_row, entry.old_lines) then
+    log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+    return false
+  end
+  rr[#rr] = nil
+  local ok = M.apply_source_edit(entry.src_path, entry.src_row, entry.new_lines, {
+    count = entry.old_count,
+    dashboard_bufnr = dashboard_bufnr,
+    skip_record = true,
+  })
+  if not ok then
+    rr[#rr + 1] = entry
+    return false
+  end
+  M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
+  local r = M._undo_ring[dashboard_bufnr]
+  r[#r + 1] = entry
+  local render = require("obsidian-tasks.render")
+  if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
+    pcall(render.rerender_buffer, dashboard_bufnr)
+  end
+  return true
+end
+
+--- Drop all undo/redo history for *dashboard_bufnr*.  Called on BufDelete and
+--- on manual refresh (<leader>tr / refresh_with_clear_lingers).
+---
+--- @param dashboard_bufnr integer
+function M.clear_dashboard_undo(dashboard_bufnr)
+  M._undo_ring[dashboard_bufnr] = nil
+  M._redo_ring[dashboard_bufnr] = nil
 end
 
 --- Commit a row-level edit for a resolved task.

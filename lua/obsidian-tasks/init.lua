@@ -11,6 +11,7 @@ M.opts = {}
 --- highlights on reload).
 local function register_default_hls()
   vim.api.nvim_set_hl(0, "ObsidianTasksLinger", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "ObsidianTasksFieldInvalid", { link = "DiagnosticUnderlineError", default = true })
 end
 
 --- Bootstrap the plugin.
