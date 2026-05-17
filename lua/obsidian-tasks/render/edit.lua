@@ -309,7 +309,11 @@ function M.flush(bufnr)
     return
   end
 
+  -- Collect changed rows (MUTATE / REPAIR_AND_MUTATE) and deleted rows in one
+  -- pass.  Deleted rows (new_text == nil, i.e. the buffer line no longer
+  -- exists) are separated out so the P7 gate can count them independently.
   local changed = {} -- { row, meta, new_text, old_text, label }
+  local delete_rows = {} -- { row, meta } for rows where new_text == nil
   for _, region in ipairs(all_regions) do
     for row = region[1], region[2] do
       local meta = meta_by_row[row]
@@ -317,7 +321,10 @@ function M.flush(bufnr)
         local cur_lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
         local new_text = cur_lines[1]
         local old_text = meta.rendered_text
-        if new_text ~= nil and old_text ~= nil and new_text ~= old_text then
+        if new_text == nil then
+          -- Row no longer exists in the buffer → DELETE candidate.
+          delete_rows[#delete_rows + 1] = { row = row, meta = meta }
+        elseif old_text ~= nil and new_text ~= old_text then
           local label = revert.classify(bufnr, row, old_text, new_text, {})
           changed[#changed + 1] = {
             row = row,
@@ -331,36 +338,26 @@ function M.flush(bufnr)
     end
   end
 
-  -- ── P7: mass-delete safety gate (stub) ────────────────────────────────────
-  -- Count managed rows that no longer exist in the buffer (new_text == nil).
-  -- These are DELETE candidates.  This check sits BEFORE the #changed == 0
-  -- early-return so the gate fires even when every edit in the tick is a
-  -- DELETE (e.g. ggdG empties the buffer — changed would be {}, but
-  -- delete_count can be 2+).
+  -- ── P7: mass-delete safety gate ───────────────────────────────────────────
+  -- If 2+ managed rows were deleted in this tick, check whether every
+  -- registered tasks block still has its opening and closing fences.
   --
-  -- RED stub: gate.query_block_intact always returns true (no-op); the real
-  -- detection and revert logic is wired by ot-6hvw (GREEN).
-  do
-    local delete_count = 0
-    for _, region in ipairs(all_regions) do
-      for row = region[1], region[2] do
-        local m = meta_by_row[row]
-        if m then
-          local cur = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
-          if cur[1] == nil then
-            delete_count = delete_count + 1
-          end
-        end
-      end
-    end
-    if delete_count >= 2 then
-      local gate = require("obsidian-tasks.render.gate")
-      -- Stub: result intentionally ignored until GREEN implements real gate.
-      gate.query_block_intact(bufnr)
+  --   delete_count == 1  → single `dd`; skip gate, propagate normally.
+  --   delete_count >= 2, block intact  → propagate (intact multi-delete).
+  --   delete_count >= 2, block broken  → revert all; warn; return early.
+  --
+  -- Gate runs BEFORE apply_source_edit so no linger entries are recorded for
+  -- the rejected batch (satisfies the ot-3scr architect note).
+  if #delete_rows >= 2 then
+    local gate = require("obsidian-tasks.render.gate")
+    if not gate.query_block_intact(bufnr) then
+      log.warn("dashboard cleared — source untouched")
+      M.flush_queue[bufnr] = nil
+      return
     end
   end
 
-  if #changed == 0 then
+  if #changed == 0 and #delete_rows == 0 then
     M.flush_queue[bufnr] = nil
     return
   end
@@ -417,6 +414,36 @@ function M.flush(bufnr)
     -- do_revert (from the on_lines listener) will restore those rows.
   end
 
+  -- ── P7: batch DELETE rows into per-src_path edits ─────────────────────────
+  -- Each deleted managed row removes its corresponding source line via an
+  -- apply_source_edit call with new_lines={} (count=1 delete).
+  -- Batching into edits_by_file ensures a single read+write per source file
+  -- and a single undo ring entry for the whole flush (Q13 semantics apply
+  -- to deletes just as they do to mutates).
+  for _, dr in ipairs(delete_rows) do
+    local meta = dr.meta
+    local src_path = meta.source_file
+    if not edits_by_file[src_path] then
+      edits_by_file[src_path] = { batch = {}, dash_entries = {} }
+    end
+    local file_data = edits_by_file[src_path]
+    local idx = #file_data.batch + 1
+    file_data.batch[idx] = {
+      row = meta.source_row,
+      new_lines = {}, -- delete: 0 replacement lines
+      count = 1,
+      expected_text = meta.task_text,
+    }
+    file_data.dash_entries[idx] = {
+      dash_row = dr.row,
+      meta = meta,
+      write_text = nil, -- no new content for a deletion
+      wikilink_suffix = "",
+      prefix_inserted = 0,
+      label = "DELETE",
+    }
+  end
+
   -- ── 3. Apply edits per source file ─────────────────────────────────────────
 
   -- Note the undo ring length before writes so we can merge multi-file entries.
@@ -459,43 +486,46 @@ function M.flush(bufnr)
         for i, re in ipairs(result.entries) do
           if re.applied then
             local de = file_data.dash_entries[i]
-            local task_before = task_parse_mod.parse(de.meta.task_text)
-            local task_after = task_parse_mod.parse(de.write_text)
-            if task_before and task_after then
-              -- Look up the current group/index and the block's query directives
-              -- from the last render's buffer state so _would_move has full context.
-              local cur_group_name = nil
-              local cur_group_index = nil
-              local cur_group_by = {}
-              local cur_sort_by = {}
-              local bs = render_init._buffer_state[bufnr]
-              if bs then
-                for _, blk in ipairs(bs) do
-                  local row_meta = blk.line_map and blk.line_map[de.dash_row]
-                  if row_meta then
-                    cur_group_name = row_meta.group_name
-                    cur_group_index = row_meta.group_index
-                    cur_group_by = blk.group_by or {}
-                    cur_sort_by = blk.sort_by or {}
-                    break
+            -- DELETE entries have no write_text; skip linger detection.
+            if de.label ~= "DELETE" then
+              local task_before = task_parse_mod.parse(de.meta.task_text)
+              local task_after = task_parse_mod.parse(de.write_text)
+              if task_before and task_after then
+                -- Look up the current group/index and the block's query directives
+                -- from the last render's buffer state so _would_move has full context.
+                local cur_group_name = nil
+                local cur_group_index = nil
+                local cur_group_by = {}
+                local cur_sort_by = {}
+                local bs = render_init._buffer_state[bufnr]
+                if bs then
+                  for _, blk in ipairs(bs) do
+                    local row_meta = blk.line_map and blk.line_map[de.dash_row]
+                    if row_meta then
+                      cur_group_name = row_meta.group_name
+                      cur_group_index = row_meta.group_index
+                      cur_group_by = blk.group_by or {}
+                      cur_sort_by = blk.sort_by or {}
+                      break
+                    end
                   end
                 end
-              end
-              local move_result = M._would_move(task_before, task_after, {
-                group_by = cur_group_by,
-                sort_by = cur_sort_by,
-                src_path = de.meta.source_file,
-                current_group_name = cur_group_name,
-                current_index = cur_group_index,
-              })
-              if move_result.moves then
-                render_init._record_pending_linger(
-                  bufnr,
-                  de.meta.source_file,
-                  (de.meta.source_row or 0) + 1, -- convert 0-indexed to 1-indexed
-                  nil, -- source_text_hash (not yet available at flush time)
-                  task_after
-                )
+                local move_result = M._would_move(task_before, task_after, {
+                  group_by = cur_group_by,
+                  sort_by = cur_sort_by,
+                  src_path = de.meta.source_file,
+                  current_group_name = cur_group_name,
+                  current_index = cur_group_index,
+                })
+                if move_result.moves then
+                  render_init._record_pending_linger(
+                    bufnr,
+                    de.meta.source_file,
+                    (de.meta.source_row or 0) + 1, -- convert 0-indexed to 1-indexed
+                    nil, -- source_text_hash (not yet available at flush time)
+                    task_after
+                  )
+                end
               end
             end
           end
@@ -504,9 +534,13 @@ function M.flush(bufnr)
 
       -- Update live extmark meta to reflect the new canonical state so future
       -- on_lines comparisons use the post-flush rendered and source texts.
+      -- DELETE entries have no new content and their extmarks will be orphaned;
+      -- skip the update to avoid nil-concatenation crashes.
       for _, de in ipairs(file_data.dash_entries) do
-        de.meta.task_text = de.write_text
-        de.meta.rendered_text = de.write_text .. de.wikilink_suffix
+        if de.label ~= "DELETE" then
+          de.meta.task_text = de.write_text
+          de.meta.rendered_text = de.write_text .. de.wikilink_suffix
+        end
       end
 
       -- Q10: REPAIR_AND_MUTATE — splice the repaired row back into the buffer
@@ -525,8 +559,11 @@ function M.flush(bufnr)
       -- row; we restore the extmark position after each successful flush so
       -- task_meta_for_row remains callable at the original row (Q12 post-flush
       -- source_row check, future edits, etc.).
+      -- DELETE entries have no live dashboard row to anchor to; skip them.
       for _, de in ipairs(file_data.dash_entries) do
-        managed_mod.reanchor_task(bufnr, de.meta, de.dash_row)
+        if de.label ~= "DELETE" then
+          managed_mod.reanchor_task(bufnr, de.meta, de.dash_row)
+        end
       end
 
       -- Refresh source-buffer diagnostics so invalid-field highlights are

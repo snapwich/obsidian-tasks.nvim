@@ -80,10 +80,10 @@ local function install_multi_file_stub(src_paths)
     for _, sp in ipairs(src_paths) do
       local ok, lines = pcall(vim.fn.readfile, sp)
       if ok then
-        for _, line in ipairs(lines) do
+        for line_num, line in ipairs(lines) do
           local task = task_parse.parse(line)
           if task then
-            all[#all + 1] = { task = task, path = sp }
+            all[#all + 1] = { task = task, path = sp, line_num = line_num }
           end
         end
       end
@@ -92,7 +92,7 @@ local function install_multi_file_stub(src_paths)
     return function()
       i = i + 1
       if all[i] then
-        return all[i].task, all[i].path, 1
+        return all[i].task, all[i].path, all[i].line_num
       end
     end
   end
