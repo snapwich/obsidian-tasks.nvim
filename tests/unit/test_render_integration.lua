@@ -58,9 +58,14 @@ local function make_index_stub(entries)
 end
 
 --- Force-reload render/init module (clears _buffer_state, _lazy_init_started).
+--- Saves and restores package.loaded so the module-identity invariant is
+--- preserved for flush() and other lazy-require callers in other test files.
 local function fresh_render()
+  local saved = package.loaded["obsidian-tasks.render.init"]
   package.loaded["obsidian-tasks.render.init"] = nil
-  return require("obsidian-tasks.render.init")
+  local m = require("obsidian-tasks.render.init")
+  package.loaded["obsidian-tasks.render.init"] = saved
+  return m
 end
 
 --- Return keymap callback for *lhs* in buffer *bufnr*, or nil.

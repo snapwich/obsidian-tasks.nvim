@@ -130,10 +130,15 @@ end
 -- ── Module under test ─────────────────────────────────────────────────────────
 
 -- Reset render/init module state between tests (it holds _buffer_state).
+-- Saves and restores package.loaded so that other modules (e.g. flush() in
+-- edit.lua) that do a lazy require("obsidian-tasks.render.init") keep
+-- referencing the same module table as integration-test top-level requires.
 local function get_render_mod()
-  -- Force a fresh module load to clear _buffer_state.
+  local saved = package.loaded["obsidian-tasks.render.init"]
   package.loaded["obsidian-tasks.render.init"] = nil
-  return require("obsidian-tasks.render.init")
+  local m = require("obsidian-tasks.render.init")
+  package.loaded["obsidian-tasks.render.init"] = saved
+  return m
 end
 
 -- ── has_tasks_block ───────────────────────────────────────────────────────────
