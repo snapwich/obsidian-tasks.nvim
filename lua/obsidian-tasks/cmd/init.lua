@@ -159,18 +159,18 @@ function M.apply_source_edit(file_path, row, new_lines, opts)
   local src_bufnr = loaded_source_buf(file_path)
 
   -- Same-buffer dashboard branch.  When the loaded source buffer is itself
-  -- a dashboard (buftype=acwrite), the buffer carries rendered task lines
-  -- below the fence that are not (and must not be) on disk.  The normal
-  -- disk-path's post-write buffer sync would overwrite the rendered region
-  -- with disk content (clobbering it); refusing on buf.modified would
-  -- block every edit (the buffer is always modified by render insertions).
+  -- a dashboard, the buffer carries rendered task lines below the fence
+  -- that are not (and must not be) on disk.  The normal disk-path's
+  -- post-write buffer sync would overwrite the rendered region with disk
+  -- content (clobbering it); refusing on buf.modified would block every
+  -- edit (the buffer is always modified by render insertions).
   --
   -- Strategy: write disk for the source row (via readfile + writefile so
   -- only that row changes on disk), then mutate the SAME row in the buffer
   -- (narrow nvim_buf_set_lines that leaves the rendered region intact).
   -- Index refresh then reads the now-up-to-date disk and the next rerender
   -- correctly reflects the new state.
-  if src_bufnr and vim.bo[src_bufnr].buftype == "acwrite" then
+  if src_bufnr and vim.b[src_bufnr].obsidian_tasks_dashboard then
     local ok_r, disk_lines = pcall(vim.fn.readfile, file_path)
     if not ok_r or type(disk_lines) ~= "table" then
       log.warn("obsidian-tasks: failed to read " .. file_path)

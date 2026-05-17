@@ -223,22 +223,23 @@ end
 
 -- ── Clear ────────────────────────────────────────────────────────────────────
 
--- ── Same-buffer dashboard (acwrite) branch ───────────────────────────────────
+-- ── Same-buffer dashboard branch ─────────────────────────────────────────────
 -- When the source file IS the dashboard buffer (e.g. task lives in the same
 -- file as the ```tasks block), apply_source_edit must mutate the buffer
 -- directly rather than round-tripping through disk.  The buffer is always
 -- "modified" due to our render insertions, so the modified-refusal in the
 -- disk path doesn't apply.
 
-T["apply_source_edit: acwrite branch mutates buffer without refusal"] = function()
+T["apply_source_edit: dashboard branch mutates buffer without refusal"] = function()
   local _ = fresh_dashboard()
   local path = vim.fn.tempname() .. ".md"
   vim.fn.writefile({ "- [ ] task A", "- [ ] task B" }, path)
 
-  -- Load the file as a buffer and mark it acwrite (simulates a dashboard).
+  -- Load the file as a buffer and mark it as a dashboard (sentinel-only;
+  -- buftype stays "").
   local b = vim.fn.bufadd(path)
   vim.fn.bufload(b)
-  vim.bo[b].buftype = "acwrite"
+  vim.b[b].obsidian_tasks_dashboard = true
 
   -- Add render-like decoration so the buffer is "modified".
   vim.api.nvim_buf_set_lines(b, -1, -1, false, { "rendered task line" })
@@ -254,7 +255,7 @@ T["apply_source_edit: acwrite branch mutates buffer without refusal"] = function
   eq(lines[2], "- [ ] task B")
   eq(lines[3], "rendered task line", "render decoration preserved")
 
-  vim.bo[b].buftype = ""
+  vim.b[b].obsidian_tasks_dashboard = nil
   vim.bo[b].modified = false
   vim.api.nvim_buf_delete(b, { force = true })
   vim.fn.delete(path)

@@ -634,7 +634,7 @@ end
 
 T["AC9: no BufWritePre autocmd registered by obsidian-tasks"] = function()
   -- Check that no autocmd group owned by this plugin uses BufWritePre.
-  -- The plugin uses BufWriteCmd (registered per-buffer by save.set_acwrite).
+  -- The plugin uses BufWriteCmd (registered per-buffer by save.attach).
   local groups = vim.api.nvim_get_autocmds({ event = "BufWritePre" })
   local plugin_bwp = false
   for _, ac in ipairs(groups) do

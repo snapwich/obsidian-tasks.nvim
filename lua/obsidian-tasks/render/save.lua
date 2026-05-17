@@ -2,20 +2,22 @@
 -- BufWriteCmd save handler for dashboard buffers.
 --
 -- Responsibilities:
---   • set_acwrite(bufnr)   — mark a rendered buffer as acwrite (once) and
+--   • attach(bufnr)        — mark a rendered buffer as a dashboard (once) and
 --                            register a buffer-local BufWriteCmd handler.
 --   • on_write_cmd(args)   — write only non-managed lines to disk; never
 --                            mutate the buffer; fire BufWritePost manually.
 --
--- The "acwrite" buftype tells Neovim that the buffer is written via a
--- BufWriteCmd handler rather than the built-in file I/O.  This lets the
--- plugin intercept :w, compute which rows to skip (rendered task lines
--- tracked by region extmarks), and write only source content.
+-- A buffer-local BufWriteCmd autocmd fully replaces Neovim's built-in write
+-- pipeline for :w / :w! / :saveas (verified empirically): no buftype change
+-- required.  When BufWriteCmd is registered, BufWritePre does not fire, which
+-- gives us the "no other plugin mutates the buffer before save" guarantee
+-- without setting buftype = "acwrite" (which broke plugins like trouble.nvim
+-- that gate on buftype == "" to decide "this is a normal file buffer").
 --
 -- Buffer mutation during save is intentionally absent:
 --   Old BufWritePre approach: strip rendered lines → write → re-render.
 --     Side-effects: flicker, undo pollution, race conditions.
---   New BufWriteCmd approach: read buffer, filter rows, writefile.
+--   BufWriteCmd approach: read buffer, filter rows, writefile.
 --     The buffer is never touched; BufWritePost re-render is delegated to
 --     the autocmds.lua handler that already listens for that event.
 
@@ -77,24 +79,25 @@ function M.compute_managed_ranges(bufnr)
   return managed.all_regions(bufnr)
 end
 
---- Mark *bufnr* as acwrite and register a buffer-local BufWriteCmd handler.
+--- Mark *bufnr* as a dashboard and register a buffer-local BufWriteCmd handler.
 ---
---- acwrite buftype: the buffer behaves like a file but all write operations go
---- through BufWriteCmd rather than Neovim's built-in I/O.  This means :w will
---- call our handler which filters out managed (rendered) rows before writing.
+--- The handler intercepts :w / :w! / :saveas: Neovim's built-in writer is
+--- skipped, and our callback filters out managed (rendered) rows before
+--- calling writefile.  Buftype is left unchanged (== "") so plugins that
+--- gate on buftype == "" still treat the buffer as a normal file buffer.
 ---
---- Idempotent: if the buffer is already acwrite the function returns immediately
---- without registering a duplicate handler.
+--- Idempotent: if the buffer is already marked as a dashboard the function
+--- returns immediately without registering a duplicate handler.
 ---
 --- @param bufnr integer
-function M.set_acwrite(bufnr)
+function M.attach(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  if vim.bo[bufnr].buftype == "acwrite" then
+  if vim.b[bufnr].obsidian_tasks_dashboard then
     return -- handler already registered on first draw
   end
-  vim.bo[bufnr].buftype = "acwrite"
+  vim.b[bufnr].obsidian_tasks_dashboard = true
 
   -- Snapshot disk mtime now so on_write_cmd can detect external edits that
   -- occur after the buffer is loaded.  Re-snapshotted after each successful
@@ -147,8 +150,8 @@ function M.on_write_cmd(args)
   local filepath = args.file
 
   -- Refuse :w when the file changed on disk since the buffer was last read,
-  -- matching Vim's E13 protection (acwrite bypasses Vim's built-in check, so
-  -- we re-implement it).  Override with :w! via v:cmdbang.
+  -- matching Vim's E13 protection (BufWriteCmd replaces Vim's built-in
+  -- writer, so we re-implement the check).  Override with :w! via v:cmdbang.
   local bang = vim.v.cmdbang == 1
   if not bang then
     local stored = vim.b[bufnr].obsidian_tasks_disk_mtime

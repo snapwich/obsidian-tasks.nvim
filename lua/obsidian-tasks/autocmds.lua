@@ -188,8 +188,9 @@ function M.setup(opts)
   --     tasks blocks).  Uses rerender_buffer to preserve fold state and
   --     implement block lifecycle (new/deleted blocks).
   --
-  -- For dashboard buffers (acwrite), this event is fired manually by the
-  -- BufWriteCmd handler in render/save.lua after writefile succeeds.
+  -- For dashboard buffers, this event is fired manually by the BufWriteCmd
+  -- handler in render/save.lua after writefile succeeds (BufWriteCmd
+  -- replaces Neovim's writer, so BufWritePost is not auto-emitted).
   -- For regular .md buffers written via the normal Neovim path, this fires
   -- automatically after the file is saved on disk.
   vim.api.nvim_create_autocmd("BufWritePost", {

@@ -10,8 +10,9 @@
 --   • drops garbage typed into a managed row (acceptable — T6 makes them R/O)
 --   • handles the no-managed-regions case: all lines written as-is
 --
--- Also verifies that draw.draw() sets buftype = "acwrite" on first render so
--- Neovim routes :w through the plugin's BufWriteCmd handler.
+-- Also verifies that draw.draw() registers the BufWriteCmd handler on first
+-- render and marks the buffer with vim.b.obsidian_tasks_dashboard so :w
+-- routes through the plugin's filtered-write handler.
 --
 -- Tests call save.on_write_cmd() directly rather than triggering :w so they
 -- stay synchronous and do not depend on autocmd plumbing from init.setup().
@@ -255,18 +256,26 @@ T["on_write_cmd: buffer lines unchanged after write (no mutation)"] = function()
   end
 end
 
--- ── set_acwrite: buftype set on first render ──────────────────────────────────
+-- ── attach: dashboard sentinel set + BufWriteCmd registered on first draw ────
 
-T["draw: buftype is acwrite after first draw"] = function()
+T["draw: dashboard sentinel set after first draw, buftype unchanged"] = function()
   local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local buftype_before = vim.bo[bufnr].buftype
 
   draw_mod.draw(bufnr, { 0, 2 }, simple_layout("- [ ] T", "/v/note.md", 1))
 
-  local buftype = vim.bo[bufnr].buftype
+  local sentinel = vim.b[bufnr].obsidian_tasks_dashboard
+  local buftype_after = vim.bo[bufnr].buftype
+  local autocmds = vim.api.nvim_get_autocmds({ event = "BufWriteCmd", buffer = bufnr })
   draw_mod.clear(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  eq(buftype, "acwrite")
+  eq(sentinel, true)
+  -- The previous implementation flipped buftype to "acwrite"; the regression
+  -- guard is that buftype stays whatever it was (and is NOT "acwrite").
+  eq(buftype_after, buftype_before)
+  MiniTest.expect.equality(buftype_after ~= "acwrite", true)
+  eq(#autocmds, 1)
 end
 
 -- ── compute_managed_ranges reflects live extmark positions ───────────────────
@@ -417,27 +426,62 @@ T["on_write_cmd: write failure leaves modified=true, suppresses BufWritePost, ca
   MiniTest.expect.equality(error_msgs[1]:find("/no/such/dir/file.md", 1, true) ~= nil, true)
 end
 
--- ── set_acwrite: idempotency — no duplicate BufWriteCmd handlers ──────────────
+-- ── attach: idempotency — no duplicate BufWriteCmd handlers ──────────────────
 --
--- Calling set_acwrite(bufnr) twice must not register a duplicate BufWriteCmd
+-- Calling attach(bufnr) twice must not register a duplicate BufWriteCmd
 -- autocmd.  This is reachable in normal usage: render.refresh_buffer clears
 -- _state[bufnr] (setting is_first_for_buf = true again on the next draw), so
--- set_acwrite can be re-entered for the same buffer.
+-- attach can be re-entered for the same buffer.
 --
 -- A duplicate handler would fire on_write_cmd twice per :w, corrupting the
 -- modified flag and double-firing BufWritePost.
 
-T["set_acwrite: calling twice registers exactly one BufWriteCmd autocmd"] = function()
+T["attach: calling twice registers exactly one BufWriteCmd autocmd"] = function()
   local bufnr = vim.api.nvim_create_buf(false, true)
 
-  save.set_acwrite(bufnr)
-  save.set_acwrite(bufnr) -- second call must be a no-op
+  save.attach(bufnr)
+  save.attach(bufnr) -- second call must be a no-op
 
   local autocmds = vim.api.nvim_get_autocmds({ event = "BufWriteCmd", buffer = bufnr })
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
   -- Exactly one BufWriteCmd handler must be registered (not two).
   eq(#autocmds, 1)
+end
+
+-- ── BufWritePre does NOT fire on a dashboard :w ──────────────────────────────
+--
+-- Vim's documented behavior: when BufWriteCmd is registered for a buffer,
+-- the entire write pipeline is replaced — BufWritePre/BufWrite/BufWritePost
+-- are not auto-emitted.  This is what gives us the "no other plugin mutates
+-- the buffer before save" guarantee even though buftype is "".  If this
+-- ever regresses, plugins (LSP formatters, prettier-on-save, etc.) could
+-- mutate the buffer in BufWritePre and bypass our managed-row filter.
+
+T['attach: BufWritePre is suppressed on :w even with buftype=""'] = function()
+  local tmpfile = vim.fn.tempname() .. ".md"
+  vim.fn.writefile({ "seed" }, tmpfile)
+  vim.cmd("noswapfile edit " .. vim.fn.fnameescape(tmpfile))
+  local bufnr = vim.api.nvim_get_current_buf()
+
+  save.attach(bufnr)
+
+  local pre_fired = false
+  vim.api.nvim_create_autocmd("BufWritePre", {
+    buffer = bufnr,
+    callback = function()
+      pre_fired = true
+    end,
+  })
+
+  vim.cmd("silent! write")
+
+  local buftype = vim.bo[bufnr].buftype
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(tmpfile)
+
+  eq(pre_fired, false)
+  eq(buftype, "")
 end
 
 return T

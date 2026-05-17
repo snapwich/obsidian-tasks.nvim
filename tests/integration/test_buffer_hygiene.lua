@@ -118,6 +118,10 @@ end
 
 T["rerender_buffer preserves modified=true when user edited a query line"] = function()
   with_render("- [ ] task", function(bufnr)
+    -- Scratch buffers (buftype=nofile) silently reject `modified = true`,
+    -- which would mask the behavior under test.  Clear the buftype so the
+    -- buffer accepts the flag like a real file-backed .md dashboard does.
+    vim.bo[bufnr].buftype = ""
     render.render_buffer(bufnr, nil)
     vim.bo[bufnr].modified = false
     hygiene.mark_clean(bufnr)

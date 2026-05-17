@@ -23,7 +23,7 @@ local function read_disk(path)
   return ok and lines or {}
 end
 
--- ── apply_source_edit acwrite branch round-trip ──────────────────────────────
+-- ── apply_source_edit dashboard branch round-trip ────────────────────────────
 
 T["same-buffer toggle: disk + buffer + index all synchronized after edit"] = function()
   local path = make_vault_file({
@@ -42,7 +42,8 @@ T["same-buffer toggle: disk + buffer + index all synchronized after edit"] = fun
   local bufnr = vim.api.nvim_get_current_buf()
   vim.bo[bufnr].filetype = "markdown"
   require("obsidian-tasks.render").render_buffer(bufnr, Obsidian.workspace)
-  eq(vim.bo[bufnr].buftype, "acwrite")
+  eq(vim.b[bufnr].obsidian_tasks_dashboard, true)
+  eq(vim.bo[bufnr].buftype, "") -- regression: must NOT be "acwrite"
 
   local cmd = require("obsidian-tasks.cmd")
   local ok = cmd.apply_source_edit(path, 2, { "- [x] tA #task 📅 2026-05-20" }, { dashboard_bufnr = bufnr })
@@ -140,9 +141,9 @@ T["same-buffer toggle: second toggle on rendered row round-trips back"] = functi
   vim.fn.delete(path)
 end
 
--- ── Undo round-trips through the acwrite branch ──────────────────────────────
+-- ── Undo round-trips through the same-buffer branch ─────────────────────────
 
-T["same-buffer toggle: dashboard_undo replays via acwrite branch"] = function()
+T["same-buffer toggle: dashboard_undo replays via same-buffer branch"] = function()
   local path = make_vault_file({
     "# repro",
     "",
