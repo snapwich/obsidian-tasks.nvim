@@ -254,6 +254,25 @@ function M.setup(opts)
     end,
   })
 
+  -- ── InsertLeave ─────────────────────────────────────────────────────────────
+  -- Flush any queued edit-in-place mutations for managed dashboard buffers
+  -- when the user leaves insert mode.  This defers insert-mode edits until
+  -- the user presses <Esc> / <C-c>, at which point the full edited line is
+  -- available for classification and propagation to the source file.
+  --
+  -- Flush is a no-op stub until render/edit.lua is fully implemented (P5).
+  vim.api.nvim_create_autocmd("InsertLeave", {
+    group = group,
+    callback = function(ev)
+      local bufnr = ev.buf
+      if vim.b[bufnr].obsidian_tasks_dashboard then
+        pcall(function()
+          require("obsidian-tasks.render.edit").flush(bufnr)
+        end)
+      end
+    end,
+  })
+
   -- ── BufDelete ───────────────────────────────────────────────────────────────
   -- Clear render state when a buffer is removed to avoid stale entries.
   vim.api.nvim_create_autocmd("BufDelete", {

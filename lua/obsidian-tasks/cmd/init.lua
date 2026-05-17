@@ -112,6 +112,21 @@ local function loaded_source_buf(file_path)
   return nil
 end
 
+--- Locate a source row near *expected_row* by content-search within ±10 rows.
+---
+--- Searches the file at *src_path* for *expected_text* in the window
+--- [expected_row-10, expected_row+10].  When multiple rows match, the one
+--- closest to *expected_row* is returned.  When no row in the window matches,
+--- returns nil (caller should revert + notify).
+---
+--- @param src_path      string   path to the source file
+--- @param expected_row  integer  0-indexed expected row
+--- @param expected_text string   verbatim task text to search for
+--- @return integer|nil  0-indexed located row, or nil when not found within ±10
+function M.locate(_src_path, _expected_row, _expected_text)
+  return nil
+end
+
 --- Apply a single-row edit to a source file and persist it.
 ---
 --- The replacement may have 0 (delete), 1 (replace), or N (expand) lines.
@@ -134,6 +149,13 @@ end
 --- map) — this mirrors the BufWritePost propagation in autocmds.lua, which
 --- can't fire here because writefile doesn't trigger BufWritePost.
 ---
+--- **Batched edits** (opts.batch): when opts.batch is an array of
+--- { row, new_lines, count? } entries for *file_path*, all edits are aggregated
+--- and written in a single readfile/writefile round-trip, applied bottom-up so
+--- row indices remain valid throughout.  Batches across multiple src_paths are
+--- handled by grouping: callers should invoke apply_source_edit once per file
+--- with all per-file edits in opts.batch.
+---
 --- @param file_path string
 --- @param row       integer    0-indexed first row affected
 --- @param new_lines string[]   replacement lines (0 = delete, 1 = replace, N = expand)
@@ -147,9 +169,19 @@ end
 ---                               skip_record      — when true, do not push this
 ---                                                  edit into the undo ring.
 ---                                                  Used by undo/redo replays.
+---                               batch            — array of { row, new_lines,
+---                                                  count? } entries for a
+---                                                  multi-row grouped write.
+---                                                  Applied bottom-up per file.
 --- @return boolean ok
 function M.apply_source_edit(file_path, row, new_lines, opts)
   opts = opts or {}
+
+  -- Batched edits stub: raise until the GREEN task wires the real implementation.
+  if opts.batch ~= nil then
+    error("batched apply_source_edit not implemented")
+  end
+
   local count = opts.count or 1
   if type(count) ~= "number" or count < 0 then
     log.warn("obsidian-tasks: invalid count " .. tostring(count))

@@ -541,6 +541,29 @@ function M._cleanup(bufnr)
   _rerender_fn[bufnr] = nil
 end
 
+--- Classify a single-row edit on a managed dashboard row.
+---
+--- Classification branches:
+---   "DELETE"            — new_text is empty or whitespace-only
+---   "MUTATE"            — description or field change on a valid task line
+---   "REPAIR_AND_MUTATE" — structural repair needed (missing `- ` prefix or
+---                         `[ ]` checkbox); description/field change accepted
+---   "INSERT"            — unmanaged row appearing between managed rows
+---   "MULTI_LINE"        — neighbouring rows also changed in the same tick
+---   "REVERT"            — no bullet/checkbox in a multi-line context → revert
+---
+--- Status-flip edits route through this function as a MUTATE branch.
+---
+--- @param bufnr    integer  dashboard buffer
+--- @param row      integer  0-indexed row being classified
+--- @param old_text string   canonical rendered text for this row (at render time)
+--- @param new_text string   current buffer content for this row after the edit
+--- @param ctx      table    edit context: { is_multi_line: boolean, ... }
+--- @return string|nil  classification label, or nil (stub — not implemented)
+function M.classify(_bufnr, _row, _old_text, _new_text, _ctx)
+  return nil
+end
+
 --- Return internal state snapshot for tests.
 --- @param bufnr integer
 --- @return table  { suppress, scheduled, attached }

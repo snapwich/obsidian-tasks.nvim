@@ -610,26 +610,24 @@ T["AC8: render does not set conceallevel or apply conceal_lines extmarks"] = fun
   eq(has_conceal, false, "AC8: no extmark must have a conceal_lines field")
 end
 
--- ── AC9: F4 removed ──────────────────────────────────────────────────────────
--- render/edit.lua does not exist.
--- No BufWritePre autocmd is registered by the plugin (plugin uses BufWriteCmd).
+-- ── AC9: F4 removed; P5 render/edit.lua is the new flush-queue module ────────
+-- The OLD F4 render/edit.lua (User:ObsidianNoteWritePre diff+patch+strip) was
+-- removed.  P5 (ot-17ts) introduces a NEW render/edit.lua as a tick-coalesced
+-- flush queue — this file is expected to exist.  The guard here ensures:
+--   • The new render/edit.lua is loadable (not the old F4 module).
+--   • No BufWritePre autocmd is registered by the plugin (plugin uses BufWriteCmd).
+--   • No ObsidianNoteWritePre handler references render/edit (F4 behavior gone).
 
-T["AC9: render/edit.lua does not exist"] = function()
-  -- Locate the plugin's lua directory.
-  local plugin_dir = nil
-  for _, path in ipairs(vim.api.nvim_list_runtime_paths()) do
-    local candidate = path .. "/lua/obsidian-tasks/render/edit.lua"
-    if vim.fn.filereadable(candidate) == 1 then
-      plugin_dir = candidate
-      break
-    end
-  end
-  -- Also check relative to the current working directory (worktree context).
-  local cwd_candidate = vim.fn.getcwd() .. "/lua/obsidian-tasks/render/edit.lua"
-  local exists_in_cwd = vim.fn.filereadable(cwd_candidate) == 1
-
-  eq(plugin_dir, nil, "AC9: render/edit.lua must not exist in any runtimepath")
-  eq(exists_in_cwd, false, "AC9: render/edit.lua must not exist in cwd")
+T["AC9: render/edit.lua exists as P5 flush-queue module (not old F4 module)"] = function()
+  -- P5 introduced render/edit.lua as the tick-coalesced flush-queue module.
+  -- Verify it is loadable and exposes the expected P5 surface (flush_queue table,
+  -- flush function, on_lines_hook function).  The OLD F4 module had none of these.
+  local ok, edit_mod = pcall(require, "obsidian-tasks.render.edit")
+  eq(ok, true, "AC9: render/edit.lua must be loadable (P5 flush-queue module)")
+  MiniTest.expect.no_equality(edit_mod, nil, "AC9: render/edit module must not be nil")
+  eq(type(edit_mod.flush_queue), "table", "AC9: render/edit must expose flush_queue table (P5 API)")
+  eq(type(edit_mod.flush), "function", "AC9: render/edit must expose flush function (P5 API)")
+  eq(type(edit_mod.on_lines_hook), "function", "AC9: render/edit must expose on_lines_hook (P5 API)")
 end
 
 T["AC9: no BufWritePre autocmd registered by obsidian-tasks"] = function()
