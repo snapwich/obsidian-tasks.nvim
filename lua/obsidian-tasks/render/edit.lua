@@ -33,6 +33,10 @@ M.flush_queue = {}
 --- Strip the wikilink suffix ' [[<basename>]]' from *text* when it matches
 --- the expected basename for *src_path*.  Returns *text* unchanged otherwise.
 ---
+--- Delegates to render/wikilink.strip_expected_suffix so the flush path and the
+--- public helper share a single implementation (unit tests for strip_expected_suffix
+--- therefore cover the code that actually runs during flush).
+---
 --- @param text     string
 --- @param src_path string
 --- @return string
@@ -41,11 +45,7 @@ local function strip_wikilink_suffix(text, src_path)
     return text
   end
   local basename = vim.fn.fnamemodify(src_path, ":t:r")
-  local suffix = " [[" .. basename .. "]]"
-  if #text >= #suffix and text:sub(-#suffix) == suffix then
-    return text:sub(1, -(#suffix + 1))
-  end
-  return text
+  return require("obsidian-tasks.render.wikilink").strip_expected_suffix(text, basename)
 end
 
 --- Q2 date normalization: replace natural-language date values with ISO dates.
