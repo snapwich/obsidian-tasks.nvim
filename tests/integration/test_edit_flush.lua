@@ -613,13 +613,31 @@ T["edit flush: Q10 cursor shifts right when structural repair adds prefix"] = fu
 end
 
 -- ── blink.cmp commit during insert mode triggers flush on InsertLeave ─────────
+-- Simulates the user typing `📅 ` to start a date field, blink.cmp offering
+-- "2024-12-31" as a completion, and the user accepting with <CR>.  The
+-- accepted completion is inserted into the buffer (before #task); on <Esc>
+-- the InsertLeave autocmd calls flush(bufnr) which strips the wikilink suffix
+-- and writes the updated task line to the source file.
+--
+-- Source task: "- [ ] Complete me #task" (no date field).
+-- After blink.cmp acceptance: 📅 2024-12-31 is inserted before #task.
+-- Expected source: "- [ ] Complete me 📅 2024-12-31 #task".
+--
+-- NOTE: Using a plain-text source task (no 📅 with empty value) avoids the
+-- parse-drop edge case: `📅 #task` parses to an empty due-field value which
+-- the serializer omits, so the rendered canonical does not contain "📅 ".
+-- Starting from a plain task and inserting "📅 2024-12-31 " produces a
+-- well-formed date field that flush can write verbatim.
 
 T["edit flush: blink.cmp completion commit flushes on InsertLeave"] = function()
-  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Complete me 📅 #task")
+  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Complete me #task")
 
-  -- Simulate blink.cmp acceptance: the completion replaces the date field text.
+  -- Simulate blink.cmp acceptance: user started typing a date field (`📅 `)
+  -- and accepted the completion "2024-12-31".  The resulting line replaces
+  -- the plain "#task" suffix with "📅 2024-12-31 #task".
   local canonical = get_line(bufnr, TASK_ROW)
-  local after_completion = canonical:gsub("📅 ", "📅 2024-12-31 ")
+  -- canonical is e.g. "- [ ] Complete me #task [[<tmpname>]]"
+  local after_completion = canonical:gsub("#task", "📅 2024-12-31 #task", 1)
   set_line(bufnr, TASK_ROW, after_completion)
 
   -- Simulate <Esc> / InsertLeave: call flush directly.

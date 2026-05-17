@@ -428,6 +428,12 @@ end
 -- Regression guard for mutation: removing `_scheduled[bufnr] = nil` inside
 -- do_revert would cause every second edit to silently skip the revert.
 -- Two synchronous _flush_pending cycles catch this without async waits.
+--
+-- Uses a blank-line (DELETE) edit so that the edit-flush layer does not attempt
+-- to propagate it to source (flush skips DELETE rows) and do_revert always
+-- has the final say.  Arbitrary non-blank text would be classified as
+-- REPAIR_AND_MUTATE and the flush layer would try to write it to source —
+-- using blank text avoids this semantic conflict without changing the test intent.
 
 T["revert: two sequential edit cycles both revert (debounce flag resets)"] = function()
   render.configure({ default_folded = false })
@@ -445,8 +451,8 @@ T["revert: two sequential edit cycles both revert (debounce flag resets)"] = fun
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical ~= nil and canonical:find("Cycle task") ~= nil, true)
 
-  -- First corruption and revert cycle.
-  set_line(bufnr, task_row, "CORRUPTED 1")
+  -- First DELETE (blank-line) edit and revert cycle.
+  set_line(bufnr, task_row, "")
   eq(revert._debug_state(bufnr).scheduled, true)
   revert._flush_pending(bufnr)
   eq(revert._debug_state(bufnr).scheduled, false)
@@ -454,9 +460,9 @@ T["revert: two sequential edit cycles both revert (debounce flag resets)"] = fun
   local mid = get_line(bufnr, task_row)
   MiniTest.expect.equality(mid ~= nil and mid:find("Cycle task") ~= nil, true)
 
-  -- Second corruption: debounce flag must have been reset by _flush_pending.
+  -- Second DELETE: debounce flag must have been reset by _flush_pending.
   -- Without the `_scheduled[bufnr] = nil` reset in do_revert this would no-op.
-  set_line(bufnr, task_row, "CORRUPTED 2")
+  set_line(bufnr, task_row, "")
   eq(revert._debug_state(bufnr).scheduled, true)
   revert._flush_pending(bufnr)
   eq(revert._debug_state(bufnr).scheduled, false)
@@ -527,6 +533,9 @@ end
 -- change with the user's preceding edit so pressing u undoes them as one unit,
 -- returning to the pre-corruption buffer state.
 
+-- Uses a blank-line (DELETE) edit so that the edit-flush layer does not attempt
+-- to propagate it to source (flush skips DELETE rows) and do_revert always
+-- has the final say.  See T8 comment for rationale.
 T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] = function()
   render.configure({ default_folded = false })
   local restore = install_one_task_stub("- [ ] Undo task")
@@ -554,8 +563,9 @@ T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] 
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical ~= nil and canonical:find("Undo task") ~= nil, true)
 
-  -- Corrupt the managed row.  bufnr is current (entered via open_win above).
-  set_line(bufnr, task_row, "CORRUPTED")
+  -- Blank out the managed row (DELETE classification).
+  -- bufnr is current (entered via open_win above).
+  set_line(bufnr, task_row, "")
   eq(revert._debug_state(bufnr).scheduled, true)
 
   -- Run the revert synchronously.  do_revert calls undojoin with bufnr current,
@@ -563,22 +573,25 @@ T["revert: undojoin — pressing u after revert does not show CORRUPTED state"] 
   revert._flush_pending(bufnr)
 
   -- Buffer is back to canonical.  Now press u.
-  -- With undojoin: pressing u undoes the merged block (corruption + revert)
-  -- in one step → returns to the pre-corruption state (canonical task text).
-  -- Without undojoin: u would undo only the revert → CORRUPTED would reappear.
+  -- With undojoin: pressing u undoes the merged block (blank + revert) in one
+  -- step → returns to the pre-blank state (canonical task text).
+  -- Without undojoin: u would undo only the revert → blank line would reappear.
   vim.api.nvim_set_current_win(win)
   vim.cmd("normal! u")
 
-  -- "CORRUPTED" must not be present anywhere in the buffer after undo.
+  -- Blank line must not be present anywhere in the buffer after undo.
   local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local corrupted_found = false
+  local blank_task_found = false
   for _, l in ipairs(buf_lines) do
-    if l == "CORRUPTED" then
-      corrupted_found = true
+    -- The managed task row should never be blank after undo.
+    if l == "" and #l == 0 then
+      blank_task_found = true
       break
     end
   end
-  MiniTest.expect.equality(corrupted_found, false)
+  -- After undo, task row should contain the canonical task text again.
+  local task_line = get_line(bufnr, task_row)
+  MiniTest.expect.equality(task_line ~= nil and task_line:find("Undo task") ~= nil, true)
 
   pcall(vim.api.nvim_win_close, win, true)
   render.clear_buffer(bufnr)

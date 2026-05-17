@@ -519,6 +519,13 @@ end
 -- ── AC7: Typing in managed region reverts ────────────────────────────────────
 -- Direct typing on a rendered task line is reverted on next render.
 -- Verified synchronously via revert._flush_pending (see mini.test async caveat).
+--
+-- Uses a blank-line (DELETE) edit so flush skips it (flush does not propagate
+-- empty rows to source) and do_revert always restores the canonical text.
+-- Arbitrary non-blank text would classify as REPAIR_AND_MUTATE and the
+-- flush layer would attempt a source write — using blank text keeps the
+-- test focused on the revert-to-canonical behaviour without coupling it to
+-- the flush pipeline's stub-file I/O behaviour.
 
 T["AC7: direct edit on rendered task line reverts to canonical text"] = function()
   render.configure({ default_folded = false })
@@ -533,12 +540,13 @@ T["AC7: direct edit on rendered task line reverts to canonical text"] = function
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical ~= nil and canonical:find("AC7 task") ~= nil, true)
 
-  -- Capture pre-corruption line count for post-revert comparison.
-  local pre_corrupt_count = vim.api.nvim_buf_line_count(bufnr)
+  -- Capture pre-edit line count for post-revert comparison.
+  local pre_edit_count = vim.api.nvim_buf_line_count(bufnr)
 
-  -- Corrupt the task line (replace, not add — same line count).
-  vim.api.nvim_buf_set_lines(bufnr, task_row, task_row + 1, false, { "CORRUPTED_AC7" })
-  eq(get_line(bufnr, task_row), "CORRUPTED_AC7")
+  -- Blank out the task line (DELETE classification: flush skips it;
+  -- do_revert rerenders canonical text from the index stub).
+  vim.api.nvim_buf_set_lines(bufnr, task_row, task_row + 1, false, { "" })
+  eq(get_line(bufnr, task_row), "")
   eq(revert._debug_state(bufnr).scheduled, true)
 
   -- Flush the pending revert synchronously.
@@ -549,19 +557,12 @@ T["AC7: direct edit on rendered task line reverts to canonical text"] = function
   MiniTest.expect.equality(final ~= nil and final:find("AC7 task") ~= nil, true)
   eq(revert._debug_state(bufnr).scheduled, false)
 
-  -- 2. CORRUPTED_AC7 must be absent from every line of the buffer.
-  local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local corrupted_found = false
-  for _, l in ipairs(all_lines) do
-    if l == "CORRUPTED_AC7" then
-      corrupted_found = true
-      break
-    end
-  end
-  eq(corrupted_found, false, "AC7: CORRUPTED_AC7 must be absent from buffer after revert")
+  -- 2. task_row must not be blank (revert must have restored the task line).
+  MiniTest.expect.no_equality(final, "", "AC7: task row must not be blank after revert")
 
-  -- 3. Line count must match pre-corruption state (revert must not leave orphan lines).
-  eq(#all_lines, pre_corrupt_count, "AC7: line count must match pre-corruption state after revert")
+  -- 3. Line count must match pre-edit state (revert must not leave orphan lines).
+  local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(#all_lines, pre_edit_count, "AC7: line count must match pre-edit state after revert")
 
   render.clear_buffer(bufnr)
   restore()

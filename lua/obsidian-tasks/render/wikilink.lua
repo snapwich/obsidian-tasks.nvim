@@ -23,14 +23,22 @@ local M = {}
 ---     elsewhere in *text* (mid-line) is left untouched.
 ---   • If the suffix is absent, or if it matches a different basename, *text*
 ---     is returned unchanged.
----   • Leading/trailing whitespace on the suffix boundary is trimmed.
----
---- Stub: returns *text* unchanged.
+---   • The space before the opening `[[` is consumed as part of the suffix.
+---   • Matching is case-sensitive.
 ---
 --- @param text              string  the rendered task line content
 --- @param expected_basename string  the source note's basename (without .md extension)
 --- @return string  *text* with the expected suffix stripped, or *text* unchanged
-function M.strip_expected_suffix(text, _expected_basename)
+function M.strip_expected_suffix(text, expected_basename)
+  if not expected_basename or expected_basename == "" then
+    return text
+  end
+  -- The render pipeline appends " [[<basename>]]" (with a leading space).
+  local suffix = " [[" .. expected_basename .. "]]"
+  if #text >= #suffix and text:sub(-#suffix) == suffix then
+    -- Strip the suffix (including its leading space).
+    return text:sub(1, -(#suffix + 1))
+  end
   return text
 end
 
