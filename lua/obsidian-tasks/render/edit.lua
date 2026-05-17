@@ -331,6 +331,35 @@ function M.flush(bufnr)
     end
   end
 
+  -- ── P7: mass-delete safety gate (stub) ────────────────────────────────────
+  -- Count managed rows that no longer exist in the buffer (new_text == nil).
+  -- These are DELETE candidates.  This check sits BEFORE the #changed == 0
+  -- early-return so the gate fires even when every edit in the tick is a
+  -- DELETE (e.g. ggdG empties the buffer — changed would be {}, but
+  -- delete_count can be 2+).
+  --
+  -- RED stub: gate.query_block_intact always returns true (no-op); the real
+  -- detection and revert logic is wired by ot-6hvw (GREEN).
+  do
+    local delete_count = 0
+    for _, region in ipairs(all_regions) do
+      for row = region[1], region[2] do
+        local m = meta_by_row[row]
+        if m then
+          local cur = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+          if cur[1] == nil then
+            delete_count = delete_count + 1
+          end
+        end
+      end
+    end
+    if delete_count >= 2 then
+      local gate = require("obsidian-tasks.render.gate")
+      -- Stub: result intentionally ignored until GREEN implements real gate.
+      gate.query_block_intact(bufnr)
+    end
+  end
+
   if #changed == 0 then
     M.flush_queue[bufnr] = nil
     return
