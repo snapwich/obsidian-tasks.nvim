@@ -93,7 +93,23 @@ function M.setup(opts)
         require("obsidian-tasks.render.keymap").attach_universal(bufnr)
       end)
 
-      -- (b) Auto-render — gated by opts.auto_render.
+      -- (b) Source-row diagnostics — every md in a workspace gets diagnostics
+      -- for malformed task fields (invalid dates, bad priority levels, etc.)
+      -- on the source rows where the user actually types.  Refresh the index
+      -- first so the diagnostic walk reflects the current disk content.
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+        pcall(function()
+          local idx = require("obsidian-tasks.index")
+          idx.invalidate(path)
+          idx.refresh_file(path)
+          require("obsidian-tasks.render").refresh_source_diagnostics(bufnr, path)
+        end)
+      end)
+
+      -- (c) Auto-render — gated by opts.auto_render.
       if not opts.auto_render then
         return
       end
@@ -205,13 +221,16 @@ function M.setup(opts)
       end
 
       -- (2) Refresh the index entry for the written file, then propagate
-      -- the change to any other buffers whose renders reference this file.
+      -- the change to any other buffers whose renders reference this file,
+      -- and refresh source-row diagnostics for this buffer.
       -- Wrapped in pcall so a misbehaving adapter (or files that fail to
       -- read mid-flush) never breaks the autocmd chain.
       pcall(function()
         local index = require("obsidian-tasks.index")
         index.invalidate(path) -- bypass mtime no-op: nvim writes may share a second
         index.refresh_file(path)
+        -- Source-row diagnostics for the just-written buffer.
+        render.refresh_source_diagnostics(bufnr, path)
         for _, other_bufnr in ipairs(index.reverse_index(path)) do
           if other_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(other_bufnr) then
             -- rerender_buffer preserves cursor + fold state for *visible*
@@ -251,6 +270,13 @@ function M.setup(opts)
       local ok, cmd = pcall(require, "obsidian-tasks.cmd")
       if ok and type(cmd.clear_dashboard_undo) == "function" then
         cmd.clear_dashboard_undo(bufnr)
+      end
+      -- Drop any lingering invalid-field diagnostics.
+      if render._diag_ns then
+        pcall(vim.diagnostic.reset, render._diag_ns, bufnr)
+      end
+      if render._source_diag_ns then
+        pcall(vim.diagnostic.reset, render._source_diag_ns, bufnr)
       end
       require("obsidian-tasks.render.hygiene")._cleanup(bufnr)
     end,

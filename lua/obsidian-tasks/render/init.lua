@@ -124,6 +124,61 @@ M._buffer_state = {}
 M._pending_lingers = {}
 M._lingers = {}
 
+-- ── Diagnostic namespace ──────────────────────────────────────────────────────
+-- Every render flushes invalid-field diagnostic entries (built by draw from
+-- the layout's invalid_ranges metadata) under this namespace.  vim.diagnostic.
+-- set replaces the namespace's entries for the buffer, so a single set call
+-- per render handles both "add new" and "clear old".  clear_buffer +
+-- BufDelete reset the namespace to drop diagnostics when the render goes
+-- away.
+M._diag_ns = vim.api.nvim_create_namespace("obsidian_tasks_diagnostics")
+
+-- ── Source-row diagnostic namespace ───────────────────────────────────────────
+-- Separate namespace for diagnostics on source-file task lines (every .md in
+-- a workspace).  Kept distinct from the dashboard rendered-region namespace
+-- (M._diag_ns) so a same-buffer dashboard can carry both kinds without one
+-- clobbering the other via vim.diagnostic.set.
+M._source_diag_ns = vim.api.nvim_create_namespace("obsidian_tasks_source_diagnostics")
+
+--- Rebuild source-row diagnostics for *bufnr* from the in-memory index entry
+--- for *file_path*.  Each task whose _invalid_ranges is populated emits one
+--- diagnostic at its source row with byte-accurate col/end_col in raw_line
+--- coordinates and the parser's error message.  vim.diagnostic.set replaces
+--- the namespace's entries for the buffer; an empty list therefore clears.
+---
+--- @param bufnr     integer
+--- @param file_path string  absolute path; uses the index's entry for it
+function M.refresh_source_diagnostics(bufnr, file_path)
+  if not vim.api.nvim_buf_is_valid(bufnr) or not file_path or file_path == "" then
+    return
+  end
+  local diags = {}
+  local idx = require("obsidian-tasks.index")
+  local raw = type(idx._raw) == "function" and idx._raw() or {}
+  local entry = raw[file_path]
+  if entry and entry.tasks then
+    for _, item in ipairs(entry.tasks) do
+      local task = item.task
+      local line_num = item.line_num or task._src_line
+      if task and line_num and task._invalid_ranges then
+        for field_key, range in pairs(task._invalid_ranges) do
+          local message = (task._errors and task._errors[field_key]) or "invalid field value"
+          diags[#diags + 1] = {
+            lnum = line_num - 1, -- index uses 1-indexed lines; diagnostics 0-indexed
+            col = math.max(0, range[1] - 1),
+            end_lnum = line_num - 1,
+            end_col = math.max(0, range[2] - 1),
+            message = message,
+            severity = vim.diagnostic.severity.WARN,
+            source = "obsidian-tasks",
+          }
+        end
+      end
+    end
+  end
+  pcall(vim.diagnostic.set, M._source_diag_ns, bufnr, diags)
+end
+
 -- ── Lazy-init guard ───────────────────────────────────────────────────────────
 -- Tracks workspaces for which a refresh_all walk has already been kicked off.
 -- Prevents re-triggering the walk on each recursive render call when the vault
@@ -243,21 +298,28 @@ function M.render_buffer(bufnr, workspace)
     revert.suppress(bufnr)
     local _render_ok, _render_err = pcall(function()
       -- ── 2. Lazy index init ─────────────────────────────────────────────────────
-      -- Per-workspace: kick off a vault walk if this workspace has no indexed
-      -- tasks yet.  The _lazy_init_started guard prevents infinite re-trigger
-      -- when the vault genuinely has zero tasks.
+      -- Per-workspace: kick off a full vault walk on the first dashboard
+      -- render so the index is complete before queries run.
+      --
+      -- This used to additionally gate on `index.tasks_in(...)() == nil`
+      -- (skip the walk if any tasks were already indexed), but that broke
+      -- once BufReadPost started populating per-file index entries for
+      -- source-row diagnostics: the dashboard would observe a partial index
+      -- (only files the user had opened) and skip the full walk, producing
+      -- results that depended on which buffers were opened first.
+      --
+      -- refresh_all is idempotent over an already-populated index (each
+      -- refresh_file is mtime-gated), so the only cost of always firing it
+      -- is the ripgrep walk itself — which the user already pays on the
+      -- first dashboard render of a session.
       do
         if workspace and not _lazy_init_started[workspace] then
-          local obs = require("obsidian-tasks.util.obsidian")
-          local any = index.tasks_in(obs.workspace_path_filter(workspace.root))()
-          if any == nil then
-            _lazy_init_started[workspace] = true
-            index.refresh_all(workspace, function()
-              vim.schedule(function()
-                M.render_buffer(bufnr, workspace)
-              end)
+          _lazy_init_started[workspace] = true
+          index.refresh_all(workspace, function()
+            vim.schedule(function()
+              M.render_buffer(bufnr, workspace)
             end)
-          end
+          end)
         end
       end
 
@@ -414,6 +476,10 @@ function M.render_buffer(bufnr, workspace)
       -- Accumulate fold descriptors { fence_first, fence_last } for post-render fold pass.
       -- Folds cover ONLY the fence lines; rendered task lines stay visible below.
       local fold_blocks = {}
+      -- Aggregate diagnostic entries from every block; flushed via
+      -- vim.diagnostic.set once after the loop so users see one coherent
+      -- diagnostic set per render (no per-block flicker).
+      local all_diagnostics = {}
 
       for i, pb in ipairs(per_block) do
         local block = pb.block
@@ -459,8 +525,14 @@ function M.render_buffer(bufnr, workspace)
           }
         end
 
-        -- Draw the block.
-        draw.draw(bufnr, fence_range, layout_lines)
+        -- Draw the block.  Returns per-block diagnostic entries which we
+        -- aggregate for a single vim.diagnostic.set call after the loop.
+        local draw_result = draw.draw(bufnr, fence_range, layout_lines)
+        if draw_result and draw_result.diagnostics then
+          for _, d in ipairs(draw_result.diagnostics) do
+            all_diagnostics[#all_diagnostics + 1] = d
+          end
+        end
 
         -- Count tasks inserted for the offset update.
         local n_tasks = 0
@@ -531,6 +603,12 @@ function M.render_buffer(bufnr, workspace)
       end
 
       M._buffer_state[bufnr] = new_buf_state
+
+      -- Flush aggregated invalid-field diagnostics for this buffer.  Calling
+      -- vim.diagnostic.set with the full list replaces any previous entries
+      -- in the namespace, so this also serves to clear diagnostics for fields
+      -- that are no longer invalid (or no longer rendered).
+      pcall(vim.diagnostic.set, M._diag_ns, bufnr, all_diagnostics)
 
       -- ── 6. Apply manual folds for all rendered blocks ──────────────────────────
       -- Each block is folded across its fence lines only; rendered tasks stay
@@ -780,6 +858,8 @@ function M.clear_buffer(bufnr)
     M._buffer_state[bufnr] = nil
     -- Keep reverse index consistent: bufnr no longer has any active render.
     require("obsidian-tasks.index").clear_render_paths(bufnr)
+    -- Drop invalid-field diagnostics tied to the cleared render.
+    pcall(vim.diagnostic.reset, M._diag_ns, bufnr)
 
     revert.unsuppress(bufnr)
   end)

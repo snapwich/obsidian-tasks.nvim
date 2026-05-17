@@ -125,6 +125,23 @@ local function strip_tags(s)
   return vim.trim((s:gsub(TAG_PAT, "")))
 end
 
+--- Strip trailing `[[wikilink]]` tokens from *s* and return the trimmed
+--- result.  Used during emoji-value extraction so a wikilink at the tail of
+--- a task line (either user-typed or render-added) isn't absorbed into the
+--- last field's value (which would, e.g., make a valid `📅 2026-05-09` look
+--- like an invalid `2026-05-09 [[note]]`).
+--- @param s string
+--- @return string
+local function strip_trailing_wikilinks(s)
+  while true do
+    local stripped, n = s:gsub("%s*%[%[[^%]]*%]%]%s*$", "")
+    if n == 0 then
+      return s
+    end
+    s = stripped
+  end
+end
+
 --- Collect all #tag tokens present in *s*.
 --- @param s string
 --- @return string[]
@@ -168,6 +185,13 @@ end
 ---                         --   that failed validation; filters/sorts treat such
 ---                         --   fields as absent, renderer marks the value range
 ---                         --   with ObsidianTasksFieldInvalid.
+---   _invalid_ranges,      -- { field_key = {byte_start, byte_end} } byte byte
+---                         --   positions of the invalid value WITHIN raw_line
+---                         --   (1-indexed, end-exclusive).  Used by source-row
+---                         --   diagnostics: the rendered-text invalid_ranges
+---                         --   reported by serialize_with_meta cover the
+---                         --   rendered line, which may differ from raw_line
+---                         --   in field order or content.
 --- }
 --- ```
 ---
@@ -211,6 +235,7 @@ function M.parse(line)
     _origin = {},
     _raw_fields = {},
     _errors = {},
+    _invalid_ranges = {},
   }
 
   local markers = find_markers(body)
@@ -223,15 +248,21 @@ function M.parse(line)
   -- Tags: collect from the entire body (description + field regions).
   task.tags = collect_tags(body)
 
+  -- prefix_len is the byte offset from raw_line start to body start;
+  -- positions in `body` translate to raw_line positions via this offset.
+  local prefix_len = #line - #body
+
   -- Validate a parsed field value against its kind.  When validation fails,
   -- nil out task.fields[fkey] and stash the raw string under _raw_fields[fkey]
-  -- with a human-readable reason in _errors[fkey].  Filters/sorts then treat
-  -- this field as absent, while the renderer marks the value range as invalid
-  -- and the serializer emits the raw verbatim.
+  -- with a human-readable reason in _errors[fkey] AND a byte range in
+  -- _invalid_ranges[fkey] (1-indexed end-exclusive, in raw_line coordinates).
+  -- Filters/sorts then treat this field as absent, the renderer marks the
+  -- value range as invalid, and the serializer emits the raw verbatim.
   --- @param fkey  string
   --- @param kind  string  field_entry.kind
   --- @param value string  the trimmed value string from source
-  local function set_field_value(fkey, kind, value)
+  --- @param body_off integer  1-indexed byte position of `value` in `body`
+  local function set_field_value(fkey, kind, value, body_off)
     if kind == "date" then
       if is_valid_iso_date(value) then
         task.fields[fkey] = value
@@ -239,6 +270,9 @@ function M.parse(line)
         task.fields[fkey] = nil
         task._raw_fields[fkey] = value
         task._errors[fkey] = "invalid date (expected YYYY-MM-DD)"
+        if body_off then
+          task._invalid_ranges[fkey] = { prefix_len + body_off, prefix_len + body_off + #value }
+        end
       end
     elseif kind == "priority" then
       -- Dataview priority: value is a level name like "high".  Emoji priority
@@ -249,6 +283,9 @@ function M.parse(line)
         task.fields[fkey] = nil
         task._raw_fields[fkey] = value
         task._errors[fkey] = "invalid priority (expected highest|high|medium|low|lowest)"
+        if body_off then
+          task._invalid_ranges[fkey] = { prefix_len + body_off, prefix_len + body_off + #value }
+        end
       end
     else
       -- string, tag-list — no validation, pass through.
@@ -266,7 +303,11 @@ function M.parse(line)
       if value == "" then
         task.fields[fkey] = nil
       else
-        set_field_value(fkey, kind, value)
+        -- Find the trimmed value within the bracket span to recover its
+        -- byte position (the regex captures the raw inner text including
+        -- leading/trailing whitespace which we trimmed for the value).
+        local body_off = body:find(value, m.pos, true)
+        set_field_value(fkey, kind, value, body_off)
       end
       task._origin[fkey] = "dataview"
     elseif m.kind == "emoji" then
@@ -279,12 +320,21 @@ function M.parse(line)
         local val_start = m.endpos + 1
         local val_end = markers[i + 1] and (markers[i + 1].pos - 1) or #body
         local raw_region = body:sub(val_start, val_end)
-        -- Strip any #tag tokens that trail within this region.
-        local value = strip_tags(raw_region)
+        -- Strip any #tag tokens that trail within this region, plus any
+        -- trailing [[wikilink]] tokens — these belong to the task body, not
+        -- to the field value (otherwise e.g. `📅 2026-05-09 [[note]]` would
+        -- look like an invalid date).
+        local value = strip_trailing_wikilinks(strip_tags(raw_region))
         if value == "" then
           task.fields[fkey] = nil
         else
-          set_field_value(fkey, kind, value)
+          -- Locate the trimmed value's byte position within body.  The
+          -- search starts at val_start; strip_tags + strip_trailing_wikilinks
+          -- may have removed prefix/suffix content, so find() inside the
+          -- raw_region gives us the offset.
+          local off_in_region = raw_region:find(value, 1, true)
+          local body_off = off_in_region and (val_start + off_in_region - 1) or nil
+          set_field_value(fkey, kind, value, body_off)
         end
         task._origin[fkey] = "emoji"
       end

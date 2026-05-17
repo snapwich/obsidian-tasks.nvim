@@ -106,6 +106,7 @@ local function build(task, opts)
   local raw_fields = task._raw_fields or {}
 
   -- ── field tokens in canonical order ────────────────────────────────────────
+  local errors = task._errors or {}
   local field_parts = {}
   for _, key in ipairs(FIELD_ORDER) do
     local value = task.fields[key]
@@ -129,6 +130,7 @@ local function build(task, opts)
         field_parts[#field_parts + 1] = {
           text = token,
           invalid = is_invalid and val_s ~= nil,
+          message = is_invalid and errors[key] or nil,
           val_start = val_s,
           val_end = val_e,
         }
@@ -157,7 +159,7 @@ local function build(task, opts)
   local current_len = #prefix
   local invalid_ranges = {}
 
-  local function append_part(text, invalid, val_s, val_e)
+  local function append_part(text, invalid, val_s, val_e, message)
     chunks[#chunks + 1] = " "
     current_len = current_len + 1
     local token_start = current_len + 1 -- 1-indexed position of `text` in line
@@ -167,6 +169,7 @@ local function build(task, opts)
       invalid_ranges[#invalid_ranges + 1] = {
         token_start + val_s - 1,
         token_start + val_e - 1,
+        message or "invalid field value",
       }
     end
   end
@@ -175,7 +178,7 @@ local function build(task, opts)
     append_part(desc, false)
   end
   for _, p in ipairs(field_parts) do
-    append_part(p.text, p.invalid, p.val_start, p.val_end)
+    append_part(p.text, p.invalid, p.val_start, p.val_end, p.message)
   end
   for _, tag in ipairs(trailing_tags) do
     append_part(tag, false)
@@ -206,11 +209,13 @@ function M.serialize(task, opts)
 end
 
 --- Like M.serialize, but returns `{text, invalid_ranges}`.  `invalid_ranges`
---- is a list of `{byte_start, byte_end}` tuples (1-indexed, end-exclusive)
---- marking the value bytes of each field whose value failed parse validation.
+--- is a list of `{byte_start, byte_end, message}` tuples (1-indexed,
+--- end-exclusive) marking the value bytes of each field whose value failed
+--- parse validation.  `message` is the human-readable reason from
+--- `task._errors[key]` (e.g. "invalid date (expected YYYY-MM-DD)").
 --- @param task table
 --- @param opts? { format?: 'emoji' | 'dataview' | 'preserve' }
---- @return { text: string, invalid_ranges: { [1]: integer, [2]: integer }[] }
+--- @return { text: string, invalid_ranges: { [1]: integer, [2]: integer, [3]: string }[] }
 function M.serialize_with_meta(task, opts)
   return build(task, opts)
 end

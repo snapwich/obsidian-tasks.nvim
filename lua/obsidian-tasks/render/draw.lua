@@ -155,6 +155,14 @@ function M.draw(bufnr, fence_range, layout_lines)
 
   local fence_last = fence_range[2]
   local all_eids = {} -- collects ALL draw-NS extmark IDs for this block
+  -- Per-block diagnostic entries built from invalid field-value ranges; the
+  -- orchestrator aggregates across all blocks before vim.diagnostic.set.
+  local diagnostics = {}
+  -- For same-buffer dashboards (the task's source file IS this buffer), the
+  -- source-row already carries a diagnostic from refresh_source_diagnostics.
+  -- Suppress the duplicate rendered-region diagnostic to keep trouble.nvim /
+  -- diagnostic pickers from listing the same task twice.
+  local buf_name = vim.api.nvim_buf_get_name(bufnr)
 
   -- ── 1. Collect task texts and insert them as real buffer lines ─────────────
 
@@ -235,6 +243,10 @@ function M.draw(bufnr, fence_range, layout_lines)
       if ll.invalid_ranges then
         local line_len = #ll.text
         local invalid_hl = field_invalid_hl_group()
+        -- Suppress diagnostic emission (NOT the visual underline) for tasks
+        -- whose source lives in this same buffer — the source row already
+        -- carries an equivalent diagnostic from refresh_source_diagnostics.
+        local is_same_buffer_source = ll.src_path == buf_name
         for _, range in ipairs(ll.invalid_ranges) do
           local col_start = math.max(0, range[1] - 1)
           local col_end = math.min(line_len, range[2] - 1)
@@ -244,6 +256,17 @@ function M.draw(bufnr, fence_range, layout_lines)
               hl_group = invalid_hl,
             })
             all_eids[#all_eids + 1] = iid
+            if not is_same_buffer_source then
+              diagnostics[#diagnostics + 1] = {
+                lnum = task_lnum,
+                col = col_start,
+                end_lnum = task_lnum,
+                end_col = col_end,
+                message = range[3] or "invalid field value",
+                severity = vim.diagnostic.severity.WARN,
+                source = "obsidian-tasks",
+              }
+            end
           end
         end
       end
@@ -321,6 +344,11 @@ function M.draw(bufnr, fence_range, layout_lines)
     -- only source content (queries + prose) and never mutates the buffer.
     require("obsidian-tasks.render.save").set_acwrite(bufnr)
   end
+
+  -- Return per-block diagnostic entries so the orchestrator can aggregate
+  -- across all blocks and vim.diagnostic.set them at once (a single
+  -- diagnostic-namespace write per render).
+  return { diagnostics = diagnostics }
 end
 
 --- Clear all render extmarks and inserted task lines for a buffer.
