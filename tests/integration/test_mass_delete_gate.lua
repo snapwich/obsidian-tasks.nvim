@@ -17,12 +17,16 @@
 -- Expected failures:
 --   • "single dd propagates" — source is NOT mutated in RED (flush skips nil
 --     rows); test expects source to have 0 tasks → FAIL.
---   • "2dd intact block: both propagate" — same reason → FAIL.
+--   • "2dd intact block: both propagate" — same reason → FAIL.  Additional
+--     GREEN-only undo assertions are unreachable in RED (first assertion
+--     fails first, halting the test).
 --   • "ggdG: no source mutation + warn" — source stays clean (acceptable in
 --     RED), but no warn notification is emitted → FAIL on warn check.
+--     Additional GREEN-only dashboard-restore assertion unreachable in RED.
 --   • ":%d: same as ggdG" — same failure mode → FAIL.
---   • "multi-block: broken block, other block MUTATE reverts" — MUTATE in the
---     intact block propagates to source in RED (gate stub does not trigger
+--   • "multi-block: broken block, other block MUTATE reverts" — genuine
+--     two-block scenario: bottom block dismantled + top block MUTATED in same
+--     tick.  MUTATE propagates to source in RED (gate stub does not trigger
 --     atomic revert) → FAIL.
 
 local T = MiniTest.new_set()
@@ -206,6 +210,15 @@ T["mass delete gate: 2dd on intact block propagates both DELETEs"] = function()
   local src_lines = read_file(src_path)
   eq(#src_lines, 0, "2dd on intact block must propagate: source must have 0 lines after both tasks deleted")
 
+  -- GREEN addition: one u reverses BOTH deletions (drives single-undo-block
+  -- contract for mass deletes on intact blocks).  Unreachable in RED because
+  -- the assertion above already halts the test.
+  local cmd_mod = require("obsidian-tasks.cmd")
+  local ok_undo = cmd_mod.dashboard_undo(bufnr)
+  eq(ok_undo, true, "single undo must succeed after 2dd propagation")
+  local src_after_undo = read_file(src_path)
+  eq(#src_after_undo, 2, "single undo must restore both deleted tasks to source")
+
   cleanup()
 end
 
@@ -245,6 +258,13 @@ T["mass delete gate: ggdG emits warn and leaves source untouched"] = function()
   end
   eq(found_msg, true, "warn message must mention 'dashboard cleared' or 'source untouched'")
 
+  -- GREEN addition: gate revert must restore the dashboard buffer so rendered
+  -- task rows are visible again after the safety guard fires.  Unreachable in
+  -- RED because the warn assertion above already halts the test.
+  revert._flush_pending(bufnr)
+  local buf_lines_after = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(#buf_lines_after > 0, true, "gate revert must restore dashboard buffer (must not remain empty after ggdG)")
+
   cleanup()
 end
 
@@ -273,75 +293,97 @@ T["mass delete gate: colon-percent-d emits warn and leaves source untouched"] = 
   cleanup()
 end
 
--- ── Q6: broken block + co-occurring MUTATE → atomic revert ───────────────────
+-- ── Q6: multi-block broken block + intact-block MUTATE → atomic revert ───────
 
--- RED: FAILS — gate stub returns true (no-op); the MUTATE in the same tick
--- propagates to the source file, but GREEN must revert it.
+-- RED: FAILS — gate stub returns true (no-op); the MUTATE in the intact top
+-- block propagates to the source file, but GREEN must revert it.
 --
--- GREEN contract: when delete_count >= 2 AND the query block is not intact,
--- ALL edits in the tick — including any co-occurring MUTATEs — must be
--- reverted (atomic per-tick semantics).  No source file must be modified.
+-- GREEN contract: when delete_count >= 2 AND ANY block in the buffer is not
+-- intact, ALL edits in the tick — including MUTATEs in still-intact blocks —
+-- must be reverted (atomic, buffer-wide semantics).  No source must be
+-- modified.
 --
--- Scenario:
---   • Three-task dashboard from one source file.
---   • Tasks 1 and 2 are deleted from the buffer (delete_count = 2).
---   • The opening fence row is overwritten (block no longer intact).
---   • Task 3 is mutated (description edited) in the same tick.
---   • Expected (GREEN): gate fires → revert ALL → source unchanged.
+-- Scenario (genuine two-block):
+--   • Two-block dashboard (top block rows 0-2, bottom block rows 6-8 after
+--     render).  Both blocks query "not done"; source has three tasks (Nu1-3).
+--     After render: top tasks at snapshot rows 3-5, bottom tasks at rows 9-11.
+--   • Bottom block's opening fence (row 6) is overwritten → block broken.
+--   • Two task rows from the bottom block are deleted (delete_count = 2).
+--     After 2 deletions, snapshot rows 10-11 are beyond the buffer end → nil.
+--   • Nu2 in the still-intact TOP block (snapshot row 4) is mutated in the
+--     same tick.  Top block rows 3-5 are unaffected by the bottom deletions
+--     because the revert snapshot is not adjusted for managed-row deletions.
+--   • Expected (GREEN): buffer-wide gate fires → revert ALL including top
+--     MUTATE → source unchanged + warn.
 --   • RED: gate is a no-op stub → MUTATE propagates → source modified → FAIL.
 T["mass delete gate: broken block causes co-occurring MUTATE to revert atomically"] = function()
   render.configure({ default_folded = false })
 
+  -- Three tasks in source; both query blocks show all three (same "not done"
+  -- query, same stub).
   local src = make_tmpfile({
-    "- [ ] Task Zeta1 #task",
-    "- [ ] Task Zeta2 #task",
-    "- [ ] Task Zeta3 #task",
+    "- [ ] Task Nu1 #task",
+    "- [ ] Task Nu2 #task",
+    "- [ ] Task Nu3 #task",
   })
   local restore = install_file_stub(src)
 
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Two-block dashboard buffer: top block (rows 0-2 of cleared buf) and
+  -- bottom block (rows 3-5 of cleared buf → shifts to rows 6-8 after the top
+  -- block's 3 tasks are inserted at rows 3-5 during render).
+  local bufnr = make_buf({ "```tasks", "not done", "```", "```tasks", "not done", "```" })
   render.render_buffer(bufnr, nil)
 
-  -- Three tasks at rows TASK_ROW (3), TASK_ROW+1 (4), TASK_ROW+2 (5).
-  local row1 = TASK_ROW
-  local row2 = TASK_ROW + 1
-  local row3 = TASK_ROW + 2
+  -- Post-render layout (0-indexed):
+  --   Rows 0-2  : top block fences + query
+  --   Rows 3-5  : top block tasks (Nu1, Nu2, Nu3)   ← snapshot rows 3-5
+  --   Rows 6-8  : bottom block fences + query        ← fence open at row 6
+  --   Rows 9-11 : bottom block tasks (Nu1, Nu2, Nu3) ← snapshot rows 9-11
+  local BOT_FENCE_OPEN = 6
+  local BOT_TASK_ROW = 9
+  local TOP_MUTATE_ROW = 4 -- Nu2 in top block; snapshot row 4 stays valid
 
   local src_before = read_file(src)
 
-  -- Step 1: Break the block — overwrite opening fence with empty line.
-  vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { "" })
+  -- Step 1: Dismantle bottom block's opening fence (replace → no line shift).
+  vim.api.nvim_buf_set_lines(bufnr, BOT_FENCE_OPEN, BOT_FENCE_OPEN + 1, false, { "" })
 
-  -- Step 2: Delete task rows 1 and 2 from the buffer (delete_count = 2).
-  -- After fence overwrite in step 1, buffer rows have not shifted (replace,
-  -- not delete), so task rows are still at row1 and row2.
-  vim.api.nvim_buf_set_lines(bufnr, row1, row1 + 1, false, {})
-  -- After deleting row1, row2 becomes row2-1 = row1+1-1 = row1.  But the
-  -- meta_snapshot still tracks row2 at the original index.  Delete the next
-  -- original managed row at the now-shifted position row2-1.
-  vim.api.nvim_buf_set_lines(bufnr, row1, row1 + 1, false, {})
+  -- Step 2: Delete two task rows from bottom block (delete_count = 2).
+  -- Fence overwrite was a replace → buffer line count unchanged → BOT_TASK_ROW
+  -- still points at the first bottom-block task.
+  vim.api.nvim_buf_set_lines(bufnr, BOT_TASK_ROW, BOT_TASK_ROW + 1, false, {})
+  -- After first deletion, rows 10-11 shift to 9-10.  Delete again at same pos.
+  vim.api.nvim_buf_set_lines(bufnr, BOT_TASK_ROW, BOT_TASK_ROW + 1, false, {})
+  -- Buffer now has 10 lines (rows 0-9).  Snapshot rows 10 and 11 are beyond
+  -- the buffer end → cur[1] == nil → delete_count = 2.
 
-  -- Step 3: Mutate task 3.  After 2 row deletions the buffer has 2 fewer
-  -- rows; the original row3 is now at row3-2.  We modify at that live
-  -- position so the content at the meta_snapshot row3 has changed.
-  local live_row3 = row3 - 2
-  local cur3 = vim.api.nvim_buf_get_lines(bufnr, live_row3, live_row3 + 1, false)
-  if cur3[1] and cur3[1]:match("^%s*%-%s+%[") then
-    local mutated = (cur3[1]:gsub("Zeta3", "Zeta3 MUTATED"))
-    vim.api.nvim_buf_set_lines(bufnr, live_row3, live_row3 + 1, false, { mutated })
+  -- Step 3: Mutate Nu2 in the still-intact top block.
+  -- Top block rows 3-5 are unaffected by bottom-block managed-row deletions
+  -- (the revert snapshot is only adjusted for prose/untouched edits, not for
+  -- touched-managed-row deletions).  Snapshot row 4 still has Nu2's meta and
+  -- live row 4 still holds Nu2's rendered content.
+  local cur_top = vim.api.nvim_buf_get_lines(bufnr, TOP_MUTATE_ROW, TOP_MUTATE_ROW + 1, false)
+  if cur_top[1] and cur_top[1]:match("^%s*%-%s+%[") then
+    local mutated = (cur_top[1]:gsub("Nu2", "Nu2 MUTATED"))
+    vim.api.nvim_buf_set_lines(bufnr, TOP_MUTATE_ROW, TOP_MUTATE_ROW + 1, false, { mutated })
   end
 
   local warned_atomic, _ = capture_warns(function()
     edit_mod.flush(bufnr)
   end)
 
-  -- GREEN expectation: MUTATE must NOT propagate (atomic revert with gate).
-  -- In RED the MUTATE propagates → source is modified → assertion fails.
+  -- GREEN expectation: buffer-wide gate fires (bottom block broken) →
+  -- ALL edits in the tick revert atomically → top-block MUTATE must NOT
+  -- propagate.  In RED the MUTATE propagates → source is modified → FAIL.
   local src_after = read_file(src)
-  eq(src_after, src_before, "MUTATE in broken-block tick must revert atomically — source must be unchanged")
+  eq(
+    src_after,
+    src_before,
+    "intact-block MUTATE must revert atomically when any block is broken — source must be unchanged"
+  )
 
   -- In GREEN, a warn notification fires.
-  eq(warned_atomic, true, "broken-block tick must emit a warn notification")
+  eq(warned_atomic, true, "broken-block multi-block tick must emit a warn notification")
 
   render.clear_buffer(bufnr)
   restore()
