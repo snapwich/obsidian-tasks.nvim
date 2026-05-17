@@ -119,11 +119,32 @@ end
 --- closest to *expected_row* is returned.  When no row in the window matches,
 --- returns nil (caller should revert + notify).
 ---
+--- Search order: for each offset 0, 1, 2, … 10 check expected_row+offset then
+--- expected_row-offset.  The first hit at the smallest offset is returned
+--- immediately (closest-first, prefer + over - on ties).
+---
 --- @param src_path      string   path to the source file
 --- @param expected_row  integer  0-indexed expected row
 --- @param expected_text string   verbatim task text to search for
 --- @return integer|nil  0-indexed located row, or nil when not found within ±10
-function M.locate(_src_path, _expected_row, _expected_text)
+function M.locate(src_path, expected_row, expected_text)
+  local ok, lines = pcall(vim.fn.readfile, src_path)
+  if not ok or type(lines) ~= "table" then
+    return nil
+  end
+  local n = #lines
+  for offset = 0, 10 do
+    local r_plus = expected_row + offset
+    if r_plus >= 0 and r_plus < n and lines[r_plus + 1] == expected_text then
+      return r_plus
+    end
+    if offset > 0 then
+      local r_minus = expected_row - offset
+      if r_minus >= 0 and r_minus < n and lines[r_minus + 1] == expected_text then
+        return r_minus
+      end
+    end
+  end
   return nil
 end
 
@@ -177,9 +198,110 @@ end
 function M.apply_source_edit(file_path, row, new_lines, opts)
   opts = opts or {}
 
-  -- Batched edits stub: raise until the GREEN task wires the real implementation.
+  -- ── Batched edits (Q13) ──────────────────────────────────────────────────────
+  -- Single read + write per file; edits applied bottom-up; one undo record for
+  -- the whole batch.  Callers invoke apply_source_edit once per src_path and
+  -- pass all per-file edits in opts.batch.
   if opts.batch ~= nil then
-    error("batched apply_source_edit not implemented")
+    -- Read file once (authoritative).
+    local ok_r, disk_lines = pcall(vim.fn.readfile, file_path)
+    if not ok_r or type(disk_lines) ~= "table" then
+      log.warn("obsidian-tasks: failed to read " .. file_path)
+      return false
+    end
+
+    -- Sort entries by row descending so bottom-up application keeps earlier
+    -- row indices valid as lines are removed/inserted.
+    local entries = {}
+    for _, e in ipairs(opts.batch) do
+      entries[#entries + 1] = e
+    end
+    table.sort(entries, function(a, b)
+      return a.row > b.row
+    end)
+
+    -- Apply each entry to the in-memory copy of disk_lines.
+    local undo_batch = {}
+    for _, entry in ipairs(entries) do
+      local actual_row = entry.row
+      local entry_count = entry.count or 1
+      local do_apply = true
+
+      -- Q12 drift recovery: content-search when expected_text is supplied.
+      -- M.locate reads the original disk (not yet written) — correct because
+      -- bottom-up processing has not yet touched rows above this one.
+      if entry.expected_text then
+        local located = M.locate(file_path, entry.row, entry.expected_text)
+        if located == nil then
+          do_apply = false -- entry lost; caller handles revert
+        else
+          actual_row = located
+        end
+      end
+
+      if do_apply then
+        -- Capture old lines before mutation (needed for undo replay).
+        local old_lines_entry = {}
+        for i = 1, entry_count do
+          old_lines_entry[i] = disk_lines[actual_row + i]
+        end
+
+        -- Apply: remove entry_count lines at actual_row, then insert new_lines.
+        for _ = 1, entry_count do
+          table.remove(disk_lines, actual_row + 1)
+        end
+        for i = #entry.new_lines, 1, -1 do
+          table.insert(disk_lines, actual_row + 1, entry.new_lines[i])
+        end
+
+        undo_batch[#undo_batch + 1] = {
+          src_row = actual_row,
+          old_count = entry_count,
+          old_lines = old_lines_entry,
+          new_count = #entry.new_lines,
+          new_lines = vim.deepcopy(entry.new_lines),
+        }
+      end
+    end
+
+    -- Write file once (Q13: single write per src_path per flush).
+    local ok_w = pcall(vim.fn.writefile, disk_lines, file_path)
+    if not ok_w then
+      log.warn("obsidian-tasks: failed to write " .. file_path)
+      return false -- (Q15) per-file failure; other files' batches are unaffected
+    end
+
+    -- Refresh in-memory index.
+    pcall(function()
+      local idx = require("obsidian-tasks.index")
+      if type(idx.invalidate) == "function" then
+        idx.invalidate(file_path)
+      end
+      if type(idx.refresh_file) == "function" then
+        idx.refresh_file(file_path)
+      end
+    end)
+
+    -- Record ONE undo-ring entry for the entire batch (Q13: single undo block).
+    -- The batch_edits field carries all sub-edits for full replay; the top-level
+    -- src_row / old_lines fields are from the lowest-numbered row (last processed
+    -- in bottom-up order) for compatibility with dashboard_undo's single-entry
+    -- fallback path.
+    if not opts.skip_record and #undo_batch > 0 then
+      local dash = opts.dashboard_bufnr or vim.api.nvim_get_current_buf()
+      local primary = undo_batch[#undo_batch] -- lowest row = last in bottom-up pass
+      record_undo_edit(dash, {
+        src_path = file_path,
+        src_row = primary.src_row,
+        old_count = primary.old_count,
+        old_lines = primary.old_lines,
+        new_count = primary.new_count,
+        new_lines = primary.new_lines,
+        batch_edits = undo_batch,
+      })
+    end
+
+    return true
   end
 
   local count = opts.count or 1

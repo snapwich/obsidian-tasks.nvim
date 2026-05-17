@@ -69,11 +69,12 @@ T["batched apply_source_edit: single file — writefile called once"] = function
 
   local spy = wrap_writefile()
 
-  -- Batch: mutate rows 0 and 2 in a single apply_source_edit call.
-  local ok = cmd.apply_source_edit(path, 0, { "- [x] Task row 0" }, {
+  -- Batch: mutate "Task row 0" (0-indexed row 1) and "Task row 2" (0-indexed row 3).
+  -- The file has a "# Header" at row 0, so task rows are 1 and 3.
+  local ok = cmd.apply_source_edit(path, 1, { "- [x] Task row 0" }, {
     batch = {
-      { row = 0, new_lines = { "- [x] Task row 0" } },
-      { row = 2, new_lines = { "- [x] Task row 2" } },
+      { row = 1, new_lines = { "- [x] Task row 0" } },
+      { row = 3, new_lines = { "- [x] Task row 2" } },
     },
   })
 
