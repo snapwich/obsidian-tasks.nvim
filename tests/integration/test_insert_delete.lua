@@ -439,4 +439,231 @@ T["insert/delete: combined tick — paste in A + dd-with-continuation in B → b
   cleanup()
 end
 
+-- ── Cross-task feature-verification tests (GREEN phase) ───────────────────────
+--
+-- These tests cover acceptance criteria from the parent feature (ot-q2da)
+-- that require multiple P8 components to work together.
+
+-- ── Insert into deeply nested anchor (indented task with grandchildren) ────────
+--
+-- GREEN contract: when the anchor task has an indented continuation block
+-- (grandchildren), insert_after_anchor walks past ALL continuation lines so
+-- the new task lands after the deepest continuation line, at the anchor's
+-- indent level.
+
+T["cross-task: insert into deeply nested anchor — new task after deepest continuation"] = function()
+  -- Source layout:
+  --   row 0: "- [ ] Outer task #task"          indent 0, rendered (TASK_ROW)
+  --   row 1: "  - [ ] Anchor task #task"        indent 2, rendered (TASK_ROW+1)
+  --   row 2: "    Some grandchild note"         indent 4, NOT a task → not rendered
+  --   row 3: "    More grandchild note"         indent 4, NOT a task → not rendered
+  --   row 4: "- [ ] Another task #task"         indent 0, rendered (TASK_ROW+2)
+  local src_path = make_tmpfile({
+    "- [ ] Outer task #task",
+    "  - [ ] Anchor task #task",
+    "    Some grandchild note",
+    "    More grandchild note",
+    "- [ ] Another task #task",
+  })
+  render.configure({ default_folded = false })
+  local restore = install_file_stub(src_path)
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr, nil)
+
+  local function cleanup()
+    render.clear_buffer(bufnr)
+    restore()
+    revert._cleanup(bufnr)
+    local sb = vim.fn.bufnr(src_path, false)
+    if sb ~= -1 then
+      vim.api.nvim_buf_delete(sb, { force = true })
+    end
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    vim.fn.delete(src_path)
+  end
+
+  -- Dashboard: outer at TASK_ROW(3), anchor at TASK_ROW+1(4), another at TASK_ROW+2(5).
+  -- Insert new task between anchor and another (at dashboard row 5, pushing another to 6).
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW + 2, TASK_ROW + 2, false, { "  - [ ] New nested task #task" })
+
+  edit_mod.flush(bufnr)
+
+  local src_lines = read_file(src_path)
+  -- Source should have 6 lines: the new task inserted after "More grandchild note" (row 4)
+  -- and before "Another task" (which was at row 4, now row 5).
+  eq(#src_lines, 6, "source should have 6 lines after inserting nested task")
+  -- The new task lands at source row 4 (0-indexed), i.e. lines[5] (1-indexed).
+  eq(src_lines[5], "  - [ ] New nested task #task", "new task lands after deepest continuation at correct indent")
+  -- "Another task" is pushed to the last row.
+  eq(src_lines[6], "- [ ] Another task #task", "outer sibling task moved to last row")
+
+  cleanup()
+end
+
+-- ── Delete task whose continuation includes another task-like source line ──────
+--
+-- Behavior definition:
+--   The source has an outer (not-done) task whose continuation block contains
+--   a done subtask and a note — both indented deeper than the outer task.
+--   The done subtask does NOT match the "not done" query, so it is NOT rendered
+--   on the dashboard (no extmark, no managed row for it).
+--
+--   When the user `dd`s the outer task from the dashboard, delete_block walks
+--   the outer task's continuation in source: both the done subtask and the note
+--   are indented deeper → they are part of the continuation block → count=3.
+--
+--   Expected result: all 3 source lines are deleted.
+--
+-- Edge-case note (for rare "both tasks rendered" scenario):
+--   If the inner task were NOT done (thus rendered on the dashboard), the inner
+--   task's dashboard row would shift up when the outer task row is deleted.
+--   flush() would then see the inner task's text at the outer task's snapshot
+--   position and classify it as a MUTATE rather than a DELETE — resulting in
+--   the outer source row being overwritten with the inner task text.  This is a
+--   known limitation for the rare case where a task's continuation contains
+--   another rendered managed task.  A future phase may improve handling by
+--   detecting same-tick row shifts.
+
+T["cross-task: delete outer task whose continuation includes a task-like done subtask — whole block removed"] = function()
+  -- Source:
+  --   row 0: outer task (not done, indent 0) → rendered at TASK_ROW
+  --   row 1: done subtask (indent 2) → NOT rendered ("not done" query filters it)
+  --   row 2: outer note (indent 2) → NOT a task, NOT rendered
+  local src_path = make_tmpfile({
+    "- [ ] Outer task #task",
+    "  - [x] Done subtask #task",
+    "  outer note",
+  })
+  render.configure({ default_folded = false })
+  local restore = install_file_stub(src_path)
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr, nil)
+
+  local function cleanup()
+    render.clear_buffer(bufnr)
+    restore()
+    revert._cleanup(bufnr)
+    local sb = vim.fn.bufnr(src_path, false)
+    if sb ~= -1 then
+      vim.api.nvim_buf_delete(sb, { force = true })
+    end
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    vim.fn.delete(src_path)
+  end
+
+  -- Dashboard: only outer task at TASK_ROW (done subtask is filtered out by "not done").
+  -- Simulate `dd` on the outer task.
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW, TASK_ROW + 1, false, {})
+
+  edit_mod.flush(bufnr)
+
+  -- Source: all 3 lines removed — outer task block spans rows 0-2 because
+  -- both the done subtask and the note are indented deeper than outer_indent=0.
+  local src_lines = read_file(src_path)
+  eq(#src_lines, 0, "delete_block removes outer task + done subtask + note from source (whole block)")
+
+  cleanup()
+end
+
+-- ── Combination with P7 mass-delete gate ──────────────────────────────────────
+
+-- ── feat-3 gate: 2 INSERTs + 0 DELETEs — gate does not fire, both propagate ───
+
+T["cross-task/gate: 2 INSERTs + 0 DELETEs — gate does not fire, both propagate"] = function()
+  -- Source: 3 tasks; user inserts 2 new tasks between the first and second.
+  -- delete_count == 0 so the mass-delete gate never fires regardless of
+  -- insert count.
+  local src_path = make_tmpfile({
+    "- [ ] Task A #task",
+    "- [ ] Task B #task",
+    "- [ ] Task C #task",
+  })
+  render.configure({ default_folded = false })
+  local restore = install_file_stub(src_path)
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr, nil)
+
+  local function cleanup()
+    render.clear_buffer(bufnr)
+    restore()
+    revert._cleanup(bufnr)
+    local sb = vim.fn.bufnr(src_path, false)
+    if sb ~= -1 then
+      vim.api.nvim_buf_delete(sb, { force = true })
+    end
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    vim.fn.delete(src_path)
+  end
+
+  -- Insert 2 rows at once between Task A (TASK_ROW) and Task B (TASK_ROW+1).
+  -- Both rows land inside the region and are detected as INSERT candidates.
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW + 1, TASK_ROW + 1, false, {
+    "- [ ] Insert1 #task",
+    "- [ ] Insert2 #task",
+  })
+
+  edit_mod.flush(bufnr)
+
+  -- Gate did not fire (0 deletes) → both inserts propagate → source has 5 lines.
+  local src_lines = read_file(src_path)
+  eq(#src_lines, 5, "both inserts must propagate (gate not triggered for 0 DELETEs)")
+  local has_i1, has_i2 = false, false
+  for _, l in ipairs(src_lines) do
+    if l:find("Insert1") then
+      has_i1 = true
+    end
+    if l:find("Insert2") then
+      has_i2 = true
+    end
+  end
+  eq(has_i1, true, "Insert1 must be in source")
+  eq(has_i2, true, "Insert2 must be in source")
+
+  cleanup()
+end
+
+-- ── feat-3 gate: 0 INSERTs + 2 DELETEs, intact block → both propagate ─────────
+
+T["cross-task/gate: 0 INSERTs + 2 DELETEs intact block — gate passes, both propagate"] = function()
+  -- Source: 2 tasks; user deletes both (visual-line 2dd). Block is intact.
+  -- Gate fires (delete_count >= 2) but block is intact → propagate.
+  local bufnr, src_path, cleanup = setup_dashboard({
+    "- [ ] Task One #task",
+    "- [ ] Task Two #task",
+  })
+
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW, TASK_ROW + 2, false, {})
+
+  edit_mod.flush(bufnr)
+
+  local src_lines = read_file(src_path)
+  eq(#src_lines, 0, "both DELETEs propagate when block is intact (gate passes)")
+
+  cleanup()
+end
+
+-- ── feat-3 gate: 0 INSERTs + 2 DELETEs, broken block → full revert ─────────────
+
+T["cross-task/gate: 0 INSERTs + 2 DELETEs broken block — gate fires, source untouched"] = function()
+  -- Source: 2 tasks; user clears the entire buffer (removing fences too).
+  -- delete_count >= 2, block is broken → gate fires → source untouched + warn.
+  local bufnr, src_path, cleanup = setup_dashboard({
+    "- [ ] Task Alpha #task",
+    "- [ ] Task Beta #task",
+  })
+
+  local src_before = read_file(src_path)
+
+  local warned, _ = capture_warns(function()
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+    edit_mod.flush(bufnr)
+  end)
+
+  local src_after = read_file(src_path)
+  eq(src_after, src_before, "source must be untouched when block is broken (gate fires)")
+  eq(warned, true, "gate must emit a warn notification when block is broken")
+
+  cleanup()
+end
+
 return T

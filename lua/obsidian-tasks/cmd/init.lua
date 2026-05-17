@@ -1217,8 +1217,9 @@ end
 --- @param anchor_row    integer  0-indexed row of the anchor task in the source
 --- @param anchor_indent integer  indent level (number of leading spaces) of the anchor
 --- @param new_task_line string   verbatim new task line to insert
+--- @param opts          table?   optional: { dashboard_bufnr: integer } for undo ring keying
 --- @return boolean ok
-function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_line)
+function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_line, opts)
   local ok_r, lines = pcall(vim.fn.readfile, src_path)
   if not ok_r or type(lines) ~= "table" then
     log.warn("obsidian-tasks: insert_after_anchor: failed to read " .. tostring(src_path))
@@ -1270,7 +1271,13 @@ function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_lin
   end
 
   -- Insert new_task_line at 0-indexed position i with count=0 (pure insert).
-  return M.apply_source_edit(src_path, i, { new_task_line }, { count = 0 })
+  -- Forward opts.dashboard_bufnr so the undo ring entry is keyed to the correct
+  -- dashboard buffer (required for multi-file undo merge in render/edit.flush).
+  local ase_opts = { count = 0 }
+  if opts and opts.dashboard_bufnr then
+    ase_opts.dashboard_bufnr = opts.dashboard_bufnr
+  end
+  return M.apply_source_edit(src_path, i, { new_task_line }, ase_opts)
 end
 
 --- Delete a task and its continuation block from *src_path*.

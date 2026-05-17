@@ -108,6 +108,66 @@ local function normalize_date_fields(text)
   return task_serialize.serialize(task)
 end
 
+--- Count the leading whitespace characters in *line*.
+--- @param line string
+--- @return integer
+local function indent_of(line)
+  if not line then
+    return 0
+  end
+  local s = line:match("^(%s*)")
+  return s and #s or 0
+end
+
+--- Compute the number of lines in the deletion block rooted at *task_row* in
+--- *lines* (1-indexed array of source file content).
+---
+--- Mirrors the Q14 walk in cmd.delete_block: walk forward past all continuation
+--- lines (indented deeper than task_indent, or blank-followed-by-indented) and
+--- return task_row..end_row inclusive count.  Falls back to 1 when *lines* is
+--- nil.
+---
+--- @param lines       table    1-indexed array of source file lines (from readfile)
+--- @param task_row    integer  0-indexed source row of the task to delete
+--- @param task_indent integer  number of leading whitespace chars of the task line
+--- @return integer  count (>= 1)
+local function compute_block_count(lines, task_row, task_indent)
+  if not lines then
+    return 1
+  end
+  local n = #lines
+
+  local function is_blank(line)
+    return line:match("^%s*$") ~= nil
+  end
+
+  local end_row = task_row
+  local i = task_row + 1
+
+  while i < n do
+    local line = lines[i + 1] -- 1-indexed
+
+    if is_blank(line) then
+      local next_i = i + 1
+      while next_i < n and is_blank(lines[next_i + 1]) do
+        next_i = next_i + 1
+      end
+      if next_i >= n or indent_of(lines[next_i + 1]) <= task_indent then
+        break
+      end
+      end_row = i
+      i = i + 1
+    elseif indent_of(line) <= task_indent then
+      break
+    else
+      end_row = i
+      i = i + 1
+    end
+  end
+
+  return end_row - task_row + 1
+end
+
 --- Compute the re-added structural prefix for a REPAIR_AND_MUTATE row and
 --- return the repaired text plus the number of characters inserted at the start.
 ---
@@ -309,30 +369,50 @@ function M.flush(bufnr)
     return
   end
 
-  -- Collect changed rows (MUTATE / REPAIR_AND_MUTATE) and deleted rows in one
-  -- pass.  Deleted rows (new_text == nil, i.e. the buffer line no longer
-  -- exists) are separated out so the P7 gate can count them independently.
+  -- Collect changed rows (MUTATE / REPAIR_AND_MUTATE), deleted rows, and
+  -- inserted rows.
+  --
+  -- MUTATE / DELETE scan: iterates ALL meta_by_row entries, not just those
+  -- within the region snapshot bounds.  When a user inserts a new row inside
+  -- a managed region, on_lines shifts the meta snapshot so that rows below
+  -- the insertion point move outside the region's recorded [start, end] range.
+  -- If the user then deletes one of those shifted rows in the same tick (as in
+  -- the combined INSERT+DELETE test), a region-bounded scan would miss the
+  -- deletion.  Scanning all meta entries catches these out-of-region DELETEs.
+  --
+  -- INSERT scan: still limited to the region snapshot, since INSERT rows are
+  -- new rows the user typed inside a managed region (there is no meta for them).
   local changed = {} -- { row, meta, new_text, old_text, label }
   local delete_rows = {} -- { row, meta } for rows where new_text == nil
+  local insert_rows = {} -- { row, new_text } for unmanaged rows with content
+
+  for row, meta in pairs(meta_by_row) do
+    local cur_lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+    local new_text = cur_lines[1]
+    local old_text = meta.rendered_text
+    if new_text == nil then
+      -- Row no longer exists in the buffer → DELETE candidate.
+      delete_rows[#delete_rows + 1] = { row = row, meta = meta }
+    elseif old_text ~= nil and new_text ~= old_text then
+      local label = revert.classify(bufnr, row, old_text, new_text, {})
+      changed[#changed + 1] = {
+        row = row,
+        meta = meta,
+        new_text = new_text,
+        old_text = old_text,
+        label = label,
+      }
+    end
+  end
+
+  -- INSERT detection: scan regions for non-meta rows with non-blank content.
   for _, region in ipairs(all_regions) do
     for row = region[1], region[2] do
-      local meta = meta_by_row[row]
-      if meta then
+      if not meta_by_row[row] then
         local cur_lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
         local new_text = cur_lines[1]
-        local old_text = meta.rendered_text
-        if new_text == nil then
-          -- Row no longer exists in the buffer → DELETE candidate.
-          delete_rows[#delete_rows + 1] = { row = row, meta = meta }
-        elseif old_text ~= nil and new_text ~= old_text then
-          local label = revert.classify(bufnr, row, old_text, new_text, {})
-          changed[#changed + 1] = {
-            row = row,
-            meta = meta,
-            new_text = new_text,
-            old_text = old_text,
-            label = label,
-          }
+        if new_text ~= nil and not new_text:match("^%s*$") then
+          insert_rows[#insert_rows + 1] = { row = row, new_text = new_text }
         end
       end
     end
@@ -357,7 +437,7 @@ function M.flush(bufnr)
     end
   end
 
-  if #changed == 0 and #delete_rows == 0 then
+  if #changed == 0 and #delete_rows == 0 and #insert_rows == 0 then
     M.flush_queue[bufnr] = nil
     return
   end
@@ -414,12 +494,19 @@ function M.flush(bufnr)
     -- do_revert (from the on_lines listener) will restore those rows.
   end
 
-  -- ── P7: batch DELETE rows into per-src_path edits ─────────────────────────
-  -- Each deleted managed row removes its corresponding source line via an
-  -- apply_source_edit call with new_lines={} (count=1 delete).
+  -- ── P8: batch DELETE rows with block-aware count ──────────────────────────
+  -- Each deleted managed row removes its source task AND all continuation lines
+  -- (Q14 block-aware delete) via apply_source_edit with new_lines={}, count=N.
+  -- N is computed by walking the source file from the task row forward past all
+  -- continuation lines (same algorithm as cmd.delete_block).
   -- Batching into edits_by_file ensures a single read+write per source file
   -- and a single undo ring entry for the whole flush (Q13 semantics apply
   -- to deletes just as they do to mutates).
+  --
+  -- Source file content is cached per src_path so that multiple DELETE rows
+  -- from the same file read the file only once during batch construction.
+  -- (apply_source_edit reads the file again when applying — that is acceptable.)
+  local src_lines_cache = {}
   for _, dr in ipairs(delete_rows) do
     local meta = dr.meta
     local src_path = meta.source_file
@@ -428,10 +515,19 @@ function M.flush(bufnr)
     end
     local file_data = edits_by_file[src_path]
     local idx = #file_data.batch + 1
+
+    -- Determine the block count (task + continuation lines) from the source.
+    if not src_lines_cache[src_path] then
+      local ok_r, sl = pcall(vim.fn.readfile, src_path)
+      src_lines_cache[src_path] = (ok_r and type(sl) == "table") and sl or nil
+    end
+    local task_indent = indent_of(meta.task_text)
+    local block_count = compute_block_count(src_lines_cache[src_path], meta.source_row, task_indent)
+
     file_data.batch[idx] = {
       row = meta.source_row,
       new_lines = {}, -- delete: 0 replacement lines
-      count = 1,
+      count = block_count, -- Q14: covers task + continuation (>= 1)
       expected_text = meta.task_text,
     }
     file_data.dash_entries[idx] = {
@@ -579,6 +675,69 @@ function M.flush(bufnr)
       for _, de in ipairs(file_data.dash_entries) do
         revert.suppress(bufnr)
         pcall(vim.api.nvim_buf_set_lines, bufnr, de.dash_row, de.dash_row + 1, false, { de.meta.rendered_text })
+        revert.unsuppress(bufnr)
+      end
+    end
+  end
+
+  -- ── 3b. Process INSERT rows (Q4 + Q11) ────────────────────────────────────
+  --
+  -- For each INSERT row (non-meta, non-blank row within a managed region):
+  --   1. Walk backward to find the first managed row above it (Q4 anchor).
+  --      No anchor above → revert the buffer row + notify (top-of-dashboard).
+  --   2. Strip expected wikilink suffix, re-apply anchor indent, Q2 date
+  --      normalization (same normalization as the MUTATE path).
+  --   3. Call cmd.insert_after_anchor so the new task is written after the
+  --      anchor's continuation block in source (Q11).
+  --   4. On write failure (e.g. read-only file): revert the buffer row + set
+  --      partial_failure so the Q15 notification fires (Q15 isolation — other
+  --      files' edits in the same tick are unaffected).
+  --   INSERT entries skip the linger check: there is no pre-existing dashboard
+  --   position for a just-inserted row (per architect note on ot-q2da).
+  for _, ir in ipairs(insert_rows) do
+    local insert_row = ir.row
+    local new_text = ir.new_text
+
+    -- Q4: walk backward to find the first managed row above the INSERT row.
+    local anchor_meta = nil
+    for r = insert_row - 1, 0, -1 do
+      local m = meta_by_row[r]
+      if m then
+        anchor_meta = m
+        break
+      end
+    end
+
+    if not anchor_meta then
+      -- Q4 no-anchor: revert the INSERT row from the dashboard + notify.
+      log.warn("no anchor above insert — insert reverted")
+      revert.suppress(bufnr)
+      pcall(vim.api.nvim_buf_set_lines, bufnr, insert_row, insert_row + 1, false, {})
+      revert.unsuppress(bufnr)
+    else
+      local src_path = anchor_meta.source_file
+      local anchor_indent = indent_of(anchor_meta.task_text)
+
+      -- Apply same normalization as the MUTATE path.
+      local write_text = strip_wikilink_suffix(new_text, src_path)
+      -- Re-apply anchor indent: strip existing leading spaces and replace
+      -- with anchor_indent spaces so new task aligns with its anchor (Q11).
+      local content_after_indent = write_text:match("^%s*(.*)")
+      write_text = string.rep(" ", anchor_indent) .. content_after_indent
+      -- Q2: normalize natural-language date fields.
+      write_text = normalize_date_fields(write_text)
+
+      -- Write to source; pass dashboard_bufnr so the undo ring entry is
+      -- recorded under the correct buffer key (required for Q13 merge).
+      local ok = cmd.insert_after_anchor(src_path, anchor_meta.source_row, anchor_indent, write_text, {
+        dashboard_bufnr = bufnr,
+      })
+
+      if not ok then
+        -- Q15: write failed (e.g. read-only source) → revert INSERT row.
+        partial_failure = true
+        revert.suppress(bufnr)
+        pcall(vim.api.nvim_buf_set_lines, bufnr, insert_row, insert_row + 1, false, {})
         revert.unsuppress(bufnr)
       end
     end
