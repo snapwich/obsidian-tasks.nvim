@@ -699,11 +699,14 @@ function M.flush(bufnr)
     local new_text = ir.new_text
 
     -- Q4: walk backward to find the first managed row above the INSERT row.
+    -- P9: also capture the anchor's dashboard row for group-context lookup.
     local anchor_meta = nil
+    local anchor_dashboard_row = nil
     for r = insert_row - 1, 0, -1 do
       local m = meta_by_row[r]
       if m then
         anchor_meta = m
+        anchor_dashboard_row = r
         break
       end
     end
@@ -726,6 +729,70 @@ function M.flush(bufnr)
       write_text = string.rep(" ", anchor_indent) .. content_after_indent
       -- Q2: normalize natural-language date fields.
       write_text = normalize_date_fields(write_text)
+
+      -- P9: build group context from buffer state so inject_group_attributes
+      -- can append the group-defining attribute(s) to the new task line.
+      -- Supported group types: tag, priority, status.
+      -- File / folder / heading / path / root / backlink: no auto-add (skipped).
+      local p9_group_context = {}
+      local p9_task_origin = nil
+      if anchor_dashboard_row ~= nil then
+        local bs = render_init._buffer_state[bufnr]
+        if bs then
+          for _, blk in ipairs(bs) do
+            local row_meta = blk.line_map and blk.line_map[anchor_dashboard_row]
+            if row_meta then
+              local group_by = blk.group_by or {}
+              local gname = row_meta.group_name or ""
+              -- Combined group_name "seg1 / seg2 / …" split by level.
+              local segments = vim.split(gname, " / ", { plain = true })
+              for i, directive in ipairs(group_by) do
+                local key = directive.key
+                local seg = segments[i] or ""
+                if key == "tags" then
+                  -- Strip the "#" prefix so inject receives the bare tag name.
+                  p9_group_context[#p9_group_context + 1] = {
+                    by = "tag",
+                    value = seg:match("^#(.+)$") or seg,
+                  }
+                elseif key == "priority" then
+                  -- Reverse-parse "Priority N: Name" to the canonical level name.
+                  local level = seg:match("Priority %d+: (%a+)$")
+                  if level then
+                    level = level:lower()
+                  else
+                    level = seg:lower()
+                  end
+                  p9_group_context[#p9_group_context + 1] = {
+                    by = "priority",
+                    value = level,
+                  }
+                elseif key == "status" then
+                  -- Pass the status group name (e.g. "In Progress"); inject
+                  -- will look up the symbol via status.by_name.
+                  p9_group_context[#p9_group_context + 1] = {
+                    by = "status",
+                    value = seg,
+                  }
+                end
+                -- Other keys (file/folder/heading/path/date/…): no auto-add.
+              end
+              break
+            end
+          end
+        end
+        -- Infer task_origin from the anchor task's _origin so inject knows
+        -- whether to emit emoji or dataview form for the appended attribute.
+        local task_parse_p9 = require("obsidian-tasks.task.parse")
+        local anchor_task_p9 = task_parse_p9.parse(anchor_meta.task_text)
+        if anchor_task_p9 then
+          p9_task_origin = anchor_task_p9._origin
+        end
+      end
+
+      -- P9: inject group-defining attribute(s) (stub: returns write_text unchanged).
+      local group_attr = require("obsidian-tasks.render.group_attr")
+      write_text = group_attr.inject_group_attributes(write_text, p9_group_context, p9_task_origin)
 
       -- Write to source; pass dashboard_bufnr so the undo ring entry is
       -- recorded under the correct buffer key (required for Q13 merge).

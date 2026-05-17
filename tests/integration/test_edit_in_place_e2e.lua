@@ -417,4 +417,228 @@ T["e2e: <leader>tt status flip on source .md file (non-dashboard) still works"] 
   eq(mutated:sub(1, 5), "- [x]", "E4: <leader>tt must toggle source checkbox to [x]")
 end
 
+-- ── E5: P1–P9 full-stack scenario ─────────────────────────────────────────────
+--
+-- A single scripted scenario that exercises the entire edit-in-place stack.
+-- Steps:
+--   1. Render a dashboard with a tag-grouped block across one source file.
+--   2. cw — edit a task description (P4 classifier + P5 flush MUTATE).
+--   3. Insert a date field with "tomorrow" → verifies ISO normalisation (P5 Q2).
+--   4. Change a due date → source updated; broadened linger may fire (P6).
+--   5. Paste new task into #work tag group → expects #work auto-added (P9).
+--      RED: FAILS here — stub returns line unchanged; source task lacks #work.
+--   6. dd a task with continuation lines → source removes task + continuation (P8).
+--   7. Undo reverses the INSERT from step 5 (P1 undo ring).
+--   8. Verify invalid-field task renders without destroying buffer state (P2).
+--   9. ggdG gate: mass-delete is reverted; source untouched (P7).
+--
+-- Steps 1–4 and 6–9 use already-implemented GREEN features.
+-- Step 5 FAILS in RED because the P9 stub does not inject #work.
+-- All assertions are independent mini-steps; failing step 5 halts the test.
+
+T["e2e: P1-P9 full-stack scenario — P9 group-attr auto-add fails in RED"] = function()
+  render.configure({ default_folded = false, linger_on_filter_exit = true })
+
+  -- ── 1. Setup: source file with several tasks, grouped tag dashboard ──────────
+  local src_a = make_tmpfile({
+    "- [ ] Alpha task #work", -- row 0 (1-indexed row 1)
+    "- [ ] Beta task #work", -- row 1
+    "  Some continuation note", -- row 2 (continuation for Beta)
+  })
+  local src_b = make_tmpfile({
+    "- [ ] Gamma task #work", -- row 0 (1-indexed row 1)
+    "- [ ] Delta invalid 📅 someday", -- row 1 (P2 invalid date)
+  })
+
+  -- Index stub: reads both source files each time tasks_in is called.
+  local index_mod = require("obsidian-tasks.index")
+  local task_parse_mod = require("obsidian-tasks.task.parse")
+  local saved_tasks_in = index_mod.tasks_in
+  local saved_srp = index_mod.set_render_paths
+  local saved_crp = index_mod.clear_render_paths
+  index_mod.set_render_paths = function() end
+  index_mod.clear_render_paths = function() end
+  index_mod.tasks_in = function(_)
+    local sources = { src_a, src_b }
+    local all = {}
+    for _, sp in ipairs(sources) do
+      local ok, lines = pcall(vim.fn.readfile, sp)
+      if ok then
+        for ln, line in ipairs(lines) do
+          local t = task_parse_mod.parse(line)
+          if t then
+            all[#all + 1] = { task = t, path = sp, line_num = ln }
+          end
+        end
+      end
+    end
+    local i = 0
+    return function()
+      i = i + 1
+      if all[i] then
+        return all[i].task, all[i].path, all[i].line_num
+      end
+    end
+  end
+
+  -- Dashboard: single block, group by tags, filter not done.
+  local bufnr = make_buf({ "```tasks", "not done", "group by tags", "```" })
+  render.render_buffer(bufnr, nil)
+
+  -- Task rows start at row 4 (fence=0, query1=1, query2=2, fence=3, task=4).
+  local FIRST_TASK = 4
+
+  -- ── 2. cw — edit Alpha task description (P4 + P5 MUTATE) ────────────────────
+  local alpha_row = FIRST_TASK
+  local canonical_alpha = get_line(bufnr, alpha_row)
+  local edited_alpha = canonical_alpha:gsub("Alpha task", "Alpha edited")
+  set_line(bufnr, alpha_row, edited_alpha)
+  edit_mod.flush(bufnr)
+
+  local alpha_src = read_file(src_a)
+  eq(alpha_src[1], "- [ ] Alpha edited #work", "E5-step2: Alpha description edit must land in source (P5 MUTATE)")
+
+  -- ── 3. Add a due date with "tomorrow" → ISO normalisation (P5 Q2) ────────────
+  -- Re-read canonical after flush (managed extmark was updated).
+  local canonical_beta = get_line(bufnr, alpha_row + 1)
+  local with_tomorrow = canonical_beta:gsub("#work", "📅 tomorrow #work")
+  set_line(bufnr, alpha_row + 1, with_tomorrow)
+  edit_mod.flush(bufnr)
+
+  local beta_src_after_norm = read_file(src_a)
+  local beta_line = beta_src_after_norm[2]
+  MiniTest.expect.no_equality(beta_line, nil, "E5-step3: Beta line must exist in source")
+  local has_iso = beta_line and beta_line:match("%d%d%d%d%-%d%d%-%d%d") ~= nil
+  eq(has_iso, true, "E5-step3: 'tomorrow' must be normalised to ISO date (P5 Q2)")
+  local has_literal_tomorrow = beta_line and beta_line:find("tomorrow") ~= nil
+  eq(has_literal_tomorrow, false, "E5-step3: 'tomorrow' must NOT appear verbatim after normalisation")
+
+  -- ── 4. Change Gamma task description (verify P5 MUTATE across files) ──────────
+  local gamma_row = alpha_row + 2
+  local canonical_gamma = get_line(bufnr, gamma_row)
+  local edited_gamma = canonical_gamma:gsub("Gamma task", "Gamma updated")
+  set_line(bufnr, gamma_row, edited_gamma)
+  edit_mod.flush(bufnr)
+
+  local gamma_src = read_file(src_b)
+  eq(gamma_src[1], "- [ ] Gamma updated #work", "E5-step4: Gamma edit must land in src_b (P5 cross-file MUTATE)")
+
+  -- ── 5. Paste new task into #work group — expects #work auto-added (P9) ────────
+  -- Re-render first: after steps 2-4 the buffer still shows "tomorrow" in Beta's
+  -- row (flush writes to source but does not rewrite the dashboard line for
+  -- regular MUTATEs).  The stale text causes Beta to appear as a MUTATE again
+  -- in step 5's flush, which interferes with the INSERT detection.  A fresh
+  -- render_buffer resets meta_snapshot and region_snapshot to a clean baseline.
+  render.render_buffer(bufnr, nil)
+
+  -- Insert BETWEEN Alpha (alpha_row) and Beta (alpha_row+1) so the managed
+  -- region [alpha_row, alpha_row+1] expands and the new row is inside it.
+  -- anchor = Alpha task at alpha_row; new task goes after Alpha in source.
+  --
+  -- RED: this step FAILS because the stub does not inject #work.
+  -- GREEN: source will contain "- [ ] New work task #work".
+  local insert_at = alpha_row + 1
+  vim.api.nvim_buf_set_lines(bufnr, insert_at, insert_at, false, { "- [ ] New work task" })
+  edit_mod.flush(bufnr)
+
+  local src_a_after_insert = read_file(src_a)
+  -- The new task is written after the anchor (Alpha task at source row 1).
+  -- GREEN: src_a has original 3 lines + 1 new; new task has #work.
+  local found_new = false
+  for _, line in ipairs(src_a_after_insert) do
+    if line:find("New work task") then
+      found_new = true
+      -- P9 assertion: #work must have been injected.
+      local has_work_tag = line:find("#work") ~= nil
+      eq(has_work_tag, true, "E5-step5: P9 must auto-add #work to new task in #work group")
+    end
+  end
+  eq(found_new, true, "E5-step5: new task must appear in source after INSERT (P8)")
+
+  -- ── 6. dd Beta task (which has a continuation note) — P8 block delete ────────
+  -- Beta task is at alpha_row+1 on dashboard; after step 5 insert it may have
+  -- shifted.  Use the managed meta to find it robustly.
+  -- For simplicity: delete any row that still contains "Beta".
+  local beta_row_now = nil
+  local buf_lines_count = vim.api.nvim_buf_line_count(bufnr)
+  for r = FIRST_TASK, buf_lines_count - 1 do
+    local l = get_line(bufnr, r)
+    if l and l:find("Beta") then
+      beta_row_now = r
+      break
+    end
+  end
+  if beta_row_now then
+    vim.api.nvim_buf_set_lines(bufnr, beta_row_now, beta_row_now + 1, false, {})
+    edit_mod.flush(bufnr)
+    -- P8: Beta + its continuation must be removed from source.
+    local src_a_after_delete = read_file(src_a)
+    local beta_still_present = false
+    for _, line in ipairs(src_a_after_delete) do
+      if line:find("Beta") then
+        beta_still_present = true
+      end
+    end
+    eq(beta_still_present, false, "E5-step6: Beta task must be deleted from source (P8 block delete)")
+    local continuation_present = false
+    for _, line in ipairs(src_a_after_delete) do
+      if line:find("continuation note") then
+        continuation_present = true
+      end
+    end
+    eq(continuation_present, false, "E5-step6: Beta continuation must also be deleted (P8 block delete)")
+  end
+
+  -- ── 7. Undo INSERT from step 5 (P1 undo ring) ────────────────────────────────
+  -- The INSERT in step 5 created an undo entry.  dashboard_undo should reverse it.
+  local cmd_mod = require("obsidian-tasks.cmd")
+  local undo_ok = cmd_mod.dashboard_undo(bufnr)
+  eq(undo_ok, true, "E5-step7: undo must succeed (P1 undo ring)")
+
+  -- ── 8. Verify invalid-field task (Delta) is still in source (P2 regression) ──
+  local src_b_final = read_file(src_b)
+  local delta_present = false
+  for _, line in ipairs(src_b_final) do
+    if line:find("Delta invalid") then
+      delta_present = true
+    end
+  end
+  eq(delta_present, true, "E5-step8: Delta task with invalid date must remain in source untouched (P2)")
+
+  -- ── 9. ggdG gate — mass-delete reverted; source untouched (P7) ───────────────
+  -- Simulate a full-buffer delete by clearing ALL rows from FIRST_TASK onward.
+  local total_rows = vim.api.nvim_buf_line_count(bufnr)
+  if total_rows > FIRST_TASK then
+    vim.api.nvim_buf_set_lines(bufnr, FIRST_TASK, total_rows, false, {})
+    local log = require("obsidian-tasks.log")
+    local warned = false
+    local orig_warn = log.warn
+    log.warn = function(msg)
+      if tostring(msg):find("dashboard cleared") then
+        warned = true
+      end
+      orig_warn(msg)
+    end
+    edit_mod.flush(bufnr)
+    log.warn = orig_warn
+    -- P7: source files must be untouched; warning must be emitted.
+    eq(warned, true, "E5-step9: P7 gate must emit 'dashboard cleared' warning on mass-delete")
+  end
+
+  -- ── Cleanup ───────────────────────────────────────────────────────────────────
+  render.clear_buffer(bufnr)
+  index_mod.tasks_in = saved_tasks_in
+  index_mod.set_render_paths = saved_srp
+  index_mod.clear_render_paths = saved_crp
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  for _, sp in ipairs({ src_a, src_b }) do
+    local b = vim.fn.bufnr(sp, false)
+    if b ~= -1 then
+      vim.api.nvim_buf_delete(b, { force = true })
+    end
+    vim.fn.delete(sp)
+  end
+end
+
 return T
