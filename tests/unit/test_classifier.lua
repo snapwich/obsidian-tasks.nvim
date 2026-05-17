@@ -123,4 +123,15 @@ T["classify REVERT: no bullet or checkbox in multi-line context"] = function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
+T["classify REVERT: no bullet or checkbox in single-line context"] = function()
+  local bufnr = make_buf({ "just some prose" })
+  -- Deviation from spec wording: spec says REPAIR_AND_MUTATE for "missing - and/or [ ]",
+  -- but a line with NO task-like structure whatsoever (neither bullet nor checkbox) is
+  -- not repairable — it is unrecognisably different from a task line.  REVERT is the
+  -- correct outcome for single-line prose replacing a managed row.
+  local result = classify(bufnr, 0, "- [ ] Task", "just some prose", {})
+  eq(result, "REVERT", "no-bullet/no-checkbox single-line should revert (not task-like)")
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
 return T

@@ -156,13 +156,15 @@ local function recognize_status_edit(canonical, current)
   return new_sym
 end
 
---- Walk every managed row, classify each as canonical / status edit / other,
---- and propagate recognized status edits to the source file.
+--- Walk every managed row, classify each via M.classify(), and propagate
+--- recognized edits to the source file.
 ---
 --- Rows whose content matches their canonical rendered_text contribute nothing.
---- Rows whose only diff is a status symbol change to a known status symbol get
+--- Rows that classify as MUTATE AND carry a single status-symbol change get
 --- committed to source via the resolver pipeline (same path as <leader>tt).
---- Rows with any other diff fall through; the subsequent rerender restores them.
+--- All other classifications fall through; the subsequent rerender restores them.
+--- Non-status MUTATE edits (description/field changes) also fall through until
+--- the batched-flush layer (ot-iyw1) wires them.
 ---
 --- @param bufnr integer
 local function classify_and_commit(bufnr)
@@ -179,52 +181,66 @@ local function classify_and_commit(bufnr)
       local current = cur_lines[1]
       local meta = meta_by_row[row]
       if current ~= nil and meta ~= nil and meta.rendered_text ~= nil then
-        local new_sym = recognize_status_edit(meta.rendered_text, current)
-        if new_sym ~= nil then
-          -- Disk is source of truth: queries reflect disk state, and edits
-          -- from queries persist to disk via writefile.  The drift check
-          -- compares meta.task_text (the source line at render time) to the
-          -- current ON-DISK line — reading the loaded buffer instead would
-          -- silently mask external concurrent edits AND it would let us
-          -- commit on top of an unrelated unsaved buffer state.  Inline a
-          -- disk-only read; do NOT call cmd._read_source_line (which prefers
-          -- the loaded buffer).
-          local current_src
-          do
-            local ok, lines = pcall(vim.fn.readfile, meta.source_file)
-            if ok and type(lines) == "table" then
-              current_src = lines[meta.source_row + 1]
-            end
-          end
+        -- Route every row through the per-row classifier so that status flips,
+        -- description edits, deletes, etc. all follow a single classification
+        -- path.  ctx carries no special flags at this point: multi-line
+        -- detection and insert detection are wired by the flush layer (ot-iyw1).
+        local label = M.classify(bufnr, row, meta.rendered_text, current, {})
 
-          if current_src == nil then
-            log.warn("obsidian-tasks: cannot read source file — run <leader>tr to refresh")
-          elseif current_src ~= meta.task_text then
-            log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-          else
-            -- cmd.apply_source_edit refuses to commit when a loaded source
-            -- buffer has unsaved changes (which would otherwise silently
-            -- commit those pending edits alongside our toggle).  It also
-            -- handles index invalidate+refresh and avoids bufload (so a stale
-            -- swap file from a crashed nvim session cannot truncate the file).
-            local task = task_parse.parse(meta.task_text)
-            if task then
-              task.status_symbol = new_sym
-              local new_line = serialize.serialize(task)
-              local ok_commit = cmd.apply_source_edit(meta.source_file, meta.source_row, { new_line })
-              if ok_commit then
-                -- Record a pending linger keyed to the dashboard buffer — the
-                -- same bufnr we're processing here is the one the user typed
-                -- the status edit on, so it satisfies the "originated in this
-                -- buffer" rule.  Promotion is gated on linger_on_filter_exit.
-                local rmod = require("obsidian-tasks.render")
-                if type(rmod._record_pending_linger) == "function" then
-                  rmod._record_pending_linger(bufnr, meta.source_file, meta.source_row + 1, nil, task)
+        if label == "MUTATE" then
+          -- Within the MUTATE branch, only single status-symbol changes are
+          -- committed in this phase.  Description/field changes fall through to
+          -- the rerender until the batched-flush layer (ot-iyw1) generalises
+          -- this path.
+          local new_sym = recognize_status_edit(meta.rendered_text, current)
+          if new_sym ~= nil then
+            -- Disk is source of truth: queries reflect disk state, and edits
+            -- from queries persist to disk via writefile.  The drift check
+            -- compares meta.task_text (the source line at render time) to the
+            -- current ON-DISK line — reading the loaded buffer instead would
+            -- silently mask external concurrent edits AND it would let us
+            -- commit on top of an unrelated unsaved buffer state.  Inline a
+            -- disk-only read; do NOT call cmd._read_source_line (which prefers
+            -- the loaded buffer).
+            local current_src
+            do
+              local ok, lines = pcall(vim.fn.readfile, meta.source_file)
+              if ok and type(lines) == "table" then
+                current_src = lines[meta.source_row + 1]
+              end
+            end
+
+            if current_src == nil then
+              log.warn("obsidian-tasks: cannot read source file — run <leader>tr to refresh")
+            elseif current_src ~= meta.task_text then
+              log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+            else
+              -- cmd.apply_source_edit refuses to commit when a loaded source
+              -- buffer has unsaved changes (which would otherwise silently
+              -- commit those pending edits alongside our toggle).  It also
+              -- handles index invalidate+refresh and avoids bufload (so a stale
+              -- swap file from a crashed nvim session cannot truncate the file).
+              local task = task_parse.parse(meta.task_text)
+              if task then
+                task.status_symbol = new_sym
+                local new_line = serialize.serialize(task)
+                local ok_commit = cmd.apply_source_edit(meta.source_file, meta.source_row, { new_line })
+                if ok_commit then
+                  -- Record a pending linger keyed to the dashboard buffer — the
+                  -- same bufnr we're processing here is the one the user typed
+                  -- the status edit on, so it satisfies the "originated in this
+                  -- buffer" rule.  Promotion is gated on linger_on_filter_exit.
+                  local rmod = require("obsidian-tasks.render")
+                  if type(rmod._record_pending_linger) == "function" then
+                    rmod._record_pending_linger(bufnr, meta.source_file, meta.source_row + 1, nil, task)
+                  end
                 end
               end
             end
           end
         end
+        -- DELETE / REPAIR_AND_MUTATE / INSERT / MULTI_LINE / REVERT all fall
+        -- through here; the subsequent rerender restores the managed rows.
       end
     end
   end
