@@ -360,11 +360,21 @@ function M.flush(bufnr)
   -- (the extmark drifts past the replacement), making task_meta_for_row return
   -- nil at the original row.  The snapshot preserves the render-time row→meta
   -- mapping and is immune to this drift.
+  --
+  -- Pending deletes from on_lines are captured FIRST (before any INSERT
+  -- processing that may trigger a re-render and reset snapshot state).
+  -- on_lines accumulates managed rows that were deleted inside a region into
+  -- _pending_deletes and updates _meta_snapshot / _region_snapshot in tandem,
+  -- so those rows no longer appear in meta_by_row (preventing MUTATE
+  -- misclassification when the next managed row shifts into the deleted slot).
+
+  -- Capture pending deletes recorded by on_lines for touched DELETE events.
+  local pending_on_lines_deletes = revert.take_pending_deletes(bufnr)
 
   local all_regions = revert.region_snapshot(bufnr)
   local meta_by_row = revert.meta_snapshot(bufnr)
 
-  if #all_regions == 0 then
+  if #all_regions == 0 and #pending_on_lines_deletes == 0 then
     M.flush_queue[bufnr] = nil
     return
   end
@@ -372,26 +382,34 @@ function M.flush(bufnr)
   -- Collect changed rows (MUTATE / REPAIR_AND_MUTATE), deleted rows, and
   -- inserted rows.
   --
-  -- MUTATE / DELETE scan: iterates ALL meta_by_row entries, not just those
-  -- within the region snapshot bounds.  When a user inserts a new row inside
-  -- a managed region, on_lines shifts the meta snapshot so that rows below
-  -- the insertion point move outside the region's recorded [start, end] range.
-  -- If the user then deletes one of those shifted rows in the same tick (as in
-  -- the combined INSERT+DELETE test), a region-bounded scan would miss the
-  -- deletion.  Scanning all meta entries catches these out-of-region DELETEs.
+  -- MUTATE / DELETE scan: iterates ALL meta_by_row entries.  With the
+  -- pending_deletes mechanism, touched DELETE rows are removed from
+  -- meta_by_row by on_lines; the remaining entries should match their
+  -- rendered_text (shifted rows now occupy the correct keys after the
+  -- on_lines meta update).  The nil-text check below is kept as a fallback
+  -- for edge cases not covered by pending_deletes (e.g. out-of-region
+  -- deletions that the untouched path handles differently).
   --
-  -- INSERT scan: still limited to the region snapshot, since INSERT rows are
-  -- new rows the user typed inside a managed region (there is no meta for them).
+  -- INSERT scan: limited to the region snapshot, since INSERT rows are
+  -- new rows the user typed inside a managed region (there is no meta).
   local changed = {} -- { row, meta, new_text, old_text, label }
   local delete_rows = {} -- { row, meta } for rows where new_text == nil
   local insert_rows = {} -- { row, new_text } for unmanaged rows with content
+
+  -- Seed delete_rows with the pending deletes from on_lines touched DELETEs.
+  -- These are processed with the same block-aware count logic as nil-text deletes.
+  for _, pd in ipairs(pending_on_lines_deletes) do
+    delete_rows[#delete_rows + 1] = { row = pd.row, meta = pd.meta }
+  end
 
   for row, meta in pairs(meta_by_row) do
     local cur_lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
     local new_text = cur_lines[1]
     local old_text = meta.rendered_text
     if new_text == nil then
-      -- Row no longer exists in the buffer → DELETE candidate.
+      -- Row no longer exists in the buffer → DELETE candidate (fallback path
+      -- for cases where on_lines did not record a pending delete, e.g. the
+      -- very last managed row was deleted and there are no rows below to shift).
       delete_rows[#delete_rows + 1] = { row = row, meta = meta }
     elseif old_text ~= nil and new_text ~= old_text then
       local label = revert.classify(bufnr, row, old_text, new_text, {})
@@ -694,6 +712,7 @@ function M.flush(bufnr)
   --      files' edits in the same tick are unaffected).
   --   INSERT entries skip the linger check: there is no pre-existing dashboard
   --   position for a just-inserted row (per architect note on ot-q2da).
+  local had_successful_insert = false
   for _, ir in ipairs(insert_rows) do
     local insert_row = ir.row
     local new_text = ir.new_text
@@ -806,8 +825,23 @@ function M.flush(bufnr)
         revert.suppress(bufnr)
         pcall(vim.api.nvim_buf_set_lines, bufnr, insert_row, insert_row + 1, false, {})
         revert.unsuppress(bufnr)
+      else
+        had_successful_insert = true
       end
     end
+  end
+
+  -- After successful INSERT(s): synchronously re-render the buffer so that
+  -- _meta_snapshot and _region_snapshot reflect the new task(s).  Without this,
+  -- the INSERT row has no managed extmark and every subsequent flush in the same
+  -- tick re-detects it as an INSERT, writing duplicates to source.  Worse, rows
+  -- that shifted down during the INSERT are misclassified as MUTATEs (their
+  -- neighbour's text now occupies their stale meta slot) rather than DELETEs when
+  -- the user removes them.  The re-render (via the already-scheduled do_revert
+  -- path) reads fresh source state, assigns correct source_rows to all tasks, and
+  -- makes subsequent flushes in the same session operate on accurate snapshots.
+  if had_successful_insert then
+    revert._flush_pending(bufnr)
   end
 
   -- Q15: partial-success notification.

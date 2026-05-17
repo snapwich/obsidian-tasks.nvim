@@ -62,6 +62,15 @@ local _region_snapshot = {} -- [bufnr] = table[]
 -- managed rows so keys stay aligned with the live row numbers.
 local _meta_snapshot = {} -- [bufnr] = { [row] = task_meta }
 
+-- Pending deletes accumulated by on_lines when managed rows are deleted inside
+-- a managed region (touched DELETE).  Each entry is { row, meta } where row is
+-- the pre-delete buffer row and meta is the task's snapshot meta (same object as
+-- _meta_snapshot held before the update).  flush() reads these via
+-- take_pending_deletes() so it can do block-aware source deletion for the correct
+-- tasks instead of misclassifying them as MUTATEs (the shifted-in neighbour's
+-- text at the same row is not nil, triggering MUTATE rather than DELETE).
+local _pending_deletes = {} -- [bufnr] = { { row=integer, meta=table }, ... }
+
 -- Rerender function injected by render/init.lua at attach time.
 -- Stored as a closure that captures the real module table M so that test mocks
 -- replacing package.loaded["obsidian-tasks.render.init"] cannot intercept it.
@@ -420,29 +429,41 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
     return
   end
 
-  -- Touched edit: also shift _region_snapshot / _meta_snapshot when the user
-  -- inserts new line(s) at a region boundary (e.g. `o` on a folded fence row,
-  -- which Vim resolves to "insert below the fold" — landing at the first row
-  -- of the rendered region).  Without this update, do_revert deletes using
-  -- stale pre-edit positions and corrupts every subsequent block.
+  -- Touched edit: update _region_snapshot / _meta_snapshot to reflect the user's
+  -- change so do_revert removes/inserts the correct rows and flush() classifies
+  -- each row correctly.
   --
-  -- Only apply to PURE INSERTIONS (last_line == first_line).  For replacements
-  -- and deletes, the snapshot's pre-edit positions remain the safer reference:
-  -- live extmark gravity becomes unreliable when a paste replaces a row
-  -- that's adjacent to (or covers) a region.
+  -- PURE INSERTION (last_line == first_line, delta > 0):
+  --   Expand any region whose boundary or interior overlaps the insert point.
+  --   Three cases for a region R:
+  --     R.start == first_line  → boundary-at-start: expand end by delta.
+  --     R.start >  first_line  → region strictly below: shift start+end by delta.
+  --     R.end  >= first_line   → insert INSIDE region (R.start < first_line <=
+  --                              R.end): expand end only.  Without this expansion
+  --                              do_revert removes stale positions and leaves a
+  --                              "zombie" copy of the last task row in the buffer.
+  --     otherwise              → region entirely above: no change.
+  --
+  -- PURE DELETION (last_line > first_line, delta < 0):
+  --   Record the deleted managed rows as pending_deletes for flush() to handle
+  --   as block-aware source DELETEs.  Without this, the next-managed-row shifts
+  --   into the deleted slot and flush() misclassifies it as a MUTATE, writing
+  --   the wrong task to the deleted task's source position and leaving the
+  --   deleted task's continuation note behind.
   local delta = new_lastline - last_line
-  if delta ~= 0 and last_line == first_line then
+  if delta > 0 and last_line == first_line then
+    -- ── PURE INSERTION ──────────────────────────────────────────────────────────
     local new_snapshot = {}
     for _, region in ipairs(snapshot) do
-      if region[1] == first_line then
-        -- Boundary insert at region start: expand to cover the inserted row(s)
-        -- so revert removes both the user's edit and the (shifted) managed rows.
-        new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
-      elseif region[1] >= first_line then
+      if region[1] > first_line then
         -- Region strictly below the insert: shift entirely by delta.
         new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
+      elseif region[2] >= first_line then
+        -- Insert at or inside the region (region.start <= first_line <= region.end):
+        -- expand the end to cover the inserted row(s) and any shifted managed rows.
+        new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
       else
-        -- Region above the insert: position unchanged.
+        -- Region entirely above the insert: position unchanged.
         new_snapshot[#new_snapshot + 1] = region
       end
     end
@@ -460,6 +481,51 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
       end
     end
     _meta_snapshot[bufnr] = new_meta
+  elseif delta < 0 and last_line > first_line then
+    -- ── TOUCHED DELETION ────────────────────────────────────────────────────────
+    -- Record every managed row in [first_line, last_line) as a pending delete.
+    -- flush() will read these via take_pending_deletes() and perform block-aware
+    -- source deletion (task + continuation lines) for the correct tasks.
+    --
+    -- Also update _region_snapshot and _meta_snapshot so subsequent on_lines
+    -- events and flush() scans see accurate positions for the surviving rows.
+    local old_meta = _meta_snapshot[bufnr] or {}
+    local pending = _pending_deletes[bufnr] or {}
+    local new_meta = {}
+    for row, meta in pairs(old_meta) do
+      if row >= first_line and row < last_line then
+        -- Row was deleted: record as pending delete for flush().
+        pending[#pending + 1] = { row = row, meta = meta }
+      elseif row >= last_line then
+        -- Row survived and shifted up: move to new position.
+        new_meta[row + delta] = meta
+      else
+        -- Row is above the deletion range: unchanged.
+        new_meta[row] = meta
+      end
+    end
+    _pending_deletes[bufnr] = pending
+    _meta_snapshot[bufnr] = new_meta
+
+    -- Shrink / shift region snapshot to match the new buffer layout.
+    local new_snapshot = {}
+    for _, region in ipairs(snapshot) do
+      if region[2] < first_line then
+        -- Region entirely above deletion: unchanged.
+        new_snapshot[#new_snapshot + 1] = region
+      elseif region[1] >= last_line then
+        -- Region entirely below deletion: shift up.
+        new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
+      else
+        -- Region overlaps deletion: shrink the end.
+        local new_end = region[2] + delta
+        if new_end >= region[1] then
+          new_snapshot[#new_snapshot + 1] = { region[1], new_end }
+        end
+        -- else: entire region was deleted → discard.
+      end
+    end
+    _region_snapshot[bufnr] = new_snapshot
   end
 
   -- Notify the edit flush layer about each touched managed row so that
@@ -565,6 +631,21 @@ function M._flush_pending(bufnr)
   do_revert(bufnr)
 end
 
+--- Return and clear the pending deletes accumulated by on_lines for *bufnr*.
+---
+--- flush() calls this once at the start of each flush cycle to collect the
+--- managed rows that were deleted since the last snapshot.  The list is cleared
+--- atomically so a subsequent re-render (triggered by the same flush via
+--- _flush_pending) does not see stale entries from a previous delete event.
+---
+--- @param bufnr integer
+--- @return table  list of { row=integer, meta=table }; empty if none pending
+function M.take_pending_deletes(bufnr)
+  local pending = _pending_deletes[bufnr] or {}
+  _pending_deletes[bufnr] = nil
+  return pending
+end
+
 --- Clean up all per-buffer state.
 --- Called automatically via on_detach when the buffer is deleted.
 --- Also callable from tests to reset state between runs.
@@ -576,6 +657,7 @@ function M._cleanup(bufnr)
   _attached[bufnr] = nil
   _region_snapshot[bufnr] = nil
   _meta_snapshot[bufnr] = nil
+  _pending_deletes[bufnr] = nil
   _rerender_fn[bufnr] = nil
 end
 

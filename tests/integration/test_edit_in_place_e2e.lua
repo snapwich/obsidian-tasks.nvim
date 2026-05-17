@@ -606,10 +606,12 @@ T["e2e: P1-P9 full-stack scenario — P9 group-attr auto-add fails in RED"] = fu
   eq(delta_present, true, "E5-step8: Delta task with invalid date must remain in source untouched (P2)")
 
   -- ── 9. ggdG gate — mass-delete reverted; source untouched (P7) ───────────────
-  -- Simulate a full-buffer delete by clearing ALL rows from FIRST_TASK onward.
+  -- Simulate a true "ggdG" by deleting ALL rows (including fences) so the query
+  -- block becomes structurally broken.  Per Q6: "block gone → revert".
+  -- Deleting only task rows (fences intact) is a legitimate mass-delete and would
+  -- propagate per spec; to trigger the gate the fences must also be removed.
   local total_rows = vim.api.nvim_buf_line_count(bufnr)
-  if total_rows > FIRST_TASK then
-    vim.api.nvim_buf_set_lines(bufnr, FIRST_TASK, total_rows, false, {})
+  if total_rows > 0 then
     local log = require("obsidian-tasks.log")
     local warned = false
     local orig_warn = log.warn
@@ -619,6 +621,7 @@ T["e2e: P1-P9 full-stack scenario — P9 group-attr auto-add fails in RED"] = fu
       end
       orig_warn(msg)
     end
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
     edit_mod.flush(bufnr)
     log.warn = orig_warn
     -- P7: source files must be untouched; warning must be emitted.
