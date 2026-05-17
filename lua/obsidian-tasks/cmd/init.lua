@@ -1294,8 +1294,60 @@ end
 --- @param task_row    integer  0-indexed row of the task to delete
 --- @param task_indent integer  indent level (number of leading spaces) of the task
 --- @return boolean ok
-function M.delete_block(_src_path, _task_row, _task_indent)
-  error("delete_block not implemented")
+function M.delete_block(src_path, task_row, task_indent)
+  local ok_r, lines = pcall(vim.fn.readfile, src_path)
+  if not ok_r or type(lines) ~= "table" then
+    log.warn("obsidian-tasks: delete_block: failed to read " .. tostring(src_path))
+    return false
+  end
+
+  local n = #lines
+
+  -- Count leading whitespace characters in a line.
+  local function indent_of(line)
+    local s = line:match("^(%s*)")
+    return s and #s or 0
+  end
+
+  -- A line is blank iff it is empty or whitespace-only.
+  local function is_blank(line)
+    return line:match("^%s*$") ~= nil
+  end
+
+  -- Walk forward from task_row+1, tracking the last row included in the block.
+  -- lines is 1-indexed; i is a 0-indexed row number so lines[i+1] accesses it.
+  local end_row = task_row
+  local i = task_row + 1
+
+  while i < n do
+    local line = lines[i + 1]
+
+    if is_blank(line) then
+      -- Blank line: look ahead to find the next non-blank row.
+      local next_i = i + 1
+      while next_i < n and is_blank(lines[next_i + 1]) do
+        next_i = next_i + 1
+      end
+      -- If no following non-blank exists, or it is not indented deeper than
+      -- task_indent, the blank ends the continuation block.
+      if next_i >= n or indent_of(lines[next_i + 1]) <= task_indent then
+        break
+      end
+      -- Blank is part of the continuation; include it and keep walking.
+      end_row = i
+      i = i + 1
+    elseif indent_of(line) <= task_indent then
+      -- Non-blank row at same or shallower indent: end of continuation.
+      break
+    else
+      -- Non-blank row indented deeper: continuation line.
+      end_row = i
+      i = i + 1
+    end
+  end
+
+  local count = end_row - task_row + 1
+  return M.apply_source_edit(src_path, task_row, {}, { count = count })
 end
 
 return M
