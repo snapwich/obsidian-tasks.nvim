@@ -24,6 +24,7 @@ local render = require("obsidian-tasks.render.init")
 local revert = require("obsidian-tasks.render.revert")
 local edit_mod = require("obsidian-tasks.render.edit")
 local cmd = require("obsidian-tasks.cmd")
+local managed = require("obsidian-tasks.render.managed")
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -324,6 +325,13 @@ T["edit flush: ±5 row drift located; edit lands at correct source row"] = funct
   local undisturbed = read_src_line(src_path, original_row)
   eq(undisturbed, "# inserted blank 1", "original row should not be mutated")
 
+  -- The managed extmark's stored source_row must be updated from 0 to 5 so that
+  -- subsequent edits on the same row use the correct (drift-recovered) source row.
+  -- Q12: "Found → write at located row, update extmark's stored source_row."
+  local post_meta = managed.task_meta_for_row(bufnr, TASK_ROW)
+  MiniTest.expect.no_equality(post_meta, nil, "task meta must exist after drift-recovery flush")
+  eq(post_meta.source_row, drifted_row, "extmark source_row must be updated to located row after drift recovery")
+
   render.clear_buffer(bufnr)
   restore_stub()
   revert._cleanup(bufnr)
@@ -454,6 +462,12 @@ T["edit flush: row with invalid field accepts description edit; retains diagnost
   local edited = canonical:gsub("Task with bad date", "Updated task with bad date")
   set_line(bufnr, TASK_ROW, edited)
 
+  -- Pre-flush: load the source buffer so diagnostics can be checked post-flush.
+  -- The real flush implementation will call render.refresh_source_diagnostics
+  -- on the source buffer after writing; this check verifies that path fires.
+  vim.cmd("silent! badd " .. vim.fn.fnameescape(src_path))
+  local src_bufnr = vim.fn.bufnr(src_path, false)
+
   edit_mod.flush(bufnr)
 
   -- Source must reflect the description edit despite the invalid field.
@@ -464,20 +478,105 @@ T["edit flush: row with invalid field accepts description edit; retains diagnost
     "description edit should propagate despite invalid field"
   )
 
-  -- Diagnostics for the invalid field should still be present on the source buf.
-  -- (After GREEN implementation; for now just check the flush path doesn't crash.)
-  -- We verify the row is valid and the dashboard didn't corrupt itself.
-  MiniTest.expect.no_equality(get_line(bufnr, TASK_ROW), nil, "dashboard row should still exist after flush")
+  -- Diagnostics for the invalid date field ('someday') must still be present
+  -- on the source buffer after flush — i.e. flush must call
+  -- render.refresh_source_diagnostics so the invalid-field highlight is
+  -- retained on the source row (Q3 + lenient-parser P2 invariant).
+  local post_diags = {}
+  if src_bufnr ~= -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
+    for _, d in ipairs(vim.diagnostic.get(src_bufnr, { namespace = render._source_diag_ns })) do
+      post_diags[#post_diags + 1] = d
+    end
+  end
+  MiniTest.expect.equality(
+    #post_diags > 0,
+    true,
+    "invalid-field diagnostic must be retained on source buffer after flush (render.refresh_source_diagnostics must fire)"
+  )
 
   render.clear_buffer(bufnr)
   restore_stub()
   revert._cleanup(bufnr)
-  local src_buf = vim.fn.bufnr(src_path, false)
-  if src_buf ~= -1 then
-    vim.api.nvim_buf_delete(src_buf, { force = true })
+  if src_bufnr ~= -1 and vim.api.nvim_buf_is_valid(src_bufnr) then
+    vim.api.nvim_buf_delete(src_bufnr, { force = true })
   end
   vim.api.nvim_buf_delete(bufnr, { force = true })
   vim.fn.delete(src_path)
+end
+
+-- ── Q2: Date field normalization — "tomorrow" → ISO date ─────────────────────
+-- Locked decision Q2: per-field value normalization: dates 'tomorrow' → ISO
+-- via cmp/date_nl.lua.  Flush must normalize natural-language date tokens in
+-- field positions before writing to source; verbatim text outside date fields
+-- is written as-is.
+
+T["edit flush: Q2 date normalization — 'tomorrow' in date field written as ISO"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Plan meeting #task")
+
+  local canonical = get_line(bufnr, TASK_ROW)
+  -- Simulate the user typing "tomorrow" into the due-date field position.
+  -- The rendered line gains a date emoji + NL text; flush must convert to ISO.
+  local edited = canonical:gsub("#task", "📅 tomorrow #task")
+  set_line(bufnr, TASK_ROW, edited)
+
+  edit_mod.flush(bufnr)
+
+  -- The source file must contain the ISO equivalent of "tomorrow", NOT the
+  -- literal string "tomorrow".  The exact ISO date depends on the test runtime
+  -- date, so we check that the field value is a valid YYYY-MM-DD string.
+  local src_line = read_src_line(src_path, 0)
+  MiniTest.expect.no_equality(src_line, nil, "source line must exist after flush")
+  -- "tomorrow" must NOT appear verbatim in the written source (normalization required).
+  MiniTest.expect.equality(
+    src_line and src_line:find("tomorrow") == nil,
+    true,
+    "Q2: 'tomorrow' must be normalized to ISO date before writing to source"
+  )
+  -- The ISO date pattern YYYY-MM-DD must appear in the written source line.
+  MiniTest.expect.equality(
+    src_line and src_line:find("%d%d%d%d%-%d%d%-%d%d") ~= nil,
+    true,
+    "Q2: written source must contain an ISO date (YYYY-MM-DD) after 'tomorrow' normalization"
+  )
+
+  cleanup()
+end
+
+-- ── Q10: Cursor shift after REPAIR_AND_MUTATE ─────────────────────────────────
+-- Locked decision Q10: when structural repair re-adds `- [ ] ` (6 chars) at
+-- the start of a line, the cursor column shifts right by 6 so the user's
+-- position within the text is preserved.
+
+T["edit flush: Q10 cursor shifts right when structural repair adds prefix"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Repair me #task")
+
+  -- Open the dashboard buffer in a window so cursor operations work.
+  local winid = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = 80,
+    height = 20,
+    row = 0,
+    col = 0,
+    style = "minimal",
+  })
+
+  -- Simulate REPAIR_AND_MUTATE: user deleted the `- [ ] ` prefix (6 chars),
+  -- leaving just the description.  Cursor sits at column 3 within the bare text.
+  local bare_text = "Repair me #task"
+  set_line(bufnr, TASK_ROW, bare_text)
+  vim.api.nvim_win_set_cursor(winid, { TASK_ROW + 1, 3 }) -- 1-indexed row, 0-indexed col
+
+  -- Flush: classifier detects REPAIR_AND_MUTATE → re-adds `- [ ] ` prefix →
+  -- shifts cursor right by len("- [ ] ") = 6.
+  edit_mod.flush(bufnr)
+
+  local post_cursor = vim.api.nvim_win_get_cursor(winid)
+  -- post_cursor[1] is 1-indexed row (should be unchanged)
+  -- post_cursor[2] is 0-indexed col (should be 3 + 6 = 9)
+  eq(post_cursor[2], 9, "Q10: cursor column must shift right by 6 after REPAIR_AND_MUTATE prefix re-add")
+
+  vim.api.nvim_win_close(winid, true)
+  cleanup()
 end
 
 -- ── blink.cmp commit during insert mode triggers flush on InsertLeave ─────────
