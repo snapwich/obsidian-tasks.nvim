@@ -1213,16 +1213,64 @@ end
 --- New task adopts anchor_indent — callers must pass new_task_line with the
 --- correct leading spaces already applied.
 ---
---- Stub: raises error('insert_after_anchor not implemented').
---- Implemented by P8 GREEN task ot-pf3a.
----
 --- @param src_path      string   path to the source file
 --- @param anchor_row    integer  0-indexed row of the anchor task in the source
 --- @param anchor_indent integer  indent level (number of leading spaces) of the anchor
 --- @param new_task_line string   verbatim new task line to insert
 --- @return boolean ok
-function M.insert_after_anchor(_src_path, _anchor_row, _anchor_indent, _new_task_line)
-  error("insert_after_anchor not implemented")
+function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_line)
+  local ok_r, lines = pcall(vim.fn.readfile, src_path)
+  if not ok_r or type(lines) ~= "table" then
+    log.warn("obsidian-tasks: insert_after_anchor: failed to read " .. tostring(src_path))
+    return false
+  end
+
+  local n = #lines
+
+  -- Count leading whitespace characters in a line (spaces or tabs as-is).
+  local function indent_of(line)
+    local s = line:match("^(%s*)")
+    return s and #s or 0
+  end
+
+  -- A line is blank iff it is empty or whitespace-only.
+  local function is_blank(line)
+    return line:match("^%s*$") ~= nil
+  end
+
+  -- Walk forward from anchor_row+1 (0-indexed) past all continuation lines.
+  -- lines array is 1-indexed: lines[i+1] is the 0-indexed row i.
+  local i = anchor_row + 1 -- first 0-indexed row to test (one after anchor)
+
+  while i < n do
+    local line = lines[i + 1] -- 1-indexed access into readfile result
+
+    if is_blank(line) then
+      -- Blank line: look at the next non-blank row to decide whether this blank
+      -- is part of the continuation (blank-followed-by-indented rule).
+      local next_i = i + 1
+      -- Find the first non-blank row at or after next_i.
+      while next_i < n and is_blank(lines[next_i + 1]) do
+        next_i = next_i + 1
+      end
+      -- If no following non-blank row exists, or the following row is NOT
+      -- indented more than anchor_indent, the blank ends the continuation.
+      if next_i >= n or indent_of(lines[next_i + 1]) <= anchor_indent then
+        break
+      end
+      -- Otherwise the blank is part of the continuation; keep walking.
+      i = i + 1
+    elseif indent_of(line) <= anchor_indent then
+      -- Non-blank row at same or shallower indent: not a continuation.
+      break
+    else
+      -- Non-blank row indented deeper than anchor: continuation line.
+      i = i + 1
+    end
+  end
+
+  -- Insert new_task_line at 0-indexed position i with count=0 (pure insert).
+  return M.apply_source_edit(src_path, i, { new_task_line }, { count = 0 })
 end
 
 --- Delete a task and its continuation block from *src_path*.
