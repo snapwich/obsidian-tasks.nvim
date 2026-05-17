@@ -558,10 +558,50 @@ end
 --- @param row      integer  0-indexed row being classified
 --- @param old_text string   canonical rendered text for this row (at render time)
 --- @param new_text string   current buffer content for this row after the edit
---- @param ctx      table    edit context: { is_multi_line: boolean, ... }
---- @return string|nil  classification label, or nil (stub — not implemented)
-function M.classify(_bufnr, _row, _old_text, _new_text, _ctx)
-  return nil
+--- @param ctx      table    edit context: { is_multi_line: boolean, is_insert: boolean, ... }
+--- @return string  classification label
+function M.classify(_bufnr, _row, _old_text, new_text, ctx)
+  ctx = ctx or {}
+
+  -- 1. DELETE — empty or whitespace-only new_text.
+  if new_text == nil or new_text:match("^%s*$") then
+    return "DELETE"
+  end
+
+  -- 2. INSERT — caller signals an unmanaged row appeared (old_text is nil).
+  if ctx.is_insert then
+    return "INSERT"
+  end
+
+  -- Structural helpers:
+  --   has_bullet   — line starts with optional indent + list marker (`-`, `*`, `+`) + space
+  --   has_checkbox — line contains a `[<char>]` pattern (any single-char status symbol)
+  local has_bullet = new_text:match("^%s*[-*+]%s") ~= nil
+  local has_checkbox = new_text:match("%[.%]") ~= nil
+
+  -- 3. MULTI_LINE context — neighbouring rows also changed in the same tick.
+  --    A structurally-valid row classifies as MULTI_LINE (flush layer decides
+  --    whether to propagate or revert per Q3/Q6).  A row without structure reverts.
+  if ctx.is_multi_line then
+    if has_bullet and has_checkbox then
+      return "MULTI_LINE"
+    else
+      return "REVERT"
+    end
+  end
+
+  -- 4. Single-line classification by structural completeness.
+  if has_bullet and has_checkbox then
+    -- Full `- [<sym>] …` structure: normal mutation (description, field, or status flip).
+    return "MUTATE"
+  elseif has_bullet or has_checkbox then
+    -- Partial structure: bullet without checkbox, or checkbox without bullet.
+    -- Re-add the missing structural prefix so the flush layer can splice it back.
+    return "REPAIR_AND_MUTATE"
+  else
+    -- No list structure at all on a managed row — revert.
+    return "REVERT"
+  end
 end
 
 --- Return internal state snapshot for tests.
