@@ -158,6 +158,41 @@ T["batched apply_source_edit: sort-by-row-desc applies bottom-up"] = function()
   vim.fn.delete(path)
 end
 
+T["batched apply_source_edit: sort-by-row-desc is essential when line counts change"] = function()
+  -- Row 0 is EXPANDED (1 → 2 lines).  A naive top-down implementation would
+  -- expand row 0 first, shifting row 3 to position 4; when it then tries to
+  -- edit original row 3 it lands on the wrong line.
+  -- Bottom-up processes row 3 first (correct original position) then expands
+  -- row 0; both edits land correctly.
+  local path = make_tmpfile({
+    "line A", -- row 0: will be expanded to 2 lines
+    "line B", -- row 1
+    "line C", -- row 2
+    "line D", -- row 3: will be replaced
+  })
+
+  local ok = cmd.apply_source_edit(path, 0, {}, {
+    batch = {
+      { row = 0, new_lines = { "line A1", "line A2" } }, -- expand: 1 → 2 lines
+      { row = 3, new_lines = { "line D'" } }, -- 1-for-1 at original row 3
+    },
+  })
+
+  eq(ok, true, "batch with line-count change should succeed")
+
+  local lines = read_file(path)
+  -- Bottom-up: row 3 replaced first, then row 0 expanded.
+  -- Final: [line A1, line A2, line B, line C, line D']
+  eq(lines[1], "line A1", "row 0 expansion: first line")
+  eq(lines[2], "line A2", "row 0 expansion: second line")
+  eq(lines[3], "line B", "row 1 unchanged")
+  eq(lines[4], "line C", "row 2 unchanged")
+  eq(lines[5], "line D'", "row 3 updated at original (pre-expansion) position")
+  eq(#lines, 5, "file should have 5 lines after 1→2 expansion")
+
+  vim.fn.delete(path)
+end
+
 -- ── Per-file failure isolates to that file (Q15) ──────────────────────────────
 
 T["batched apply_source_edit: per-file write failure isolates to that file"] = function()
@@ -228,6 +263,131 @@ T["batched apply_source_edit: single undo block per batch"] = function()
   eq(#ring, 1, "batch should produce exactly one undo-ring entry (single undo block)")
 
   -- Cleanup
+  cmd._undo_ring[dash_bufnr] = nil
+  vim.api.nvim_buf_delete(dash_bufnr, { force = true })
+  vim.fn.delete(path)
+end
+
+-- ── expected_text: locate-hit (drift recovery) ───────────────────────────────
+
+T["batched apply_source_edit: expected_text hit — applies at located row, reports located_row"] = function()
+  -- Task has drifted +2 rows from expected_row=0 (actual row=2).
+  -- The batch entry supplies expected_text; locate() finds the actual row.
+  local task = "- [ ] Task with drift #task"
+  local path = make_tmpfile({
+    "# filler 1", -- row 0
+    "# filler 2", -- row 1
+    task, -- row 2 (actual; expected=0)
+  })
+
+  local ok, result = cmd.apply_source_edit(path, 0, { "- [x] Task with drift #task" }, {
+    batch = {
+      { row = 0, new_lines = { "- [x] Task with drift #task" }, expected_text = task },
+    },
+  })
+
+  eq(ok, true, "batch with expected_text hit should succeed")
+  MiniTest.expect.no_equality(result, nil, "should return a result table")
+  MiniTest.expect.no_equality(result.entries, nil, "result.entries should not be nil")
+  eq(result.entries[1].applied, true, "entry should be applied")
+  eq(result.entries[1].located_row, 2, "located_row should be the actual row (2, not expected 0)")
+  eq(result.entries[1].reason, "ok", "reason should be 'ok'")
+
+  local lines = read_file(path)
+  eq(lines[1], "# filler 1", "filler row 0 unchanged")
+  eq(lines[2], "# filler 2", "filler row 1 unchanged")
+  eq(lines[3], "- [x] Task with drift #task", "task at located row (2) should be updated")
+
+  vim.fn.delete(path)
+end
+
+-- ── expected_text: locate-miss (entry skipped) ───────────────────────────────
+
+T["batched apply_source_edit: expected_text miss — entry skipped, returns locate_miss"] = function()
+  -- The task is not anywhere near the expected_row, so locate() returns nil.
+  -- The entry is NOT applied; the file still writes (but unchanged for that entry).
+  local path = make_tmpfile({
+    "- [ ] Other task", -- row 0 (not the expected_text)
+  })
+
+  local ok, result = cmd.apply_source_edit(path, 5, { "- [x] Missing #task" }, {
+    batch = {
+      -- expected_row=5, but the task text is nowhere in the file → locate miss
+      { row = 5, new_lines = { "- [x] Missing #task" }, expected_text = "- [ ] Missing #task" },
+    },
+  })
+
+  eq(ok, true, "batch should succeed (write ok) even with a locate miss")
+  MiniTest.expect.no_equality(result, nil, "should return a result table")
+  eq(result.entries[1].applied, false, "missed entry should not be applied")
+  eq(result.entries[1].located_row, nil, "locate_miss has no located_row")
+  eq(result.entries[1].reason, "locate_miss", "reason should be 'locate_miss'")
+
+  -- Original content must be preserved.
+  local lines = read_file(path)
+  eq(lines[1], "- [ ] Other task", "existing task should be unchanged on locate miss")
+
+  vim.fn.delete(path)
+end
+
+-- ── write_failed reason propagated in result ─────────────────────────────────
+
+T["batched apply_source_edit: write failure sets reason=write_failed in result"] = function()
+  local path_fail = make_tmpfile({ "- [ ] Task FAIL" })
+  vim.fn.system({ "chmod", "-w", path_fail })
+
+  local ok_fail, result_fail = cmd.apply_source_edit(path_fail, 0, { "- [x] Task FAIL" }, {
+    batch = { { row = 0, new_lines = { "- [x] Task FAIL" } } },
+  })
+
+  vim.fn.system({ "chmod", "+w", path_fail })
+
+  eq(ok_fail, false, "write to read-only file should fail")
+  MiniTest.expect.no_equality(result_fail, nil, "should return a result table on write failure")
+  eq(result_fail.entries[1].applied, false, "entry should be marked not applied")
+  eq(result_fail.entries[1].reason, "write_failed", "reason should be 'write_failed'")
+
+  vim.fn.delete(path_fail)
+end
+
+-- ── dashboard_undo reverts entire batch ──────────────────────────────────────
+
+T["batched apply_source_edit: dashboard_undo reverts all rows in the batch"] = function()
+  local dash_bufnr = vim.api.nvim_create_buf(false, true)
+  local path = make_tmpfile({
+    "- [ ] Row A",
+    "- [ ] Row B",
+    "- [ ] Row C",
+  })
+
+  cmd._undo_ring[dash_bufnr] = nil
+
+  -- Forward batch: mark all three rows done.
+  local ok = cmd.apply_source_edit(path, 0, {}, {
+    dashboard_bufnr = dash_bufnr,
+    batch = {
+      { row = 0, new_lines = { "- [x] Row A" } },
+      { row = 1, new_lines = { "- [x] Row B" } },
+      { row = 2, new_lines = { "- [x] Row C" } },
+    },
+  })
+  eq(ok, true, "forward batch should succeed")
+
+  local lines_after = read_file(path)
+  eq(lines_after[1], "- [x] Row A", "row A should be done after forward batch")
+  eq(lines_after[2], "- [x] Row B", "row B should be done after forward batch")
+  eq(lines_after[3], "- [x] Row C", "row C should be done after forward batch")
+
+  -- Undo: should revert ALL three rows atomically.
+  local undo_ok = cmd.dashboard_undo(dash_bufnr)
+  eq(undo_ok, true, "dashboard_undo of batch should succeed")
+
+  local lines_undone = read_file(path)
+  eq(lines_undone[1], "- [ ] Row A", "row A should be reverted by batch undo")
+  eq(lines_undone[2], "- [ ] Row B", "row B should be reverted by batch undo")
+  eq(lines_undone[3], "- [ ] Row C", "row C should be reverted by batch undo")
+
+  -- Cleanup.
   cmd._undo_ring[dash_bufnr] = nil
   vim.api.nvim_buf_delete(dash_bufnr, { force = true })
   vim.fn.delete(path)
