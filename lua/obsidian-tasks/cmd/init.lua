@@ -664,6 +664,62 @@ function M.dashboard_undo(dashboard_bufnr)
   end
   local entry = r[#r]
 
+  -- ── Multi-file tick undo (Q13): reverse edits across all files in one call ────
+  -- Produced by render/edit.flush() when > 1 source file was written in a tick.
+  if entry._multi_file then
+    -- Drift check: for every file-batch, verify the new_lines still sit at their
+    -- stored src_rows on disk.
+    for _, fb in ipairs(entry.file_batches) do
+      local ok_r, disk_check = pcall(vim.fn.readfile, fb.src_path)
+      if not ok_r or type(disk_check) ~= "table" then
+        log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+        return false
+      end
+      for _, sub in ipairs(fb.batch_edits) do
+        for i, line in ipairs(sub.new_lines) do
+          if disk_check[sub.src_row + i] ~= line then
+            log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+            return false
+          end
+        end
+      end
+    end
+
+    r[#r] = nil
+
+    -- Apply inverse edits for every file.  Within each file, sub-edits are
+    -- applied in ascending row order (top-down) so that row-count changes from
+    -- earlier sub-edits correctly shift later indices.
+    local any_failed = false
+    for _, fb in ipairs(entry.file_batches) do
+      for i = #fb.batch_edits, 1, -1 do
+        local sub = fb.batch_edits[i]
+        local ok_sub = M.apply_source_edit(fb.src_path, sub.src_row, sub.old_lines, {
+          count = sub.new_count,
+          dashboard_bufnr = dashboard_bufnr,
+          skip_record = true,
+        })
+        if not ok_sub then
+          any_failed = true
+        end
+      end
+    end
+
+    if any_failed then
+      r[#r + 1] = entry -- restore so the user can retry
+      return false
+    end
+
+    M._redo_ring[dashboard_bufnr] = M._redo_ring[dashboard_bufnr] or {}
+    local rr = M._redo_ring[dashboard_bufnr]
+    rr[#rr + 1] = entry
+    local render = require("obsidian-tasks.render")
+    if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
+      pcall(render.rerender_buffer, dashboard_bufnr)
+    end
+    return true
+  end
+
   -- ── Batch undo: reverse every sub-edit ───────────────────────────────────────
   if entry.batch_edits then
     -- Drift check: read file once, verify all sub-edits still have new_lines at
@@ -761,6 +817,57 @@ function M.dashboard_redo(dashboard_bufnr)
     return false
   end
   local entry = rr[#rr]
+
+  -- ── Multi-file tick redo ──────────────────────────────────────────────────────
+  if entry._multi_file then
+    -- Drift check: verify old_lines at stored src_rows for every file.
+    for _, fb in ipairs(entry.file_batches) do
+      local ok_r, disk_check = pcall(vim.fn.readfile, fb.src_path)
+      if not ok_r or type(disk_check) ~= "table" then
+        log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+        return false
+      end
+      for _, sub in ipairs(fb.batch_edits) do
+        for i, line in ipairs(sub.old_lines) do
+          if disk_check[sub.src_row + i] ~= line then
+            log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+            return false
+          end
+        end
+      end
+    end
+
+    rr[#rr] = nil
+
+    -- Re-apply forward edits for every file (descending row order = bottom-up).
+    local any_failed = false
+    for _, fb in ipairs(entry.file_batches) do
+      for _, sub in ipairs(fb.batch_edits) do
+        local ok_sub = M.apply_source_edit(fb.src_path, sub.src_row, sub.new_lines, {
+          count = sub.old_count,
+          dashboard_bufnr = dashboard_bufnr,
+          skip_record = true,
+        })
+        if not ok_sub then
+          any_failed = true
+        end
+      end
+    end
+
+    if any_failed then
+      rr[#rr + 1] = entry
+      return false
+    end
+
+    M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
+    local r = M._undo_ring[dashboard_bufnr]
+    r[#r + 1] = entry
+    local render = require("obsidian-tasks.render")
+    if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
+      pcall(render.rerender_buffer, dashboard_bufnr)
+    end
+    return true
+  end
 
   -- ── Batch redo: re-apply every sub-edit ──────────────────────────────────────
   if entry.batch_edits then

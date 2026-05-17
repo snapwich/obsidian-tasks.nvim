@@ -301,6 +301,49 @@ function M.all_regions(bufnr)
   return regions
 end
 
+--- Re-anchor the per-task extmark associated with *meta_ref* to *row*.
+---
+--- When the user replaces a managed row, Neovim shifts right-gravity extmarks
+--- past the replacement, making them inaccessible via task_meta_for_row at the
+--- original row.  flush() calls this after a successful write to restore the
+--- extmark's position so that future on_lines / task_meta_for_row calls find it
+--- at the correct (post-flush) dashboard row.
+---
+--- No-op if *meta_ref* is not found in the buffer's side table or if *row* is
+--- out of range for the buffer.
+---
+--- @param bufnr    integer
+--- @param meta_ref table   the meta object (identity comparison, not equality)
+--- @param row      integer 0-indexed row to re-anchor at
+function M.reanchor_task(bufnr, meta_ref, row)
+  if not _task_meta[bufnr] then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  if row < 0 or row >= line_count then
+    return
+  end
+  local ns = M.namespace()
+  -- Find and delete the old (drifted) extmark by meta identity.
+  local found_mark_id = nil
+  for mark_id, m in pairs(_task_meta[bufnr]) do
+    if m == meta_ref then
+      found_mark_id = mark_id
+      break
+    end
+  end
+  if found_mark_id then
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, found_mark_id)
+    _task_meta[bufnr][found_mark_id] = nil
+  end
+  -- Create a new extmark at the correct row.
+  local new_id = vim.api.nvim_buf_set_extmark(bufnr, ns, row, 0, {})
+  _task_meta[bufnr][new_id] = meta_ref
+end
+
 -- ── Debug / test helpers ──────────────────────────────────────────────────────
 
 --- Return the number of entries in each per-buffer side table.

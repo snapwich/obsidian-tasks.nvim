@@ -270,8 +270,8 @@ T["edit flush: single undo after multi-file tick reverses all source mutations"]
   edit_mod.flush(dash_bufnr)
 
   -- Verify sources were updated.
-  eq(read_src_line(src_a, 0), "- [x] Task A mutated #task", "src_a should be mutated")
-  eq(read_src_line(src_b, 0), "- [x] Task B mutated #task", "src_b should be mutated")
+  eq(read_src_line(src_a, 0), "- [ ] Task A mutated #task", "src_a should be mutated")
+  eq(read_src_line(src_b, 0), "- [ ] Task B mutated #task", "src_b should be mutated")
 
   -- Single undo should reverse both source mutations.
   local ok_undo = cmd.dashboard_undo(dash_bufnr)

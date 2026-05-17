@@ -615,9 +615,38 @@ function M.classify(_bufnr, _row, _old_text, new_text, ctx)
     -- Re-add the missing structural prefix so the flush layer can splice it back.
     return "REPAIR_AND_MUTATE"
   else
-    -- No list structure at all on a managed row — revert.
-    return "REVERT"
+    -- No list structure at all on a managed row in a single-line context.
+    -- Per edit_in_place.md plan: single-line no-structure → REPAIR_AND_MUTATE
+    -- (the flush layer re-adds the full "- [ ] " prefix).  This allows users
+    -- to accidentally delete the task prefix and have it silently restored,
+    -- preserving the cursor offset within the text (Q10).
+    return "REPAIR_AND_MUTATE"
   end
+end
+
+--- Return the snapshot of managed regions for *bufnr* at the last render time.
+---
+--- The snapshot is captured by attach() after each render_buffer call and is
+--- NOT shifted when the user replaces rows (unlike live extmarks, which Neovim
+--- shifts on replace/paste).  flush() uses this for reliable row → meta lookup.
+---
+--- @param bufnr integer
+--- @return table  list of { start_row, end_row } 0-indexed inclusive
+function M.region_snapshot(bufnr)
+  return _region_snapshot[bufnr] or {}
+end
+
+--- Return the per-row task-meta snapshot for *bufnr* at the last render time.
+---
+--- Keys are 0-indexed row numbers at the time of the last attach() call.
+--- Values are the same meta table objects shared with managed._task_meta, so
+--- mutations to returned meta objects (e.g. source_row updates) are visible
+--- to all subsequent callers.
+---
+--- @param bufnr integer
+--- @return table  { [row] = { source_file, source_row, task_text, rendered_text } }
+function M.meta_snapshot(bufnr)
+  return _meta_snapshot[bufnr] or {}
 end
 
 --- Return internal state snapshot for tests.
