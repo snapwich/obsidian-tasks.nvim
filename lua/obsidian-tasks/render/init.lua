@@ -597,6 +597,7 @@ function M.render_buffer(bufnr, workspace)
           extmark_ids = extmark_ids,
           line_map = line_map,
           group_by = (pb.ast and pb.ast.group_by) or {},
+          sort_by = (pb.ast and pb.ast.sort_by) or {},
         }
 
         offset = offset + n_tasks
