@@ -18,12 +18,28 @@
 --        is already implemented and the linger structure is unchanged).
 --   P6   Per-block-query dedup: linger in block 1 does not suppress live
 --        render of the same task in block 2.
+--
+-- Module-identity note: other unit test files (test_render_init.lua,
+-- test_render_integration.lua) call
+--   package.loaded["obsidian-tasks.render.init"] = nil
+-- WITHOUT restoring the entry, so a stale top-level module reference would
+-- point to an orphaned table that flush() never writes to.  To avoid this,
+-- ALL accesses to the render module are made via get_render(), which always
+-- calls require() and therefore returns the live cached table regardless of
+-- prior resets.
 
 local T = MiniTest.new_set()
 
-local render = require("obsidian-tasks.render.init")
+-- render.revert and render.edit are NOT reset by any unit test; safe to cache.
 local revert = require("obsidian-tasks.render.revert")
 local edit_mod = require("obsidian-tasks.render.edit")
+
+-- ── Module accessor (always live) ─────────────────────────────────────────────
+-- Returns the current render.init module table.  Must be called inside every
+-- helper or test function body — never captured at file-load time.
+local function get_render()
+  return require("obsidian-tasks.render.init")
+end
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -103,6 +119,9 @@ end
 --- query_lines: list of query lines (without fence markers).
 --- task_text: the single task line written to the source file.
 local function setup_grouped_dashboard(task_text, query_lines)
+  -- Always use get_render() so this function works even after a module reset
+  -- by another test file (test_render_init.lua, test_render_integration.lua).
+  local render = get_render()
   render.configure({
     default_folded = false,
     linger_on_filter_exit = true,
@@ -121,9 +140,10 @@ local function setup_grouped_dashboard(task_text, query_lines)
   render.render_buffer(bufnr, nil)
 
   local cleanup = function()
-    render._lingers[bufnr] = nil
-    render._pending_lingers[bufnr] = nil
-    render.clear_buffer(bufnr)
+    local r = get_render()
+    r._lingers[bufnr] = nil
+    r._pending_lingers[bufnr] = nil
+    r.clear_buffer(bufnr)
     restore()
     revert._cleanup(bufnr)
     local src_buf = vim.fn.bufnr(src_path, false)
@@ -145,18 +165,21 @@ local function setup_grouped_dashboard(task_text, query_lines)
 end
 
 --- Return the number of pending linger entries for bufnr.
+--- Always calls get_render() so it reads the live module table.
 local function pending_count(bufnr)
-  return #(render._pending_lingers[bufnr] or {})
+  return #(get_render()._pending_lingers[bufnr] or {})
 end
 
 --- Return the number of promoted linger entries for bufnr.
+--- Always calls get_render() so it reads the live module table.
 local function linger_count(bufnr)
-  return #(render._lingers[bufnr] or {})
+  return #(get_render()._lingers[bufnr] or {})
 end
 
 --- Count task lines in the buffer's render state that have linger=true.
+--- Always calls get_render() so it reads the live module table.
 local function linger_line_count(bufnr)
-  local state = render._buffer_state[bufnr] or {}
+  local state = get_render()._buffer_state[bufnr] or {}
   local n = 0
   for _, blk in ipairs(state) do
     for _, meta in pairs(blk.line_map or {}) do
@@ -222,6 +245,8 @@ end
 --
 -- GREEN: this test PASSES immediately since the stub returns moves=false,
 -- which means no linger is recorded — matching the expected behavior.
+-- After fixing the module-identity bug this test remains meaningful: it will
+-- fail if a future regression starts recording lingers on description-only edits.
 
 T["linger_generic: description-only edit on no-group dashboard records no linger"] = function()
   local bufnr, _, task_row, cleanup = setup_grouped_dashboard("- [ ] Buy milk", { "not done" })
@@ -246,9 +271,11 @@ end
 -- Buffer B re-renders fresh (Q9).
 --
 -- RED: no linger recorded by stub → assertion for bufA FAILS.
--- The assertion for bufB (no linger) passes trivially.
+-- The assertion for bufB (no linger) is meaningful after the module-identity
+-- fix: it will fail if a bug ever causes the trigger to record in bufB.
 
 T["linger_generic: flush in bufA records linger in bufA only, not bufB"] = function()
+  local render = get_render()
   render.configure({
     default_folded = false,
     linger_on_filter_exit = true,
@@ -260,7 +287,7 @@ T["linger_generic: flush in bufA records linger in bufA only, not bufB"] = funct
 
   local function make_dash_buf()
     local b = make_buf({ "```tasks", "not done", "group by due", "```" })
-    render.render_buffer(b, nil)
+    get_render().render_buffer(b, nil)
     return b
   end
 
@@ -282,12 +309,13 @@ T["linger_generic: flush in bufA records linger in bufA only, not bufB"] = funct
   eq(pending_count(bufB), 0, "non-editing buffer B must not have any pending lingers")
 
   -- Cleanup.
-  render._lingers[bufA] = nil
-  render._pending_lingers[bufA] = nil
-  render._lingers[bufB] = nil
-  render._pending_lingers[bufB] = nil
-  render.clear_buffer(bufA)
-  render.clear_buffer(bufB)
+  local r = get_render()
+  r._lingers[bufA] = nil
+  r._pending_lingers[bufA] = nil
+  r._lingers[bufB] = nil
+  r._pending_lingers[bufB] = nil
+  r.clear_buffer(bufA)
+  r.clear_buffer(bufB)
   restore()
   revert._cleanup(bufA)
   revert._cleanup(bufB)
@@ -309,6 +337,7 @@ end
 -- guards against future regressions where a P6 refactor might break the clear.
 
 T["linger_generic: refresh_with_clear_lingers clears broadened lingers (regression guard)"] = function()
+  local render = get_render()
   render.configure({
     default_folded = false,
     linger_on_filter_exit = true,
@@ -349,21 +378,21 @@ T["linger_generic: refresh_with_clear_lingers clears broadened lingers (regressi
   -- Directly record a pending linger (bypassing would_move, simulating a
   -- successful broadened trigger recording a linger entry).
   local done_task = task_parse_mod.parse("- [ ] Linger test 📅 2026-02-01")
-  render._record_pending_linger(bufnr, "/vault/a.md", 1, nil, done_task)
+  get_render()._record_pending_linger(bufnr, "/vault/a.md", 1, nil, done_task)
 
   -- Make the task disappear from the live set so the linger gets promoted.
   current_tasks = {}
-  render.rerender_buffer(bufnr, nil)
+  get_render().rerender_buffer(bufnr, nil)
 
   -- Linger should now be promoted.
   eq(linger_count(bufnr) >= 1, true, "linger should be promoted after rerender")
 
   -- Call refresh_with_clear_lingers (simulates <leader>tr).
-  render.refresh_with_clear_lingers(bufnr, nil)
+  get_render().refresh_with_clear_lingers(bufnr, nil)
 
   -- All linger state must be cleared.
-  eq(render._lingers[bufnr], nil, "refresh_with_clear_lingers must clear _lingers")
-  eq(render._pending_lingers[bufnr], nil, "refresh_with_clear_lingers must clear _pending_lingers")
+  eq(get_render()._lingers[bufnr], nil, "refresh_with_clear_lingers must clear _lingers")
+  eq(get_render()._pending_lingers[bufnr], nil, "refresh_with_clear_lingers must clear _pending_lingers")
   eq(linger_line_count(bufnr), 0, "no linger lines should remain in buffer state after clear")
 
   -- Cleanup.
@@ -371,7 +400,7 @@ T["linger_generic: refresh_with_clear_lingers clears broadened lingers (regressi
   index_mod.set_render_paths = saved_srp
   index_mod.clear_render_paths = saved_crp
   index_mod.reverse_index = saved_ri
-  render.clear_buffer(bufnr)
+  get_render().clear_buffer(bufnr)
   revert._cleanup(bufnr)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
@@ -382,10 +411,13 @@ end
 -- suppress the live render of the same task in block 2.
 --
 -- RED: the broadened trigger is a stub → no linger recorded for block 1 →
--- assertion that block 1 has a lingered task FAILS.
--- The assertion that block 2 still has a live task passes trivially.
+-- assertion that block 1 produced a linger FAILS.
+-- The assertion that block 2 still has a live task passes trivially (true
+-- both with and without lingers), but is also meaningful: after GREEN it
+-- verifies the per-block scoping actually prevents cross-block suppression.
 
 T["linger_generic: per-block-query dedup: linger in block 1 does not suppress live in block 2"] = function()
+  local render = get_render()
   render.configure({
     default_folded = false,
     linger_on_filter_exit = true,
@@ -425,12 +457,11 @@ T["linger_generic: per-block-query dedup: linger in block 1 does not suppress li
 
   -- Also verify that after rerender, block 2 still shows the live task
   -- (i.e., the linger in block 1 does not leak into block 2).
-  -- Update source so the rerender reads the edited task.
-  -- (The flush already wrote the new date to src_path.)
-  render.rerender_buffer(bufnr, nil)
+  -- The flush already wrote the new date to src_path; rerender reads it.
+  get_render().rerender_buffer(bufnr, nil)
 
   -- Block 2 should still have a live (non-lingered) task row.
-  local buf_state = render._buffer_state[bufnr] or {}
+  local buf_state = get_render()._buffer_state[bufnr] or {}
   local block2_has_live = false
   if buf_state[2] then
     for _, meta in pairs(buf_state[2].line_map or {}) do
@@ -442,9 +473,10 @@ T["linger_generic: per-block-query dedup: linger in block 1 does not suppress li
   eq(block2_has_live, true, "block 2 must still render a live task row after a linger in block 1")
 
   -- Cleanup.
-  render._lingers[bufnr] = nil
-  render._pending_lingers[bufnr] = nil
-  render.clear_buffer(bufnr)
+  local r = get_render()
+  r._lingers[bufnr] = nil
+  r._pending_lingers[bufnr] = nil
+  r.clear_buffer(bufnr)
   restore()
   revert._cleanup(bufnr)
   local src_buf = vim.fn.bufnr(src_path, false)
