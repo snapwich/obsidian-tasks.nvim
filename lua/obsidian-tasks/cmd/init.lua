@@ -1199,4 +1199,55 @@ function M.setup()
   })
 end
 
+--- Insert a new task line after the anchor task's continuation block in *src_path*.
+---
+--- Algorithm (Q11):
+---   1. Start at anchor_row + 1.
+---   2. Walk forward while the row is a continuation of anchor:
+---      a. Non-blank line with indent > anchor_indent → continuation.
+---      b. Blank line whose NEXT non-blank row has indent > anchor_indent →
+---         the blank (and that next row) are part of the continuation.
+---   3. Insert new_task_line at the first row that is NOT part of the continuation
+---      via apply_source_edit with count=0 (pure insert before that row).
+---
+--- New task adopts anchor_indent — callers must pass new_task_line with the
+--- correct leading spaces already applied.
+---
+--- Stub: raises error('insert_after_anchor not implemented').
+--- Implemented by P8 GREEN task ot-pf3a.
+---
+--- @param src_path      string   path to the source file
+--- @param anchor_row    integer  0-indexed row of the anchor task in the source
+--- @param anchor_indent integer  indent level (number of leading spaces) of the anchor
+--- @param new_task_line string   verbatim new task line to insert
+--- @return boolean ok
+function M.insert_after_anchor(_src_path, _anchor_row, _anchor_indent, _new_task_line)
+  error("insert_after_anchor not implemented")
+end
+
+--- Delete a task and its continuation block from *src_path*.
+---
+--- Algorithm (Q14):
+---   1. Start at task_row.
+---   2. Walk forward past all continuation lines:
+---      a. Non-blank lines indented more than task_indent are continuations.
+---      b. A blank line whose NEXT non-blank row is indented more than
+---         task_indent is part of the continuation (blank + following indented
+---         lines are included in the delete range).
+---      c. A blank line NOT followed by an indented line ends the continuation
+---         — the blank itself is NOT deleted.
+---   3. Delete task_row through the last continuation row (inclusive) via
+---      apply_source_edit with count=N.
+---
+--- Stub: raises error('delete_block not implemented').
+--- Implemented by P8 GREEN task ot-vz1m.
+---
+--- @param src_path    string   path to the source file
+--- @param task_row    integer  0-indexed row of the task to delete
+--- @param task_indent integer  indent level (number of leading spaces) of the task
+--- @return boolean ok
+function M.delete_block(_src_path, _task_row, _task_indent)
+  error("delete_block not implemented")
+end
+
 return M
