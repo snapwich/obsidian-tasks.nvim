@@ -139,21 +139,51 @@ end
 --- Hook called from the on_lines listener when a managed row edit is queued
 --- for deferred propagation to the source file.
 ---
---- In the real implementation this:
----   1. Classifies the edit via render/revert.classify.
----   2. On MUTATE / REPAIR_AND_MUTATE: enqueues a per-file edit record into
----      flush_queue[bufnr].
----   3. Schedules flush(bufnr) for end-of-tick via vim.schedule (at most once
----      per buffer per tick — debounced).
+--- In normal mode:
+---   1. Enqueues the per-row old/new text into flush_queue[bufnr].rows[row].
+---   2. Schedules flush(bufnr) for end-of-tick via vim.schedule (debounced:
+---      at most one scheduled flush per buffer per tick).
 ---
---- Insert-mode path (marks dirty, defers to InsertLeave) is wired in ot-v0s1.
+--- In insert / replace mode: marks the buffer dirty and returns.  Flush will
+--- be triggered by InsertLeave (wired in ot-v0s1).
 ---
 --- @param bufnr     integer  dashboard buffer
 --- @param row       integer  0-indexed row that changed
 --- @param old_text  string   canonical rendered text for this row
 --- @param new_text  string   current buffer content for this row after the edit
---- @param ctx       table?   extra context forwarded from on_lines
-function M.on_lines_hook(_bufnr, _row, _old_text, _new_text, _ctx) end
+--- @param _ctx      table?   extra context forwarded from on_lines (reserved)
+function M.on_lines_hook(bufnr, row, old_text, new_text, _ctx)
+  local mode = vim.fn.mode()
+  if mode:match("[iR]") then
+    require("obsidian-tasks.render.hygiene").mark_dirty(bufnr)
+    return
+  end
+  M.flush_queue[bufnr] = M.flush_queue[bufnr] or { rows = {}, scheduled = false }
+  M.flush_queue[bufnr].rows[row] = { old_text = old_text, new_text = new_text }
+  if not M.flush_queue[bufnr].scheduled then
+    M.flush_queue[bufnr].scheduled = true
+    vim.schedule(function()
+      M.flush(bufnr)
+    end)
+  end
+end
+
+--- Drain the pending flush for *bufnr* synchronously (test seam).
+---
+--- In normal operation flush is deferred via vim.schedule so that Neovim
+--- finishes processing the user's change before we write.  During tests,
+--- vim.schedule callbacks interleave with other case-callbacks and make
+--- assertions unreachable.  _flush_pending() executes flush() directly,
+--- giving tests a deterministic, synchronous execution path.
+---
+--- No-op when no flush is pending for *bufnr*.
+--- @param bufnr integer
+function M._flush_pending(bufnr)
+  if not (M.flush_queue[bufnr] and M.flush_queue[bufnr].scheduled) then
+    return
+  end
+  M.flush(bufnr)
+end
 
 --- Flush all pending edits for *bufnr* to their respective source files.
 ---

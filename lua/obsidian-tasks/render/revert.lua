@@ -462,6 +462,28 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
     _meta_snapshot[bufnr] = new_meta
   end
 
+  -- Notify the edit flush layer about each touched managed row so that
+  -- normal-mode edits are propagated to their source files at end-of-tick
+  -- (on_lines_hook → flush_queue → vim.schedule(flush)).
+  --
+  -- This call must happen BEFORE the debounce guard below so that
+  -- multi-row edits within a single tick (e.g. `:s/foo/bar/g`) still call
+  -- on_lines_hook for every changed row even when _scheduled was already
+  -- set by an earlier on_lines call in the same tick.
+  --
+  -- Wrapped in pcall: errors in edit.lua must not disrupt the revert path.
+  pcall(function()
+    local edit_m = require("obsidian-tasks.render.edit")
+    local meta_by_row = _meta_snapshot[bufnr] or {}
+    for row = first_line, check_end - 1 do
+      local meta = meta_by_row[row]
+      if meta then
+        local cur = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+        edit_m.on_lines_hook(bufnr, row, meta.rendered_text, cur[1], {})
+      end
+    end
+  end)
+
   -- Debounce: schedule at most one revert pass per buffer.
   if _scheduled[bufnr] then
     return

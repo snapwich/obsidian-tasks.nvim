@@ -155,6 +155,39 @@ T["edit flush: normal-mode description edit propagates to source"] = function()
   cleanup()
 end
 
+-- ── Real on_lines path: normal-mode edit schedules flush via on_lines_hook ─────
+-- This is the KEY regression guard for the architect's CHANGES REQUESTED item 3:
+-- "Tests only pass because they call flush() directly — no test exercises the
+-- real on_lines → flush path."
+--
+-- Uses edit_mod._flush_pending (NOT edit_mod.flush directly) so the test path
+-- goes through the real on_lines → on_lines_hook → flush_queue → flush chain.
+
+T["on_lines wiring: normal-mode edit propagates via real on_lines path"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Wire test #task")
+
+  local canonical = get_line(bufnr, TASK_ROW)
+  local edited = canonical:gsub("Wire test", "Wire test edited")
+
+  -- Simulate normal-mode edit: fires on_lines → on_lines_hook → schedules flush.
+  set_line(bufnr, TASK_ROW, edited)
+
+  -- Verify on_lines_hook registered the pending flush in the queue.
+  MiniTest.expect.equality(
+    edit_mod.flush_queue[bufnr] ~= nil and edit_mod.flush_queue[bufnr].scheduled == true,
+    true,
+    "on_lines_hook must have registered a pending flush in flush_queue"
+  )
+
+  -- Drain via test seam (NOT direct flush()) to exercise the real on_lines path.
+  edit_mod._flush_pending(bufnr)
+
+  local src_line = read_src_line(src_path, 0)
+  eq(src_line, "- [ ] Wire test edited #task", "on_lines path must propagate description edit to source")
+
+  cleanup()
+end
+
 -- ── Q1: Insert-mode edit defers to InsertLeave ────────────────────────────────
 
 T["edit flush: insert-mode edit deferred to InsertLeave propagates to source"] = function()

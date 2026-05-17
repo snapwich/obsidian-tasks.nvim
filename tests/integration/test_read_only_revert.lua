@@ -114,8 +114,21 @@ local function set_line(bufnr, row0, text)
 end
 
 -- ── T1: typing on a rendered task line reverts synchronously ──────────────────
+-- Uses an empty-line (DELETE) edit — the unambiguous revert path.
+--
+-- With the P5 flush wiring, single-line edits that preserve task structure
+-- (MUTATE / REPAIR_AND_MUTATE) are propagated to source by flush() rather than
+-- reverted.  DELETE (empty or whitespace-only new_text) is NOT propagated by
+-- flush — it has no meaningful source representation — so do_revert always
+-- restores the canonical managed row for this classification.
+--
+-- Using DELETE here avoids the semantic conflict flagged in the architect review:
+-- a non-empty unstructured string would be classified REPAIR_AND_MUTATE (flush
+-- attempts a write that re-adds the missing prefix) rather than reverting.  An
+-- empty line is classified DELETE, flush skips it, and do_revert rerenders
+-- canonical text — the intent of this test.
 
-T["revert: edit on rendered task line reverts to canonical text"] = function()
+T["revert: blank (DELETE) edit on rendered task line reverts to canonical text"] = function()
   render.configure({ default_folded = false })
   local restore = install_one_task_stub("- [ ] My task")
 
@@ -139,9 +152,11 @@ T["revert: edit on rendered task line reverts to canonical text"] = function()
   local canonical = get_line(bufnr, task_row)
   MiniTest.expect.equality(canonical:find("My task") ~= nil, true)
 
-  -- Corrupt the task line.  on_lines fires synchronously and sets _scheduled.
-  set_line(bufnr, task_row, "CORRUPTED")
-  eq(get_line(bufnr, task_row), "CORRUPTED")
+  -- Blank out the task line (DELETE classification: new_text is empty →
+  -- flush does not propagate empty rows; do_revert restores canonical text).
+  -- on_lines fires synchronously and sets _scheduled.
+  set_line(bufnr, task_row, "")
+  eq(get_line(bufnr, task_row), "")
   eq(revert._debug_state(bufnr).scheduled, true)
 
   -- Run the revert synchronously (bypasses vim.schedule so assertions are reachable).
