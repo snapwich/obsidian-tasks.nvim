@@ -65,18 +65,35 @@ local function apply_hide_flags(task, hide)
     new_fields[k] = v
   end
 
-  -- Shallow-copy _origin as well.
+  -- Shallow-copy _origin, _raw_fields, _errors as well.  _raw_fields and
+  -- _errors are populated by the lenient parser when a field value fails
+  -- validation (e.g. `📅 someday`); the serializer falls back to _raw_fields
+  -- so invalid values still round-trip, and downstream renderers highlight
+  -- their byte ranges via serialize_with_meta.  Dropping them here would
+  -- silently strip invalid fields from the rendered output.
   local new_origin = {}
   for k, v in pairs(task._origin or {}) do
     new_origin[k] = v
   end
+  local new_raw_fields = {}
+  for k, v in pairs(task._raw_fields or {}) do
+    new_raw_fields[k] = v
+  end
+  local new_errors = {}
+  for k, v in pairs(task._errors or {}) do
+    new_errors[k] = v
+  end
 
-  -- Apply field hides.
+  -- Apply field hides: nil out both parsed values AND raw/error metadata so
+  -- a `hide due_date` clause hides invalid due fields too (otherwise the
+  -- invalid value would still render).
   for flag, keys in pairs(FIELD_MAP) do
     if hide[flag] then
       for _, k in ipairs(keys) do
         new_fields[k] = nil
         new_origin[k] = nil
+        new_raw_fields[k] = nil
+        new_errors[k] = nil
       end
     end
   end
@@ -94,7 +111,10 @@ local function apply_hide_flags(task, hide)
     description = task.description,
     fields = new_fields,
     tags = new_tags,
+    raw_line = task.raw_line,
     _origin = new_origin,
+    _raw_fields = new_raw_fields,
+    _errors = new_errors,
   }
 end
 

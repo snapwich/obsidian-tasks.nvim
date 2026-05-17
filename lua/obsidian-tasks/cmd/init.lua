@@ -158,6 +158,87 @@ function M.apply_source_edit(file_path, row, new_lines, opts)
 
   local src_bufnr = loaded_source_buf(file_path)
 
+  -- Same-buffer dashboard branch.  When the loaded source buffer is itself
+  -- a dashboard (buftype=acwrite), the buffer carries rendered task lines
+  -- below the fence that are not (and must not be) on disk.  The normal
+  -- disk-path's post-write buffer sync would overwrite the rendered region
+  -- with disk content (clobbering it); refusing on buf.modified would
+  -- block every edit (the buffer is always modified by render insertions).
+  --
+  -- Strategy: write disk for the source row (via readfile + writefile so
+  -- only that row changes on disk), then mutate the SAME row in the buffer
+  -- (narrow nvim_buf_set_lines that leaves the rendered region intact).
+  -- Index refresh then reads the now-up-to-date disk and the next rerender
+  -- correctly reflects the new state.
+  if src_bufnr and vim.bo[src_bufnr].buftype == "acwrite" then
+    local ok_r, disk_lines = pcall(vim.fn.readfile, file_path)
+    if not ok_r or type(disk_lines) ~= "table" then
+      log.warn("obsidian-tasks: failed to read " .. file_path)
+      return false
+    end
+    if row < 0 or row + count > #disk_lines then
+      log.warn(
+        "obsidian-tasks: edit at row "
+          .. row
+          .. " (count "
+          .. count
+          .. ") out of range (file has "
+          .. #disk_lines
+          .. " lines)"
+      )
+      return false
+    end
+    -- Capture old_lines from disk (authoritative pre-mutation state).
+    local old_lines = {}
+    for i = 1, count do
+      old_lines[i] = disk_lines[row + i]
+    end
+    -- Mutate disk_lines.
+    for _ = 1, count do
+      table.remove(disk_lines, row + 1)
+    end
+    for i = #new_lines, 1, -1 do
+      table.insert(disk_lines, row + 1, new_lines[i])
+    end
+    local ok_w = pcall(vim.fn.writefile, disk_lines, file_path)
+    if not ok_w then
+      log.warn("obsidian-tasks: failed to write " .. file_path)
+      return false
+    end
+    -- Narrow buffer mutation at exactly the source row(s); rendered region
+    -- below the fence is untouched.
+    vim.api.nvim_buf_set_lines(src_bufnr, row, row + count, false, new_lines)
+    -- Mark the buffer unmodified relative to the just-written disk content.
+    -- BufWriteCmd's later :w will filter managed rows out, but until then
+    -- the source-row state matches disk and shouldn't show as dirty.
+    vim.bo[src_bufnr].modified = false
+
+    -- Refresh the in-memory index from disk (now up to date).
+    pcall(function()
+      local idx = require("obsidian-tasks.index")
+      if type(idx.invalidate) == "function" then
+        idx.invalidate(file_path)
+      end
+      if type(idx.refresh_file) == "function" then
+        idx.refresh_file(file_path)
+      end
+    end)
+
+    -- Record into the per-dashboard undo ring.
+    if not opts.skip_record then
+      local dash = opts.dashboard_bufnr or vim.api.nvim_get_current_buf()
+      record_undo_edit(dash, {
+        src_path = file_path,
+        src_row = row,
+        old_count = count,
+        old_lines = old_lines,
+        new_count = #new_lines,
+        new_lines = vim.deepcopy(new_lines),
+      })
+    end
+    return true
+  end
+
   if src_bufnr and vim.bo[src_bufnr].modified then
     log.warn(
       "obsidian-tasks: source buffer has unsaved changes — save (:w) "

@@ -112,6 +112,65 @@ T["serialize: multiple invalid fields all re-emit"] = function()
   eq(line, "- [ ] task ⏳ never 📅 someday")
 end
 
+-- ── serialize after apply_hide_flags preserves invalid values ──────────────
+-- Regression: apply_hide_flags used to drop _raw_fields / _errors, which
+-- silently stripped invalid fields from the rendered output (so the
+-- dashboard showed no trace of `📅 someday` and there was nothing to
+-- underline as invalid).  layout.apply_hide_flags now passes them through.
+
+T["apply_hide_flags: preserves invalid fields when not hidden"] = function()
+  -- Use layout's internal apply_hide_flags via the public layout call.
+  local layout = require("obsidian-tasks.render.layout")
+  local task = parse.parse("- [ ] x 📅 someday")
+  task._src_path = "/v/n.md"
+  task._src_line = 1
+
+  local result = {
+    groups = { { name = "", tasks = { task } } },
+    total = 1,
+    hide_flags = {}, -- no hides
+  }
+  local rendered = layout.layout(result, {})
+
+  local row
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      row = l
+      break
+    end
+  end
+  -- Invalid value MUST survive into the rendered text.
+  eq(row.text:find("📅 someday", 1, true) ~= nil, true)
+  -- And produce an invalid_range so draw.lua can underline.
+  eq(row.invalid_ranges ~= nil, true)
+  eq(#row.invalid_ranges, 1)
+end
+
+T["apply_hide_flags: hide due_date also hides INVALID due dates"] = function()
+  local layout = require("obsidian-tasks.render.layout")
+  local task = parse.parse("- [ ] x 📅 someday")
+  task._src_path = "/v/n.md"
+  task._src_line = 1
+
+  local result = {
+    groups = { { name = "", tasks = { task } } },
+    total = 1,
+    hide_flags = { due_date = true },
+  }
+  local rendered = layout.layout(result, {})
+
+  local row
+  for _, l in ipairs(rendered) do
+    if l.kind == "task" then
+      row = l
+      break
+    end
+  end
+  -- Invalid date hidden along with all other due-date emission.
+  eq(row.text:find("📅", 1, true), nil)
+  eq(row.text:find("someday", 1, true), nil)
+end
+
 -- ── raw_line normalization ───────────────────────────────────────────────────
 -- Drift detection compares raw_line (set by the parser) to disk-read source
 -- lines (which strip line endings).  Parser must strip trailing \n / \r\n so
