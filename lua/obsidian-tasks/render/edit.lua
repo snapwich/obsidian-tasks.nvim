@@ -136,6 +136,33 @@ end
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
+--- Compute whether a successfully-propagated inline edit would visually move
+--- the task row to a different group or within-group position.
+---
+--- Stub implementation (P6 RED / ot-jm7c): always returns { moves = false }.
+--- The real detection logic is added by the P6 GREEN task (ot-ckin).
+---
+--- The real implementation will:
+---   1. Compute the post-edit group name(s) by running group_mod.resolve with
+---      the edit applied to a deep-copy of the task.
+---   2. Compare the post-edit group to layout_ctx.current_group_name.
+---   3. If the group changes, return moves=true with prior_group_name +
+---      prior_index_within_group.
+---   4. If the group stays the same, re-sort the group against layout_ctx.sort_by
+---      to detect a within-group index shift.  If the index would change, return
+---      moves=true.
+---   5. If neither group nor index would change, return moves=false (no linger).
+---
+--- @param _task_before table  Parsed Task at render time (pre-edit source state)
+--- @param _task_after  table  Parsed Task after the edit is applied
+--- @param _layout_ctx  table  { group_by, sort_by, current_group_name, current_index }
+--- @return table  { moves = bool, prior_group_name?, prior_index_within_group? }
+function M._would_move(_task_before, _task_after, _layout_ctx)
+  -- P6 RED stub: always returns no-move so no lingers are recorded until
+  -- the GREEN task (ot-ckin) replaces this with the real detection logic.
+  return { moves = false }
+end
+
 --- Hook called from the on_lines listener when a managed row edit is queued
 --- for deferred propagation to the source file.
 ---
@@ -330,6 +357,60 @@ function M.flush(bufnr)
           local de = file_data.dash_entries[i]
           if re.applied and re.located_row ~= nil then
             de.meta.source_row = re.located_row
+          end
+        end
+      end
+
+      -- ── P6 Broadened linger trigger (stub) ─────────────────────────────────
+      -- For each successfully applied edit, check whether the edit would
+      -- visually move the task row to a different group or within-group
+      -- position.  If so, call _record_pending_linger so the linger mechanism
+      -- holds the prior position on the next rerender.
+      --
+      -- Performed BEFORE the meta update below so de.meta.task_text still
+      -- carries the pre-edit source text (needed as task_before input).
+      --
+      -- Stub: _would_move always returns { moves = false } until the P6 GREEN
+      -- task (ot-ckin) fills in the real detection logic.
+      if result and result.entries then
+        local task_parse_mod = require("obsidian-tasks.task.parse")
+        for i, re in ipairs(result.entries) do
+          if re.applied then
+            local de = file_data.dash_entries[i]
+            local task_before = task_parse_mod.parse(de.meta.task_text)
+            local task_after = task_parse_mod.parse(de.write_text)
+            if task_before and task_after then
+              -- Look up the current group/index from the last render's buffer
+              -- state so _would_move has prior-position context.
+              local cur_group_name = nil
+              local cur_group_index = nil
+              local bs = render_init._buffer_state[bufnr]
+              if bs then
+                for _, blk in ipairs(bs) do
+                  local row_meta = blk.line_map and blk.line_map[de.dash_row]
+                  if row_meta then
+                    cur_group_name = row_meta.group_name
+                    cur_group_index = row_meta.group_index
+                    break
+                  end
+                end
+              end
+              local move_result = M._would_move(task_before, task_after, {
+                group_by = {}, -- populated by GREEN task (ot-ckin)
+                sort_by = {}, -- populated by GREEN task (ot-ckin)
+                current_group_name = cur_group_name,
+                current_index = cur_group_index,
+              })
+              if move_result.moves then
+                render_init._record_pending_linger(
+                  bufnr,
+                  de.meta.source_file,
+                  (de.meta.source_row or 0) + 1, -- convert 0-indexed to 1-indexed
+                  nil, -- source_text_hash (not yet available at flush time)
+                  task_after
+                )
+              end
+            end
           end
         end
       end
