@@ -240,15 +240,44 @@ T["linger_generic: tag edit on group-by-tag dashboard records pending linger"] =
 end
 
 -- ── 3. Description-only edit on no-group dashboard ────────────────────────────
--- Editing only the description when the query has no group-by or sort-by on
--- description must NOT record a linger (skip-lingering optimisation).
---
--- GREEN: this test PASSES immediately since the stub returns moves=false,
--- which means no linger is recorded — matching the expected behavior.
--- After fixing the module-identity bug this test remains meaningful: it will
--- fail if a future regression starts recording lingers on description-only edits.
+-- Description-only edits now record a pending linger (the previous skip-
+-- lingering optimisation masked the `<CR>`/`r x` filter-exit case — see
+-- render/edit.lua flush()).  The promotion step in render_buffer is what
+-- decides whether to actually display a linger: a task still in the live
+-- filter set is not promoted, so the user sees no visible linger for a
+-- pure description change.
 
-T["linger_generic: description-only edit on no-group dashboard records no linger"] = function()
+-- ── Filter-exit status edit (e.g. <CR>/smart_action/`r x`) ───────────────────
+-- A status toggle that pushes the task out of the query filter MUST linger,
+-- even when there is no group-by or sort-by (so _would_move's old gate would
+-- return moves=false).  This guards the regression where obsidian.nvim's
+-- <CR> smart_action replaces the rendered task line via nvim_buf_set_lines
+-- and flush() picks it up as a MUTATE — without this assertion, a future
+-- "skip-record optimisation" could silently drop the linger again.
+
+T["linger_generic: status flip exiting `not done` on no-group dashboard lingers in place"] = function()
+  local bufnr, _, task_row, cleanup = setup_grouped_dashboard("- [ ] Buy milk", { "not done" })
+
+  -- Simulate the path obsidian.nvim's _toggle_checkbox takes: a whole-line
+  -- replacement that flips `[ ]` to `[x]` on the rendered task row.
+  local canonical = get_line(bufnr, task_row)
+  local edited = canonical:gsub("%[ %]", "[x]", 1)
+  assert(edited ~= canonical, "expected the checkbox to flip in rendered text")
+  set_line(bufnr, task_row, edited)
+
+  edit_mod.flush(bufnr)
+  eq(pending_count(bufnr), 1, "filter-exit status flip records a pending linger")
+
+  -- A rerender promotes it: task no longer matches `not done`, so it exits
+  -- live_set and the pending entry surfaces as a held-in-place linger row.
+  get_render().rerender_buffer(bufnr, nil)
+  eq(linger_count(bufnr), 1, "task exited live_set → pending linger promoted")
+  eq(linger_line_count(bufnr), 1, "the lingered task is drawn as a dim row")
+
+  cleanup()
+end
+
+T["linger_generic: description-only edit on no-group dashboard records pending (not promoted on rerender)"] = function()
   local bufnr, _, task_row, cleanup = setup_grouped_dashboard("- [ ] Buy milk", { "not done" })
 
   -- Simulate cw: change description.
@@ -259,8 +288,14 @@ T["linger_generic: description-only edit on no-group dashboard records no linger
 
   edit_mod.flush(bufnr)
 
-  -- No group-by / sort-by on description → no visual move → no linger.
-  eq(pending_count(bufnr), 0, "description-only edit must not record a pending linger")
+  -- flush() records a pending linger for every MUTATE.
+  eq(pending_count(bufnr), 1, "MUTATE flush records a pending linger")
+
+  -- A subsequent rerender promotes only lingers whose task exited the live
+  -- set.  Description change does not exit `not done`, so no linger surfaces.
+  get_render().rerender_buffer(bufnr, nil)
+  local lingers = get_render()._lingers[bufnr]
+  eq(lingers == nil or #lingers == 0, true, "task still in live_set → linger not promoted")
 
   cleanup()
 end

@@ -613,62 +613,31 @@ function M.flush(bufnr)
         end
       end
 
-      -- ── P6 Broadened linger trigger (stub) ─────────────────────────────────
-      -- For each successfully applied edit, check whether the edit would
-      -- visually move the task row to a different group or within-group
-      -- position.  If so, call _record_pending_linger so the linger mechanism
-      -- holds the prior position on the next rerender.
+      -- Record a pending linger for each successfully applied MUTATE.  The
+      -- promotion step in render_buffer only emits a linger when the task
+      -- actually exits the live filter set, so recording unconditionally here
+      -- is safe — it covers status flips that filter the task out (the
+      -- common case for `<CR>` smart-toggle and direct `r x` edits) AND
+      -- group/sort moves, with the same single code path that toggle.lua
+      -- uses for `<leader>tt`.
       --
-      -- Performed BEFORE the meta update below so de.meta.task_text still
-      -- carries the pre-edit source text (needed as task_before input).
-      --
-      -- Stub: _would_move always returns { moves = false } until the P6 GREEN
-      -- task (ot-ckin) fills in the real detection logic.
+      -- Performed BEFORE the meta update below so de.meta carries pre-edit
+      -- source coords.
       if result and result.entries then
         local task_parse_mod = require("obsidian-tasks.task.parse")
         for i, re in ipairs(result.entries) do
           if re.applied then
             local de = file_data.dash_entries[i]
-            -- DELETE entries have no write_text; skip linger detection.
             if de.label ~= "DELETE" then
-              local task_before = task_parse_mod.parse(de.meta.task_text)
               local task_after = task_parse_mod.parse(de.write_text)
-              if task_before and task_after then
-                -- Look up the current group/index and the block's query directives
-                -- from the last render's buffer state so _would_move has full context.
-                local cur_group_name = nil
-                local cur_group_index = nil
-                local cur_group_by = {}
-                local cur_sort_by = {}
-                local bs = render_init._buffer_state[bufnr]
-                if bs then
-                  for _, blk in ipairs(bs) do
-                    local row_meta = blk.line_map and blk.line_map[de.dash_row]
-                    if row_meta then
-                      cur_group_name = row_meta.group_name
-                      cur_group_index = row_meta.group_index
-                      cur_group_by = blk.group_by or {}
-                      cur_sort_by = blk.sort_by or {}
-                      break
-                    end
-                  end
-                end
-                local move_result = M._would_move(task_before, task_after, {
-                  group_by = cur_group_by,
-                  sort_by = cur_sort_by,
-                  src_path = de.meta.source_file,
-                  current_group_name = cur_group_name,
-                  current_index = cur_group_index,
-                })
-                if move_result.moves then
-                  render_init._record_pending_linger(
-                    bufnr,
-                    de.meta.source_file,
-                    (de.meta.source_row or 0) + 1, -- convert 0-indexed to 1-indexed
-                    nil, -- source_text_hash (not yet available at flush time)
-                    task_after
-                  )
-                end
+              if task_after then
+                render_init._record_pending_linger(
+                  bufnr,
+                  de.meta.source_file,
+                  (de.meta.source_row or 0) + 1,
+                  nil,
+                  task_after
+                )
               end
             end
           end
