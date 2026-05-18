@@ -189,24 +189,10 @@ T["on_lines wiring: normal-mode edit propagates via real on_lines path"] = funct
 end
 
 -- ── Q1: Insert-mode edit defers to InsertLeave ────────────────────────────────
-
-T["edit flush: insert-mode edit deferred to InsertLeave propagates to source"] = function()
-  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Walk dog #task")
-
-  local canonical = get_line(bufnr, TASK_ROW)
-  -- Simulate insert-mode edit: set the line as if the user typed in insert mode.
-  local edited = canonical:gsub("Walk dog", "Walk the dog")
-  set_line(bufnr, TASK_ROW, edited)
-
-  -- Simulate InsertLeave: call flush directly (the autocmd wires this in the
-  -- real implementation; since flush is a stub this test fails expectedly).
-  edit_mod.flush(bufnr)
-
-  local src_line = read_src_line(src_path, 0)
-  eq(src_line, "- [ ] Walk the dog #task", "source must reflect insert-mode edit on InsertLeave")
-
-  cleanup()
-end
+-- Real-mode coverage lives in tests/integration_real/test_real_insert_mode.lua
+-- ("i on description", "a after description", "ciw on description"): the
+-- previous fake test here used set_line() which runs in mode='n', so it could
+-- not exercise the actual insert-mode deferral path.
 
 -- ── Q13: Multi-row tick coalesces to one write per src_path ──────────────────
 
@@ -612,42 +598,11 @@ T["edit flush: Q10 cursor shifts right when structural repair adds prefix"] = fu
   cleanup()
 end
 
--- ── blink.cmp commit during insert mode triggers flush on InsertLeave ─────────
--- Simulates the user typing `📅 ` to start a date field, blink.cmp offering
--- "2024-12-31" as a completion, and the user accepting with <CR>.  The
--- accepted completion is inserted into the buffer (before #task); on <Esc>
--- the InsertLeave autocmd calls flush(bufnr) which strips the wikilink suffix
--- and writes the updated task line to the source file.
---
--- Source task: "- [ ] Complete me #task" (no date field).
--- After blink.cmp acceptance: 📅 2024-12-31 is inserted before #task.
--- Expected source: "- [ ] Complete me 📅 2024-12-31 #task".
---
--- NOTE: Using a plain-text source task (no 📅 with empty value) avoids the
--- parse-drop edge case: `📅 #task` parses to an empty due-field value which
--- the serializer omits, so the rendered canonical does not contain "📅 ".
--- Starting from a plain task and inserting "📅 2024-12-31 " produces a
--- well-formed date field that flush can write verbatim.
-
-T["edit flush: blink.cmp completion commit flushes on InsertLeave"] = function()
-  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Complete me #task")
-
-  -- Simulate blink.cmp acceptance: user started typing a date field (`📅 `)
-  -- and accepted the completion "2024-12-31".  The resulting line replaces
-  -- the plain "#task" suffix with "📅 2024-12-31 #task".
-  local canonical = get_line(bufnr, TASK_ROW)
-  -- canonical is e.g. "- [ ] Complete me #task [[<tmpname>]]"
-  local after_completion = canonical:gsub("#task", "📅 2024-12-31 #task", 1)
-  set_line(bufnr, TASK_ROW, after_completion)
-
-  -- Simulate <Esc> / InsertLeave: call flush directly.
-  -- In the real system the InsertLeave autocmd fires flush(bufnr).
-  edit_mod.flush(bufnr)
-
-  local src_line = read_src_line(src_path, 0)
-  eq(src_line, "- [ ] Complete me 📅 2024-12-31 #task", "completion result should be flushed on InsertLeave")
-
-  cleanup()
-end
+-- Real-mode blink.cmp completion coverage lives in
+-- tests/integration_real/test_real_insert_mode.lua ("blink.cmp completion
+-- accepted in insert mode commits to source"): the previous fake test here
+-- used set_line() which runs in mode='n' and could not exercise the actual
+-- insert-mode deferral / InsertLeave-driven flush path that the completion
+-- accept depends on.
 
 return T

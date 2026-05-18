@@ -260,7 +260,13 @@ function M.setup(opts)
   -- the user presses <Esc> / <C-c>, at which point the full edited line is
   -- available for classification and propagation to the source file.
   --
-  -- Flush is a no-op stub until render/edit.lua is fully implemented (P5).
+  -- Why both flush AND force_revert:
+  --   While the user is typing in insert/replace mode, flush() and do_revert()
+  --   both bail at execution time (a vim.schedule callback firing between
+  --   keystrokes would commit half-typed text or wipe in-flight typing).
+  --   InsertLeave is the moment to drain: flush propagates the final edited
+  --   line(s) to source, then force_revert runs do_revert so unrecognized
+  --   edits (REVERTs, write failures, etc.) restore canonical.
   vim.api.nvim_create_autocmd("InsertLeave", {
     group = group,
     callback = function(ev)
@@ -268,6 +274,7 @@ function M.setup(opts)
       if vim.b[bufnr].obsidian_tasks_dashboard then
         pcall(function()
           require("obsidian-tasks.render.edit").flush(bufnr)
+          require("obsidian-tasks.render.revert").force_revert(bufnr)
         end)
       end
     end,

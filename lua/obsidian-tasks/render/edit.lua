@@ -293,13 +293,24 @@ end
 --- @param new_text  string   current buffer content for this row after the edit
 --- @param _ctx      table?   extra context forwarded from on_lines (reserved)
 function M.on_lines_hook(bufnr, row, old_text, new_text, _ctx)
-  local mode = vim.fn.mode()
-  if mode:match("[iR]") then
-    require("obsidian-tasks.render.hygiene").mark_dirty(bufnr)
-    return
-  end
+  -- Always enqueue the row.  Required so that insert-mode edits (i/a/o + typing)
+  -- accumulate the FINAL edited text in the queue; flush() drains the queue at
+  -- InsertLeave time.  The pre-fix code bailed before enqueue, leaving the
+  -- queue empty so InsertLeave's flush was a no-op.
   M.flush_queue[bufnr] = M.flush_queue[bufnr] or { rows = {}, scheduled = false }
   M.flush_queue[bufnr].rows[row] = { old_text = old_text, new_text = new_text }
+  local mode = vim.fn.mode()
+  if mode:match("[iR]") then
+    -- Insert/Replace mode: the buffer has unwritten user content, so any
+    -- plugin re-render must NOT clear the modified flag silently.
+    require("obsidian-tasks.render.hygiene").mark_dirty(bufnr)
+  end
+  -- Schedule flush regardless of mode.  Flush gates itself at execution time
+  -- (see flush()): a vim.schedule callback firing mid-typing would commit a
+  -- half-typed line to source, so flush bails if mode is still i/R when it
+  -- runs, leaving the queue intact for the next pass or InsertLeave drain.
+  -- (Gating at schedule time would skip the `r X` path: mode is briefly "R"
+  -- when on_lines fires, but normal again by the time the schedule executes.)
   if not M.flush_queue[bufnr].scheduled then
     M.flush_queue[bufnr].scheduled = true
     vim.schedule(function()
@@ -344,6 +355,18 @@ end
 function M.flush(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     M.flush_queue[bufnr] = nil
+    return
+  end
+
+  -- User is still in insert/replace mode: a vim.schedule callback fires
+  -- between keystrokes, and writing the half-typed line to source would
+  -- corrupt it.  Reset `scheduled` so the next on_lines event re-schedules,
+  -- and leave the queue intact.  InsertLeave's drain calls flush() directly
+  -- once mode is normal.
+  if vim.fn.mode():match("[iR]") then
+    if M.flush_queue[bufnr] then
+      M.flush_queue[bufnr].scheduled = false
+    end
     return
   end
 
@@ -508,8 +531,10 @@ function M.flush(bufnr)
         label = label,
       }
     end
-    -- DELETE / INSERT / MULTI_LINE / REVERT: do nothing here; the scheduled
-    -- do_revert (from the on_lines listener) will restore those rows.
+    -- DELETE: handled below via the per-file batch DELETE path (block-aware).
+    -- The classifier no longer returns INSERT / MULTI_LINE / REVERT (the
+    -- corresponding ctx flags were never wired) — INSERTs are detected by
+    -- the separate region/meta scan below.
   end
 
   -- ── P8: batch DELETE rows with block-aware count ──────────────────────────
@@ -560,9 +585,12 @@ function M.flush(bufnr)
 
   -- ── 3. Apply edits per source file ─────────────────────────────────────────
 
-  -- Note the undo ring length before writes so we can merge multi-file entries.
+  -- Track per-flush pushes explicitly so the multi-file merge below works
+  -- even when the undo ring is at UNDO_RING_CAP.  Using `#ring` delta is
+  -- unreliable at the cap: each push triggers a shift-out, so ring_after -
+  -- ring_before underreports (or returns 0).
   cmd._undo_ring[bufnr] = cmd._undo_ring[bufnr] or {}
-  local ring_before = #cmd._undo_ring[bufnr]
+  local pushes_in_flush = 0
 
   local partial_failure = false
 
@@ -574,6 +602,7 @@ function M.flush(bufnr)
     })
 
     if ok then
+      pushes_in_flush = pushes_in_flush + 1
       -- Q12: update extmark source_row when drift recovery located a different row.
       if result and result.entries then
         for i, re in ipairs(result.entries) do
@@ -809,7 +838,8 @@ function M.flush(bufnr)
         end
       end
 
-      -- P9: inject group-defining attribute(s) (stub: returns write_text unchanged).
+      -- P9: append group-defining attribute(s) to the new task line so it
+      -- inherits the tag/priority/status of the group it was inserted into.
       local group_attr = require("obsidian-tasks.render.group_attr")
       write_text = group_attr.inject_group_attributes(write_text, p9_group_context, p9_task_origin)
 
@@ -827,6 +857,9 @@ function M.flush(bufnr)
         revert.unsuppress(bufnr)
       else
         had_successful_insert = true
+        -- insert_after_anchor pushes its own undo-ring entry; count it so
+        -- the Q13 merge below combines it with any apply_source_edit pushes.
+        pushes_in_flush = pushes_in_flush + 1
       end
     end
   end
@@ -853,15 +886,21 @@ function M.flush(bufnr)
   -- All per-file undo entries added in this flush belong to the same "tick".
   -- Merge them into a single _multi_file entry so that one dashboard_undo()
   -- call reverses every source mutation from this tick.
+  --
+  -- We locate the new entries by their COUNT (pushes_in_flush), not by ring
+  -- length delta: when the ring is at UNDO_RING_CAP, each push triggers a
+  -- shift-out that hides the new entries behind a stable ring length.  The
+  -- last `pushes_in_flush` entries of the ring are always the new ones.
 
   local ring = cmd._undo_ring[bufnr]
   local ring_after = ring and #ring or 0
-  local new_entries = ring_after - ring_before
+  local new_entries = math.min(pushes_in_flush, ring_after)
 
   if new_entries > 1 then
+    local merge_start = ring_after - new_entries + 1
     -- Collect per-file undo data from the individual entries that were just pushed.
     local file_batches = {}
-    for i = ring_before + 1, ring_after do
+    for i = merge_start, ring_after do
       local e = ring[i]
       file_batches[#file_batches + 1] = {
         src_path = e.src_path,
@@ -877,11 +916,11 @@ function M.flush(bufnr)
       }
     end
     -- Remove the individual entries.
-    for i = ring_after, ring_before + 1, -1 do
+    for i = ring_after, merge_start, -1 do
       ring[i] = nil
     end
-    -- Push a single combined entry.
-    ring[ring_before + 1] = {
+    -- Push a single combined entry in their place.
+    ring[merge_start] = {
       _multi_file = true,
       file_batches = file_batches,
     }

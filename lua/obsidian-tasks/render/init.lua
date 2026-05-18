@@ -12,6 +12,18 @@
 
 local M = {}
 
+-- Eagerly alias both possible require keys to the same module instance.
+-- Lua's package.loaded uses the require string as the cache key, so
+-- `require("obsidian-tasks.render")` and `require("obsidian-tasks.render.init")`
+-- otherwise load this file twice and create two independent M tables with
+-- separate _buffer_state / _lingers tables.  This caused two real bugs:
+--   • P9 group_attr ctx was always {} (edit.lua used .init; tests used .render)
+--   • BufDelete autocmd hit nil _lingers (autocmds used .render; init.lua's
+--     buffer state lived on the other instance)
+-- Setting both keys here makes the second require return this same M.
+package.loaded["obsidian-tasks.render"] = M
+package.loaded["obsidian-tasks.render.init"] = M
+
 -- ── Module-level opts ─────────────────────────────────────────────────────────
 -- Populated by M.configure(opts) called from init.setup().
 -- Default: default_folded=true mirrors the config.lua default.

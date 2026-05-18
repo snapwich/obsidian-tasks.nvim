@@ -1,17 +1,15 @@
 -- tests/unit/test_classifier.lua
--- RED-phase tests for render/revert.classify — one test per classification branch.
---
--- All tests fail while classify() is a stub returning nil.
--- They pass once the GREEN task (ot-165d) implements real classification.
+-- Tests for render/revert.classify — one test per classification branch.
 --
 -- Classification branches under test:
 --   DELETE           — new_text is empty or whitespace-only
 --   MUTATE           — description/field change on a structurally-valid task line
 --   REPAIR_AND_MUTATE — missing `- ` prefix or `[ ]` checkbox; description change
---   INSERT           — unmanaged row appearing between managed rows
---   MULTI_LINE       — neighbouring rows also changed in the same tick
---   REVERT           — no bullet/checkbox in a multi-line context → revert
 --   Status flip      — single status-char change routes as MUTATE
+--
+-- INSERT and MULTI_LINE branches were removed (dead code): flush() detects
+-- INSERTs via region scan and never passes a multi-line ctx, so the
+-- corresponding classify paths were never reached in production.
 
 local T = MiniTest.new_set()
 
@@ -89,37 +87,6 @@ T["classify REPAIR_AND_MUTATE: missing checkbox"] = function()
   -- new_text is missing `[ ]` but still looks like a list item with text
   local result = classify(bufnr, 0, "- [ ] Task description", "- Task description edited")
   eq(result, "REPAIR_AND_MUTATE", "missing `[ ]` checkbox should classify as REPAIR_AND_MUTATE")
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
--- ── INSERT branch ─────────────────────────────────────────────────────────────
-
-T["classify INSERT: unmanaged row between managed rows"] = function()
-  -- Simulate context: the row did not exist at render time (old_text nil)
-  -- and the new_text is non-empty → INSERT
-  local bufnr = make_buf({ "- [ ] Task A", "brand new unmanaged line", "- [ ] Task B" })
-  local result = classify(bufnr, 1, nil, "brand new unmanaged line", { is_insert = true })
-  eq(result, "INSERT", "new unmanaged row between managed rows should classify as INSERT")
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
--- ── MULTI_LINE branch ─────────────────────────────────────────────────────────
-
-T["classify MULTI_LINE: neighbouring rows also changed in same tick"] = function()
-  local bufnr = make_buf({ "- [ ] Task A", "- [ ] Task B" })
-  -- ctx.is_multi_line = true indicates the tick changed >1 managed row
-  local result = classify(bufnr, 0, "- [ ] Task A", "- [ ] Task A edited", { is_multi_line = true })
-  eq(result, "MULTI_LINE", "multi-row tick should classify as MULTI_LINE")
-  vim.api.nvim_buf_delete(bufnr, { force = true })
-end
-
--- ── REVERT branch ─────────────────────────────────────────────────────────────
-
-T["classify REVERT: no bullet or checkbox in multi-line context"] = function()
-  local bufnr = make_buf({ "just some prose" })
-  -- In a multi-line context a row without bullet/checkbox structure reverts
-  local result = classify(bufnr, 0, "- [ ] Task", "just some prose", { is_multi_line = true })
-  eq(result, "REVERT", "no-bullet row in multi-line context should classify as REVERT")
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 

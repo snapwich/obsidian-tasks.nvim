@@ -48,6 +48,10 @@ end
 local function make_render_mock(initial_state)
   local m = {
     _buffer_state = initial_state or {},
+    -- Mirror the real render/init.lua module shape so BufDelete autocmds
+    -- that clear linger state don't hit nil-index errors.
+    _lingers = {},
+    _pending_lingers = {},
     render_calls = {},
     refresh_calls = {},
     rerender_calls = {},

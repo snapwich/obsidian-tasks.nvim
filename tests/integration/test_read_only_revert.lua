@@ -357,8 +357,16 @@ T["revert: listener attached after render_buffer"] = function()
 end
 
 -- ── T7: paste straddling managed region — prose part survives ─────────────────
--- This verifies that rerender_buffer (which powers the revert) correctly keeps
--- the non-managed portion of a paste while reverting the managed rows.
+-- Verifies that the full flush+revert flow keeps non-managed (prose) portions
+-- of a straddling paste while resolving the managed row.
+--
+-- Previous version (pre-flush-layer) called revert._flush_pending alone, which
+-- exercised only the rerender path.  With the flush layer landed (P5+), the
+-- managed row is now classified by flush() first.  "CORRUPTED TASK" has no
+-- bullet/checkbox so it classifies as REPAIR_AND_MUTATE; the stub source path
+-- doesn't exist on disk, so flush's per-file write fails and (per Q15) reverts
+-- the row to canonical.  Either way the user-visible outcome — "CORRUPTED
+-- TASK" gone, "NEW PROSE LINE" survives — is the same.
 
 T["revert: paste straddling boundary — managed rows revert, prose rows stay"] = function()
   render.configure({ default_folded = false })
@@ -382,11 +390,9 @@ T["revert: paste straddling boundary — managed rows revert, prose rows stay"] 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   MiniTest.expect.equality(#lines >= 5, true)
 
-  local task_row = 4 -- 0-indexed (prose + fence + query + close + task)
+  local task_row = 4
 
-  -- Simulate paste: replace rows 0..task_row (inclusive) with new content.
-  -- The paste includes a new prose line and then extends into the managed row.
-  -- Per spec: managed rows revert; non-managed rows keep the edit.
+  -- Paste: replace rows 0..task_row (inclusive) with new content.
   vim.api.nvim_buf_set_lines(bufnr, 0, task_row + 1, false, {
     "NEW PROSE LINE",
     "```tasks",
@@ -398,10 +404,13 @@ T["revert: paste straddling boundary — managed rows revert, prose rows stay"] 
   -- on_lines fires synchronously: the paste touched the managed row.
   eq(revert._debug_state(bufnr).scheduled, true)
 
-  -- Run the revert synchronously.
+  -- Drain the FULL pipeline: flush first (so the new flush-layer flow is
+  -- exercised), then revert.  flush attempts the REPAIR_AND_MUTATE write,
+  -- which fails on the fake stub source path → Q15 per-file revert.
+  local edit_mod = require("obsidian-tasks.render.edit")
+  edit_mod.flush(bufnr)
   revert._flush_pending(bufnr)
 
-  -- "CORRUPTED TASK" must be gone.
   local all = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local corrupted_found = false
   local new_prose_found = false
@@ -413,10 +422,8 @@ T["revert: paste straddling boundary — managed rows revert, prose rows stay"] 
       new_prose_found = true
     end
   end
-  MiniTest.expect.equality(corrupted_found, false)
-
-  -- The new prose line should still be in the buffer after revert.
-  MiniTest.expect.equality(new_prose_found, true)
+  MiniTest.expect.equality(corrupted_found, false, "managed row must not show 'CORRUPTED TASK' after flush+revert")
+  MiniTest.expect.equality(new_prose_found, true, "non-managed prose line must survive flush+revert")
 
   render.clear_buffer(bufnr)
   restore()

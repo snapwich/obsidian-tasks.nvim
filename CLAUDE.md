@@ -70,3 +70,17 @@ project-specific pattern. Do NOT document things derivable by reading the code.
 # Notes
 
 nvim --headless ... -c q is not reliably terminating in this project when foldtext expressions are set. Prefer nvim --headless ... -c 'qa!' or run via a script with an explicit vim.cmd('quitall!') after assertions.\_
+
+## Insert-mode tests must use real keypresses
+
+Tests that simulate edits via `vim.api.nvim_buf_set_lines()` (or `set_line()` helpers) do NOT exercise the real-mode path: `vim.fn.mode()` returns `'n'` during programmatic edits, so the on_lines_hook / flush / do_revert mode gates never take the insert-mode branch. Calling such tests "insert-mode tests" is misleading.
+
+Real insert-mode tests must drive a `MiniTest.new_child_neovim()` with `child.type_keys(...)` (which uses `nvim_input` under the hood — terminal-equivalent), then `vim.loop.sleep(...)` so `vim.schedule` callbacks drain. Examples: `tests/integration_real/test_real_insert_mode.lua`, `tests/integration_real/test_e2e_edit_in_place.lua`.
+
+## vim.schedule fires between keystrokes
+
+`vim.schedule()` callbacks fire on the main event loop, which yields between user keystrokes while in insert/replace mode. Anything scheduled from `on_lines` will run mid-typing — `do_revert` rerendering or `flush` writing a half-typed line will corrupt the user's in-flight edit. The fix is to gate **at execution time** inside `flush()` / `do_revert()`: check `vim.fn.mode():match("[iR]")` and bail (resetting any debounce flag), then drain explicitly from the InsertLeave autocmd. See `lua/obsidian-tasks/render/edit.lua` and `render/revert.lua`.
+
+## `require("obsidian-tasks.render")` vs `require("obsidian-tasks.render.init")`
+
+Lua's `package.loaded` cache normally treats these two require strings as separate keys, so each would load `render/init.lua` into a fresh module instance with its own `_buffer_state`. `lua/obsidian-tasks/render/init.lua` aliases both keys at the top to a single M to prevent this — if you ever split that file, restore the alias or expect "empty `_buffer_state[bufnr]`" / "nil `_lingers`" type bugs.

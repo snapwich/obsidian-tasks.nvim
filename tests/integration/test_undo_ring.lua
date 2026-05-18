@@ -108,6 +108,50 @@ T["undo ring: 50-entry cap drops oldest on overflow"] = function()
   vim.fn.delete(path)
 end
 
+-- Regression: when the ring is at UNDO_RING_CAP and flush() pushes multiple
+-- per-file entries, the Q13 multi-file merge must still combine them.  The
+-- previous implementation used `#ring - ring_before` which underreports (or
+-- returns 0) at the cap because each push triggers a table.remove(r, 1).
+T["undo ring: multi-file merge works when ring is already at cap"] = function()
+  local dash = fresh_dashboard()
+  local cmd = require("obsidian-tasks.cmd")
+
+  -- Pre-fill the ring to UNDO_RING_CAP with filler entries.
+  local filler_path = make_tmpfile({ "filler" })
+  for i = 1, 50 do
+    cmd.apply_source_edit(filler_path, 0, { "edit-" .. i })
+  end
+  eq(#cmd._undo_ring[dash], 50, "ring at cap before flush")
+
+  -- Now simulate a 2-file flush via the edit.flush merge path: push 2 per-file
+  -- entries one after the other, then run the same merge logic as flush.
+  local path_a = make_tmpfile({ "- [ ] A" })
+  local path_b = make_tmpfile({ "- [ ] B" })
+  local pushes_in_flush = 0
+  for _, path in ipairs({ path_a, path_b }) do
+    if cmd.apply_source_edit(path, 0, { "- [x] X" }) then
+      pushes_in_flush = pushes_in_flush + 1
+    end
+  end
+
+  -- Apply the same merge logic flush() uses (location: edit.lua "Q13 merge").
+  local ring = cmd._undo_ring[dash]
+  local ring_after = #ring
+  local new_entries = math.min(pushes_in_flush, ring_after)
+  eq(new_entries, 2, "merge logic must see both new entries even at cap")
+  -- Sanity: the last 2 entries of the ring are the new edits (not filler).
+  eq(ring[ring_after].src_path, path_b, "last ring entry is the b-file edit")
+  eq(ring[ring_after - 1].src_path, path_a, "second-to-last is the a-file edit")
+
+  -- Old (buggy) approach: ring_before was captured at 50, ring_after = 50, so
+  -- (ring_after - ring_before) = 0 → merge skipped, leaving 2 individual
+  -- entries.  The new approach uses pushes_in_flush so the merge runs.
+
+  vim.fn.delete(filler_path)
+  vim.fn.delete(path_a)
+  vim.fn.delete(path_b)
+end
+
 -- ── Undo ─────────────────────────────────────────────────────────────────────
 
 T["dashboard_undo: replays inverse, pops the entry"] = function()

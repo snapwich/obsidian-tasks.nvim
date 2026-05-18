@@ -192,8 +192,7 @@ local function classify_and_commit(bufnr)
       if current ~= nil and meta ~= nil and meta.rendered_text ~= nil then
         -- Route every row through the per-row classifier so that status flips,
         -- description edits, deletes, etc. all follow a single classification
-        -- path.  ctx carries no special flags at this point: multi-line
-        -- detection and insert detection are wired by the flush layer (ot-iyw1).
+        -- path.  ctx is unused — the classifier only depends on new_text.
         local label = M.classify(bufnr, row, meta.rendered_text, current, {})
 
         if label == "MUTATE" then
@@ -248,8 +247,9 @@ local function classify_and_commit(bufnr)
             end
           end
         end
-        -- DELETE / REPAIR_AND_MUTATE / INSERT / MULTI_LINE / REVERT all fall
-        -- through here; the subsequent rerender restores the managed rows.
+        -- DELETE / REPAIR_AND_MUTATE all fall through here; the subsequent
+        -- rerender restores the managed rows.  (INSERTs are handled by flush()
+        -- via its own region scan, not via classify_and_commit.)
       end
     end
   end
@@ -259,6 +259,14 @@ do_revert = function(bufnr)
   _scheduled[bufnr] = nil
 
   if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  -- User is still in insert/replace mode: rerender_buffer would wipe their
+  -- in-flight typing.  Bail; InsertLeave's drain calls force_revert() once
+  -- mode is normal.  Don't re-set _scheduled — the next on_lines event will
+  -- create a fresh schedule if needed.
+  if vim.fn.mode():match("[iR]") then
     return
   end
 
@@ -382,10 +390,14 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
   local check_end = math.max(last_line, new_lastline)
 
   -- Overlap: snapshot region [r_start, r_end] (inclusive) overlaps
-  -- [first_line, check_end) when: r_start < check_end AND r_end >= first_line
+  -- [first_line, check_end) when: r_start < check_end AND r_end >= first_line.
+  -- The "+1" on r_end accommodates pure inserts immediately past the region
+  -- (e.g. `o` on the last managed row) — that new row should be treated as an
+  -- appended task belonging to the region, so flush()'s INSERT detection
+  -- can pick it up.
   local touched = false
   for _, region in ipairs(snapshot) do
-    if region[1] < check_end and region[2] >= first_line then
+    if region[1] < check_end and region[2] + 1 >= first_line then
       touched = true
       break
     end
@@ -436,13 +448,15 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
   -- PURE INSERTION (last_line == first_line, delta > 0):
   --   Expand any region whose boundary or interior overlaps the insert point.
   --   Three cases for a region R:
-  --     R.start == first_line  → boundary-at-start: expand end by delta.
-  --     R.start >  first_line  → region strictly below: shift start+end by delta.
-  --     R.end  >= first_line   → insert INSIDE region (R.start < first_line <=
-  --                              R.end): expand end only.  Without this expansion
-  --                              do_revert removes stale positions and leaves a
-  --                              "zombie" copy of the last task row in the buffer.
-  --     otherwise              → region entirely above: no change.
+  --     R.start == first_line   → boundary-at-start: expand end by delta.
+  --     R.start >  first_line   → region strictly below: shift start+end by delta.
+  --     R.end + 1 >= first_line → insert INSIDE region OR immediately past its
+  --                               end (R.start < first_line <= R.end + 1): expand
+  --                               end only.  "Immediately past end" covers
+  --                               `o` on the last managed row, which opens a
+  --                               new line at R.end + 1 — the new row belongs
+  --                               to the region as an appended task.
+  --     otherwise               → region entirely above: no change.
   --
   -- PURE DELETION (last_line > first_line, delta < 0):
   --   Record the deleted managed rows as pending_deletes for flush() to handle
@@ -458,9 +472,13 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
       if region[1] > first_line then
         -- Region strictly below the insert: shift entirely by delta.
         new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
-      elseif region[2] >= first_line then
-        -- Insert at or inside the region (region.start <= first_line <= region.end):
-        -- expand the end to cover the inserted row(s) and any shifted managed rows.
+      elseif region[2] + 1 >= first_line then
+        -- Insert at, inside, or immediately past the region
+        -- (region.start <= first_line <= region.end + 1): expand the end to
+        -- cover the inserted row(s) and any shifted managed rows.  The "+1"
+        -- accommodates `o` on the last managed row, which inserts at
+        -- region.end + 1 — the new row belongs to the region as an appended
+        -- task and flush()'s INSERT detection needs to see it.
         new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
       else
         -- Region entirely above the insert: position unchanged.
@@ -548,9 +566,26 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
         edit_m.on_lines_hook(bufnr, row, meta.rendered_text, cur[1], {})
       end
     end
+    -- If the deletion erased every managed row in the touched range, the loop
+    -- above had no rows to schedule and flush would never run — yet
+    -- _pending_deletes still holds the deleted rows that need block-aware
+    -- source delete + P7 gate evaluation.  Schedule flush directly so flush
+    -- can drain pending_deletes (e.g. ggdG that wipes the whole dashboard).
+    if _pending_deletes[bufnr] and #_pending_deletes[bufnr] > 0 then
+      edit_m.flush_queue[bufnr] = edit_m.flush_queue[bufnr] or { rows = {}, scheduled = false }
+      if not edit_m.flush_queue[bufnr].scheduled then
+        edit_m.flush_queue[bufnr].scheduled = true
+        vim.schedule(function()
+          edit_m.flush(bufnr)
+        end)
+      end
+    end
   end)
 
   -- Debounce: schedule at most one revert pass per buffer.
+  -- (do_revert gates itself on mode at execution time — scheduling
+  -- unconditionally is correct for the `r X` path, where mode is briefly "R"
+  -- when on_lines fires but normal by the time the schedule executes.)
   if _scheduled[bufnr] then
     return
   end
@@ -631,6 +666,18 @@ function M._flush_pending(bufnr)
   do_revert(bufnr)
 end
 
+--- Run do_revert unconditionally, ignoring the _scheduled debounce flag.
+---
+--- Used by the InsertLeave autocmd to drain a revert pass that bailed during
+--- typing (when do_revert ran in insert/replace mode it returned early
+--- without doing the rerender).  Safe to call when nothing is pending — the
+--- buffer-validity and rerender_fn checks make it a no-op.
+---
+--- @param bufnr integer
+function M.force_revert(bufnr)
+  do_revert(bufnr)
+end
+
 --- Return and clear the pending deletes accumulated by on_lines for *bufnr*.
 ---
 --- flush() calls this once at the start of each flush cycle to collect the
@@ -668,29 +715,23 @@ end
 ---   "MUTATE"            — description or field change on a valid task line
 ---   "REPAIR_AND_MUTATE" — structural repair needed (missing `- ` prefix or
 ---                         `[ ]` checkbox); description/field change accepted
----   "INSERT"            — unmanaged row appearing between managed rows
----   "MULTI_LINE"        — neighbouring rows also changed in the same tick
----   "REVERT"            — no bullet/checkbox in a multi-line context → revert
 ---
 --- Status-flip edits route through this function as a MUTATE branch.
 ---
---- @param bufnr    integer  dashboard buffer
---- @param row      integer  0-indexed row being classified
---- @param old_text string   canonical rendered text for this row (at render time)
+--- INSERT and MULTI_LINE classifications were considered but flush() detects
+--- INSERTs via its own region/meta scan (no classify call) and never passes a
+--- multi-line ctx; the corresponding branches were removed as dead code.
+---
+--- @param bufnr    integer  dashboard buffer (unused; kept for signature stability)
+--- @param row      integer  0-indexed row being classified (unused)
+--- @param old_text string   canonical rendered text for this row (unused)
 --- @param new_text string   current buffer content for this row after the edit
---- @param ctx      table    edit context: { is_multi_line: boolean, is_insert: boolean, ... }
---- @return string  classification label
-function M.classify(_bufnr, _row, _old_text, new_text, ctx)
-  ctx = ctx or {}
-
+--- @param ctx      table?   reserved for future use; currently ignored
+--- @return string  classification label: DELETE / MUTATE / REPAIR_AND_MUTATE
+function M.classify(_bufnr, _row, _old_text, new_text, _ctx)
   -- 1. DELETE — empty or whitespace-only new_text.
   if new_text == nil or new_text:match("^%s*$") then
     return "DELETE"
-  end
-
-  -- 2. INSERT — caller signals an unmanaged row appeared (old_text is nil).
-  if ctx.is_insert then
-    return "INSERT"
   end
 
   -- Structural helpers:
@@ -699,31 +740,13 @@ function M.classify(_bufnr, _row, _old_text, new_text, ctx)
   local has_bullet = new_text:match("^%s*[-*+]%s") ~= nil
   local has_checkbox = new_text:match("%[.%]") ~= nil
 
-  -- 3. MULTI_LINE context — neighbouring rows also changed in the same tick.
-  --    A structurally-valid row classifies as MULTI_LINE (flush layer decides
-  --    whether to propagate or revert per Q3/Q6).  A row without structure reverts.
-  if ctx.is_multi_line then
-    if has_bullet and has_checkbox then
-      return "MULTI_LINE"
-    else
-      return "REVERT"
-    end
-  end
-
-  -- 4. Single-line classification by structural completeness.
+  -- 2. Single-line classification by structural completeness.
   if has_bullet and has_checkbox then
     -- Full `- [<sym>] …` structure: normal mutation (description, field, or status flip).
     return "MUTATE"
-  elseif has_bullet or has_checkbox then
-    -- Partial structure: bullet without checkbox, or checkbox without bullet.
-    -- Re-add the missing structural prefix so the flush layer can splice it back.
-    return "REPAIR_AND_MUTATE"
   else
-    -- No list structure at all on a managed row in a single-line context.
-    -- Per edit_in_place.md plan: single-line no-structure → REPAIR_AND_MUTATE
-    -- (the flush layer re-adds the full "- [ ] " prefix).  This allows users
-    -- to accidentally delete the task prefix and have it silently restored,
-    -- preserving the cursor offset within the text (Q10).
+    -- Partial or no list structure: re-add the missing prefix via the flush
+    -- layer's REPAIR_AND_MUTATE splice (Q10 preserves cursor offset).
     return "REPAIR_AND_MUTATE"
   end
 end

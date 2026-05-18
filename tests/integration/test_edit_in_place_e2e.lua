@@ -7,9 +7,16 @@
 --   E2  Normal-mode edit + insert-mode edit on same row in next tick → 2 undo blocks.
 --   E3  Wikilink-suffix strip + drift recovery compose without interference.
 --   E4  Status-flip via <leader>tt on a .md source file (non-dashboard) still works.
+--   E5  P1–P9 full-stack scenario via SYNCHRONOUS seams (set_line, direct flush).
 --
 -- All assertions use synchronous seams (edit_mod._flush_pending, revert._flush_pending,
 -- direct edit_mod.flush) to remain deterministic without yielding to the event loop.
+--
+-- Real-keypress coverage of the same flows lives in
+-- tests/integration_real/test_e2e_edit_in_place.lua — that file is the
+-- end-to-end acceptance bar (exercises mode='i' timing, InsertLeave drain,
+-- pending_deletes scheduling).  E5 here remains as a deterministic
+-- classifier-logic test.
 
 local T = MiniTest.new_set()
 
