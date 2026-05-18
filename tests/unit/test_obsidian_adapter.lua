@@ -171,6 +171,102 @@ T["workspace_for_path: returns nil when api returns nil"] = function()
   MiniTest.expect.equality(result, nil)
 end
 
+-- ── workspace_for_path: ad-hoc vault fallback ─────────────────────────────────
+--
+-- When obsidian.api.find_workspace returns nil, walk the path's ancestors
+-- looking for a `.obsidian/` directory.  If found, synthesize a minimal
+-- workspace `{ root = parent_dir, name = basename(parent_dir) }` so dashboards
+-- in any vault work without requiring registration in obsidian.nvim's config.
+
+local function make_tmp_vault()
+  local root = vim.fn.tempname()
+  vim.fn.mkdir(root .. "/.obsidian", "p")
+  vim.fn.mkdir(root .. "/sub", "p")
+  return root
+end
+
+local function rm_tmp_vault(root)
+  vim.fn.delete(root, "rf")
+end
+
+T["workspace_for_path: ad-hoc fallback synthesizes workspace from .obsidian/ ancestor"] = function()
+  set_obsidian_stub()
+  local cleanup = stub_module("obsidian.api", {
+    find_workspace = function(_)
+      return nil
+    end,
+  })
+  local root = make_tmp_vault()
+  local nested_path = root .. "/sub/note.md"
+
+  local adapter = fresh_adapter()
+  local result = adapter.workspace_for_path(nested_path)
+  cleanup()
+  rm_tmp_vault(root)
+
+  MiniTest.expect.equality(type(result), "table")
+  MiniTest.expect.equality(tostring(result.root), root)
+  MiniTest.expect.equality(result.name, vim.fn.fnamemodify(root, ":t"))
+end
+
+T["workspace_for_path: ad-hoc fallback returns nil when no marker found"] = function()
+  set_obsidian_stub()
+  local cleanup = stub_module("obsidian.api", {
+    find_workspace = function(_)
+      return nil
+    end,
+  })
+  local root = vim.fn.tempname()
+  vim.fn.mkdir(root .. "/sub", "p") -- no .obsidian/
+  local nested_path = root .. "/sub/note.md"
+
+  local adapter = fresh_adapter()
+  local result = adapter.workspace_for_path(nested_path)
+  cleanup()
+  vim.fn.delete(root, "rf")
+
+  MiniTest.expect.equality(result, nil)
+end
+
+T["workspace_for_path: registered vault wins over ad-hoc fallback"] = function()
+  -- Even when a .obsidian/ marker exists on disk for the path, if
+  -- obsidian.api.find_workspace returns a registered workspace, return that
+  -- one unchanged so its richer metadata (config, name, etc.) is preserved.
+  set_obsidian_stub()
+  local root = make_tmp_vault()
+  local nested_path = root .. "/sub/note.md"
+  local registered = { root = root, name = "registered-via-api" }
+  local cleanup = stub_module("obsidian.api", {
+    find_workspace = function(_)
+      return registered
+    end,
+  })
+
+  local adapter = fresh_adapter()
+  local result = adapter.workspace_for_path(nested_path)
+  cleanup()
+  rm_tmp_vault(root)
+
+  MiniTest.expect.equality(result, registered)
+  MiniTest.expect.equality(result.name, "registered-via-api")
+end
+
+T["workspace_for_path: nil / empty path returns nil without calling api"] = function()
+  set_obsidian_stub()
+  local api_called = false
+  local cleanup = stub_module("obsidian.api", {
+    find_workspace = function(_)
+      api_called = true
+      return nil
+    end,
+  })
+  local adapter = fresh_adapter()
+  MiniTest.expect.equality(adapter.workspace_for_path(nil), nil)
+  MiniTest.expect.equality(adapter.workspace_for_path(""), nil)
+  cleanup()
+  MiniTest.expect.equality(api_called, false)
+end
+
 -- ── set_workspace ─────────────────────────────────────────────────────────────
 
 T["set_workspace: calls obsidian.Workspace.set with arg"] = function()

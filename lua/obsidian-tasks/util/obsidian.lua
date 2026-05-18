@@ -25,11 +25,40 @@ function M.current_workspace()
 end
 
 --- Find the workspace that owns the given absolute path.
+---
+--- Tries obsidian.nvim's registry first (preserves the full workspace object,
+--- including any workspace-scoped config the user has set).  Falls back to an
+--- ad-hoc vault detector: walks the path's ancestors looking for a `.obsidian/`
+--- directory and synthesizes a minimal `{ root, name }` workspace when found.
+--- This means dashboards / queries work in any Obsidian vault on disk, even
+--- when the user has not registered it in obsidian.nvim's `workspaces` config.
+---
+--- Every downstream consumer in this plugin reads only `workspace.root`, so a
+--- two-field synthesized object is sufficient.
+---
 --- @param abs_path string
 --- @return table|nil  workspace or nil
 function M.workspace_for_path(abs_path)
   check_guard()
-  return require("obsidian.api").find_workspace(abs_path)
+  if not abs_path or abs_path == "" then
+    return nil
+  end
+  local ws = require("obsidian.api").find_workspace(abs_path)
+  if ws ~= nil then
+    return ws
+  end
+  -- Ad-hoc fallback: walk up looking for `.obsidian/`.
+  local start = vim.fs.dirname(abs_path)
+  if not start or start == "" then
+    return nil
+  end
+  local matches = vim.fs.find(".obsidian", { upward = true, type = "directory", path = start })
+  local marker = matches and matches[1]
+  if not marker then
+    return nil
+  end
+  local root = vim.fs.dirname(marker)
+  return { root = root, name = vim.fn.fnamemodify(root, ":t") }
 end
 
 --- Activate a workspace by name or workspace object.
