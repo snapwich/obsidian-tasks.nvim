@@ -168,4 +168,72 @@ T["o at top of dashboard (no anchor): inserted row is reverted, source untouched
   pcall(vim.fn.delete, src)
 end
 
+-- ── Bare-text INSERT (o + word + Esc) auto-prefixes with - [ ] ───────────────
+--
+-- Real keystroke path: `o test<Esc>` creates a new line containing "test"
+-- below the current task.  flush() must auto-prefix the bare word with
+-- "- [ ] " so the line becomes a task in source (not orphan content).
+
+T["o + bare word: source gets - [ ] word as new task"] = function()
+  local child, src = spawn_with_tasks({
+    "- [ ] Anchor #task",
+  })
+
+  local task_row = child.lua_get([[(function()
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(_G._dash_bufnr, 0, -1, false)) do
+      if l and l:find("Anchor", 1, true) then return i - 1 end
+    end
+    return -1
+  end)()]])
+  eq(task_row >= 0, true, "Anchor row must exist")
+  child.api.nvim_win_set_cursor(0, { task_row + 1, 0 })
+
+  child.type_keys("o", "test", "<Esc>")
+  vim.loop.sleep(400)
+
+  local src_after = child.lua_get("vim.fn.readfile(_G._src)")
+  eq(#src_after, 2, "source must have 2 lines after bare-text INSERT")
+  eq(src_after[1], "- [ ] Anchor #task", "anchor unchanged")
+  eq(src_after[2], "- [ ] test", "bare-text 'test' auto-prefixed with - [ ]")
+
+  child.stop()
+  pcall(vim.fn.delete, src)
+end
+
+-- ── Mid-task <CR> split: original task and second half each become a task ────
+--
+-- The growing-replacement case: pressing <CR> mid-task replaces 1 line with 2.
+-- on_lines must update the region/meta snapshots so flush() classifies row N
+-- as MUTATE (truncated text) and row N+1 as INSERT (second half), and the
+-- second half gets auto-prefixed with - [ ].
+
+T["mid-task <CR> split: source contains both halves as separate tasks"] = function()
+  local child, src = spawn_with_tasks({
+    "- [ ] need to merge dependabot #task",
+  })
+
+  local task_row = child.lua_get([[(function()
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(_G._dash_bufnr, 0, -1, false)) do
+      if l and l:find("need to merge", 1, true) then return i - 1 end
+    end
+    return -1
+  end)()]])
+  eq(task_row >= 0, true, "task row must exist")
+
+  -- Cursor: row task_row+1 (1-indexed), column 14 (immediately before 'merge').
+  -- Line "- [ ] need to merge dependabot #task" — col 14 (0-indexed) is 'm' of 'merge'.
+  child.api.nvim_win_set_cursor(0, { task_row + 1, 14 })
+  -- Real insert-mode <CR>: enter insert mode, hit Enter, leave.
+  child.type_keys("i", "<CR>", "<Esc>")
+  vim.loop.sleep(400)
+
+  local src_after = child.lua_get("vim.fn.readfile(_G._src)")
+  eq(#src_after, 2, "source must contain two tasks after mid-task split")
+  eq(src_after[1], "- [ ] need to ", "first half kept as truncated task")
+  eq(src_after[2], "- [ ] merge dependabot #task", "second half becomes its own task")
+
+  child.stop()
+  pcall(vim.fn.delete, src)
+end
+
 return T

@@ -177,7 +177,10 @@ local function repair_prefix(text)
   local has_bullet = text:match("^%s*[-*+]%s") ~= nil
   local has_checkbox = text:match("%[.%]") ~= nil
 
-  if not has_bullet and not has_checkbox then
+  if has_bullet and has_checkbox then
+    -- Already well-formed: idempotent no-op.
+    return text, 0
+  elseif not has_bullet and not has_checkbox then
     -- Neither present: prepend the full "- [ ] " prefix.
     return "- [ ] " .. text, 6
   elseif not has_checkbox then
@@ -740,9 +743,16 @@ function M.flush(bufnr)
 
       -- Apply same normalization as the MUTATE path.
       local write_text = strip_wikilink_suffix(new_text, src_path)
-      -- Re-apply anchor indent: strip existing leading spaces and replace
-      -- with anchor_indent spaces so new task aligns with its anchor (Q11).
+      -- Strip leading whitespace so repair_prefix sees the bare content.
       local content_after_indent = write_text:match("^%s*(.*)")
+      -- Repair structural prefix: if the user typed a bare word, a bulleted
+      -- line, or a checkbox-only line, prepend "- ", "[ ] ", or "- [ ] " so
+      -- the new line parses as a task on re-render.  Without this, typing
+      -- "test" on a dashboard row would write "test" to source as orphan
+      -- content (not a task), the line would disappear from the dashboard,
+      -- and the source would be left with useless junk.
+      content_after_indent = (repair_prefix(content_after_indent))
+      -- Re-apply anchor indent so the new task aligns with its anchor (Q11).
       write_text = string.rep(" ", anchor_indent) .. content_after_indent
       -- Q2: normalize natural-language date fields.
       write_text = normalize_date_fields(write_text)

@@ -202,6 +202,78 @@ T["insert/delete: type new task between managed rows — source-side insertion"]
   cleanup()
 end
 
+-- ── Auto-prefix bare INSERT lines with "- [ ] " ───────────────────────────────
+--
+-- User types a bare word like "test" on a new dashboard line.  Without a
+-- structural prefix the parser rejects the line so it never appears in the
+-- dashboard re-render — but the raw text is still written to source as orphan
+-- content.  flush() must repair the prefix on INSERT (same logic as
+-- REPAIR_AND_MUTATE) so the typed line becomes a task in source.
+
+T["insert/delete: bare-text INSERT gets auto-prefixed with - [ ]"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard({
+    "- [ ] Anchor task #task", -- row 0
+  })
+
+  -- User types just "test" on a new line below the anchor.
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW + 1, TASK_ROW + 1, false, { "test" })
+
+  edit_mod.flush(bufnr)
+
+  local src_lines = read_file(src_path)
+  eq(#src_lines, 2, "source should have 2 lines after bare-text INSERT")
+  eq(src_lines[1], "- [ ] Anchor task #task", "anchor unchanged")
+  eq(src_lines[2], "- [ ] test", "bare-text INSERT auto-prefixed with - [ ]")
+
+  cleanup()
+end
+
+T["insert/delete: INSERT with bullet but no checkbox gets [ ] inserted"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard({
+    "- [ ] Anchor task #task",
+  })
+
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW + 1, TASK_ROW + 1, false, { "- something" })
+
+  edit_mod.flush(bufnr)
+
+  local src_lines = read_file(src_path)
+  eq(src_lines[2], "- [ ] something", "bullet-but-no-checkbox INSERT gets [ ] inserted")
+
+  cleanup()
+end
+
+-- ── Splitting a task with mid-line <CR> creates two tasks ─────────────────────
+--
+-- User presses Enter mid-task: the original managed row becomes the first half
+-- (MUTATE) and a new unmanaged row appears below holding the second half
+-- (INSERT).  The first half stays a task (already has its prefix); the second
+-- half is bare text that must be auto-prefixed so it becomes its own task on
+-- re-render (no orphan content left in source).
+
+T["insert/delete: split mid-task creates two tasks in source"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard({
+    "- [ ] need to merge dependabot updates", -- row 0
+  })
+
+  -- Simulate <CR> after "need to ": original row becomes two rows on the
+  -- dashboard.  In the real flow on_lines fires for this single change; here
+  -- we model it via nvim_buf_set_lines replacing the single row with two.
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW, TASK_ROW + 1, false, {
+    "- [ ] need to ",
+    "merge dependabot updates",
+  })
+
+  edit_mod.flush(bufnr)
+
+  local src_lines = read_file(src_path)
+  eq(#src_lines, 2, "source should contain two tasks after mid-task split")
+  eq(src_lines[1], "- [ ] need to ", "first half remains the original task (truncated)")
+  eq(src_lines[2], "- [ ] merge dependabot updates", "second half becomes its own task")
+
+  cleanup()
+end
+
 -- ── Q14: dd task with continuation — source removes task + continuation ────────
 --
 -- RED: FAILS — current DELETE uses count=1; source row 0 (task) is removed but

@@ -465,34 +465,46 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
   --   the wrong task to the deleted task's source position and leaving the
   --   deleted task's continuation note behind.
   local delta = new_lastline - last_line
-  if delta > 0 and last_line == first_line then
-    -- ── PURE INSERTION ──────────────────────────────────────────────────────────
+  if delta > 0 then
+    -- ── PURE INSERTION or GROWING REPLACEMENT ──────────────────────────────────
+    -- Pure insertion: last_line == first_line, delta rows inserted at first_line.
+    -- Growing replacement: last_line > first_line, replaced range grows by delta
+    --   (e.g. pressing <CR> mid-task replaces 1 row with 2 — delta=1).
     local new_snapshot = {}
     for _, region in ipairs(snapshot) do
-      if region[1] > first_line then
-        -- Region strictly below the insert: shift entirely by delta.
-        new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
-      elseif region[2] + 1 >= first_line then
-        -- Insert at, inside, or immediately past the region
-        -- (region.start <= first_line <= region.end + 1): expand the end to
-        -- cover the inserted row(s) and any shifted managed rows.  The "+1"
-        -- accommodates `o` on the last managed row, which inserts at
-        -- region.end + 1 — the new row belongs to the region as an appended
-        -- task and flush()'s INSERT detection needs to see it.
-        new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
+      if last_line == first_line then
+        -- PURE INSERTION
+        if region[1] > first_line then
+          new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
+        elseif region[2] + 1 >= first_line then
+          -- Insert at, inside, or immediately past the region: expand end by delta.
+          -- "+1" accommodates `o` on the last managed row (insert at region.end+1).
+          new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
+        else
+          new_snapshot[#new_snapshot + 1] = region
+        end
       else
-        -- Region entirely above the insert: position unchanged.
-        new_snapshot[#new_snapshot + 1] = region
+        -- GROWING REPLACEMENT at [first_line, last_line) → [first_line, last_line+delta)
+        if region[1] >= last_line then
+          new_snapshot[#new_snapshot + 1] = { region[1] + delta, region[2] + delta }
+        elseif region[2] >= first_line then
+          -- Region overlaps the replaced range: expand end by delta.
+          new_snapshot[#new_snapshot + 1] = { region[1], region[2] + delta }
+        else
+          new_snapshot[#new_snapshot + 1] = region
+        end
       end
     end
     _region_snapshot[bufnr] = new_snapshot
 
-    -- Shift _meta_snapshot keys in tandem so row → meta lookups stay aligned
-    -- with the live row numbers after the user's insert.
+    -- Shift _meta_snapshot keys in tandem.  Rows at >= last_line shift by delta
+    -- (works for both pure insertion where last_line == first_line, and growing
+    -- replacement where rows in [first_line, last_line) keep their meta — they
+    -- are MUTATE candidates, not new inserts).
     local old_meta = _meta_snapshot[bufnr] or {}
     local new_meta = {}
     for row, meta in pairs(old_meta) do
-      if row >= first_line then
+      if row >= last_line then
         new_meta[row + delta] = meta
       else
         new_meta[row] = meta
