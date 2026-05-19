@@ -229,6 +229,35 @@ function M.layout(query_result, opts)
   local first_live_name = live_groups[1] and live_groups[1].name or nil
   local multi_group = has_groups and (total_groups > 1 or (first_live_name ~= nil and first_live_name ~= ""))
 
+  --- Resolve the `[[...]]` backlink suffix for a task whose source file is
+  --- *path*.  Returns the suffix string ("" when none should be appended) and
+  --- the inner wikilink text rendered (nil when no suffix is appended).
+  ---
+  --- The note's first frontmatter alias (via `opts.resolve_alias`, when given)
+  --- is shown with `[[basename|alias]]` — the standard Obsidian aliased-link
+  --- form.  The link *target* stays the real filename so it resolves both in
+  --- Obsidian and to markdown LSPs (marksman et al.) that verify wikilinks;
+  --- the alias is display text only.  Falls back to `[[basename]]` when the
+  --- note has no alias (or its alias equals the filename).
+  ---
+  --- Threading the inner text back to the caller lets render/edit.lua strip
+  --- exactly what was rendered during edit-flush.
+  --- @param path string|nil
+  --- @return string suffix
+  --- @return string|nil target  inner [[...]] text ("basename" or "basename|alias")
+  local function backlink_suffix(path)
+    if not path or hide.backlinks then
+      return "", nil
+    end
+    local basename = vim.fn.fnamemodify(path, ":t:r")
+    local alias = opts.resolve_alias and opts.resolve_alias(path) or nil
+    local target = basename
+    if alias and alias ~= "" and alias ~= basename then
+      target = basename .. "|" .. alias
+    end
+    return " [[" .. target .. "]]", target
+  end
+
   --- Build a render record for a lingered task in *group_name* at
   --- *group_index* (0-based position within the rendered group body).
   --- @param ent        table
@@ -242,10 +271,8 @@ function M.layout(query_result, opts)
     local invalid_ranges = ser.invalid_ranges
     local source_text_hash = ent.task.raw_line and src_hash(ent.task.raw_line) or src_hash(task_text)
     local path = ent.src_path or ent.task._src_path
-    if path and not hide.backlinks then
-      local basename = vim.fn.fnamemodify(path, ":t:r")
-      task_text = task_text .. " [[" .. basename .. "]]"
-    end
+    local suffix, wikilink_target = backlink_suffix(path)
+    task_text = task_text .. suffix
     local hash = src_hash(task_text)
     return {
       kind = "task",
@@ -254,6 +281,10 @@ function M.layout(query_result, opts)
       src_line = ent.src_line or ent.task._src_line,
       src_hash = hash,
       source_text_hash = source_text_hash,
+      -- Inner [[...]] text rendered above ("basename" or "basename|alias");
+      -- nil when no suffix was appended.  Threaded to render/edit.lua for
+      -- edit-flush strip/re-apply (see render/managed.lua meta).
+      wikilink_target = wikilink_target,
       -- source_text is the VERBATIM source-file line content (preserved by
       -- parse.lua as task.raw_line).  draw.lua uses this as managed.task_text
       -- so the drift check compares like-for-like: the canonicalized render
@@ -283,10 +314,8 @@ function M.layout(query_result, opts)
     local invalid_ranges = ser.invalid_ranges
     local source_text_hash = task.raw_line and src_hash(task.raw_line) or src_hash(task_text)
     local path = task._src_path
-    if path and not hide.backlinks then
-      local basename = vim.fn.fnamemodify(path, ":t:r")
-      task_text = task_text .. " [[" .. basename .. "]]"
-    end
+    local suffix, wikilink_target = backlink_suffix(path)
+    task_text = task_text .. suffix
     local hash = src_hash(task_text)
     return {
       kind = "task",
@@ -295,6 +324,9 @@ function M.layout(query_result, opts)
       src_line = task._src_line,
       src_hash = hash,
       source_text_hash = source_text_hash,
+      -- Inner [[...]] text rendered above; nil when no suffix was appended.
+      -- See build_linger_line / render/managed.lua.
+      wikilink_target = wikilink_target,
       -- VERBATIM source-file line (preserved by parse.lua as task.raw_line).
       -- See build_linger_line for why this matters (drift check correctness).
       source_text = task.raw_line,

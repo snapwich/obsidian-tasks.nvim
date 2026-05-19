@@ -30,22 +30,23 @@ M.flush_queue = {}
 
 -- ── Internal helpers ──────────────────────────────────────────────────────────
 
---- Strip the wikilink suffix ' [[<basename>]]' from *text* when it matches
---- the expected basename for *src_path*.  Returns *text* unchanged otherwise.
+--- Strip the wikilink suffix ' [[<target>]]' from *text* when it matches the
+--- *target* layout appended at render time ('basename' or 'basename|alias').
+--- *target* is nil when the row was rendered without a suffix (no source path,
+--- or a `hide backlinks` query), in which case *text* is returned unchanged.
 ---
 --- Delegates to render/wikilink.strip_expected_suffix so the flush path and the
 --- public helper share a single implementation (unit tests for strip_expected_suffix
 --- therefore cover the code that actually runs during flush).
 ---
---- @param text     string
---- @param src_path string
+--- @param text   string
+--- @param target string|nil  rendered wikilink target (meta.wikilink_target)
 --- @return string
-local function strip_wikilink_suffix(text, src_path)
-  if not src_path or src_path == "" then
+local function strip_wikilink_suffix(text, target)
+  if not target or target == "" then
     return text
   end
-  local basename = vim.fn.fnamemodify(src_path, ":t:r")
-  return require("obsidian-tasks.render.wikilink").strip_expected_suffix(text, basename)
+  return require("obsidian-tasks.render.wikilink").strip_expected_suffix(text, target)
 end
 
 --- Q2 date normalization: replace natural-language date values with ISO dates.
@@ -500,9 +501,12 @@ function M.flush(bufnr)
       local src_path = meta.source_file
       local new_text = entry.new_text
 
-      -- Step A: strip expected wikilink suffix.
-      local wikilink_suffix = " [[" .. vim.fn.fnamemodify(src_path, ":t:r") .. "]]"
-      local write_text = strip_wikilink_suffix(new_text, src_path)
+      -- Step A: strip the wikilink suffix layout appended.  meta.wikilink_target
+      -- is the exact link text rendered (alias or basename), or nil when the
+      -- row carried no suffix (e.g. a `hide backlinks` query) — in which case
+      -- wikilink_suffix is "" so flush re-applies nothing.
+      local wikilink_suffix = meta.wikilink_target and (" [[" .. meta.wikilink_target .. "]]") or ""
+      local write_text = strip_wikilink_suffix(new_text, meta.wikilink_target)
 
       -- Step B: REPAIR_AND_MUTATE — re-add missing structural prefix.
       local prefix_inserted = 0
@@ -741,8 +745,9 @@ function M.flush(bufnr)
       local src_path = anchor_meta.source_file
       local anchor_indent = indent_of(anchor_meta.task_text)
 
-      -- Apply same normalization as the MUTATE path.
-      local write_text = strip_wikilink_suffix(new_text, src_path)
+      -- Apply same normalization as the MUTATE path.  A freshly inserted row
+      -- rarely carries a suffix; strip the anchor's rendered target defensively.
+      local write_text = strip_wikilink_suffix(new_text, anchor_meta.wikilink_target)
       -- Strip leading whitespace so repair_prefix sees the bare content.
       local content_after_indent = write_text:match("^%s*(.*)")
       -- Repair structural prefix: if the user typed a bare word, a bulleted

@@ -493,6 +493,10 @@ function M.render_buffer(bufnr, workspace)
       -- diagnostic set per render (no per-block flicker).
       local all_diagnostics = {}
 
+      -- Alias resolver for the [[basename|alias]] backlink suffix.  Notes
+      -- without a frontmatter alias render a plain [[basename]] (see layout).
+      local resolve_alias = require("obsidian-tasks.render.alias").for_path
+
       for i, pb in ipairs(per_block) do
         local block = pb.block
         -- 0-indexed positions adjusted by cumulative insertions from prior blocks.
@@ -508,6 +512,7 @@ function M.render_buffer(bufnr, workspace)
               lingers = lingers_by_block[i] or {},
               group_by = (pb.ast and pb.ast.group_by) or {},
               dim_completed = M._opts and M._opts.dim_completed_tasks ~= false,
+              resolve_alias = resolve_alias,
             })
           end)
           if not ok2 then

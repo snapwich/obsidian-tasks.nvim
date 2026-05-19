@@ -264,9 +264,12 @@ T["draw: managed task text strips wikilink suffix"] = function()
     {
       kind = "task",
       text = rendered_text,
-      src_path = "/vault/note.md", -- basename = "note"
+      src_path = "/vault/note.md",
       src_line = 7,
       src_hash = hash,
+      -- wikilink_target is the exact link text layout appended; draw.lua strips
+      -- it (not the src_path basename) to recover the clean source text.
+      wikilink_target = "note",
     },
     { kind = "footer", text = "─ 1 result ─" },
   }

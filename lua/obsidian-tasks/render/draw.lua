@@ -73,17 +73,19 @@ end
 
 -- ── Strip wikilink helper ─────────────────────────────────────────────────────
 
---- Strip the ' [[basename]]' wikilink suffix from a rendered task line.
+--- Strip the ' [[<target>]]' wikilink suffix from a rendered task line.
 --- Used to recover the pre-wikilink (source-file) task text for managed.task_text.
---- @param text     string
---- @param src_path string|nil
+--- *target* is the exact inner [[...]] text layout appended ('basename' or
+--- 'basename|alias'); nil means no suffix was rendered, so *text* is returned
+--- unchanged.
+--- @param text   string
+--- @param target string|nil
 --- @return string
-local function strip_wikilink(text, src_path)
-  if not src_path then
+local function strip_wikilink(text, target)
+  if not target or target == "" then
     return text
   end
-  local basename = vim.fn.fnamemodify(src_path, ":t:r")
-  local suffix = " [[" .. basename .. "]]"
+  local suffix = " [[" .. target .. "]]"
   if #text >= #suffix and text:sub(-#suffix) == suffix then
     return text:sub(1, -(#suffix + 1))
   end
@@ -280,11 +282,16 @@ function M.draw(bufnr, fence_range, layout_lines)
       -- (= task.raw_line, set by layout from the parser); fall back to
       -- strip_wikilink on the rendered text for synthesized tasks that lack
       -- raw_line (e.g. tests, generated rows).
+      --
+      -- wikilink_target is the inner [[...]] text layout appended ('basename'
+      -- or 'basename|alias', nil when no suffix) — render/edit.lua reads it to
+      -- strip and re-apply the suffix faithfully during edit-flush.
       managed.add_task(bufnr, task_lnum, {
         source_file = ll.src_path,
         source_row = (ll.src_line or 1) - 1, -- convert 1-indexed → 0-indexed
-        task_text = ll.source_text or strip_wikilink(ll.text, ll.src_path),
+        task_text = ll.source_text or strip_wikilink(ll.text, ll.wikilink_target),
         rendered_text = ll.text,
+        wikilink_target = ll.wikilink_target,
       })
 
       last_task_lnum = task_lnum

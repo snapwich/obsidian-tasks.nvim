@@ -408,6 +408,92 @@ T["no src_path: wikilink not appended even when backlinks not hidden"] = functio
   MiniTest.expect.equality(tl.text:find("%[%[") == nil, true)
 end
 
+T["backlinks: wikilink_target is the basename when no resolver"] = function()
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/my-note.md", 1)
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local tl = lines_of_kind(layout_mod.layout(result), "task")[1]
+  MiniTest.expect.equality(tl.wikilink_target, "my-note")
+end
+
+T["backlinks: resolve_alias renders [[basename|alias]] and wikilink_target"] = function()
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/1778634445-OMZO.md", 1)
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result, {
+    resolve_alias = function(_)
+      return "My Note"
+    end,
+  })
+  local tl = lines_of_kind(rendered, "task")[1]
+  -- The link target stays the real filename (resolvable by markdown LSPs); the
+  -- alias is display text after the pipe.
+  MiniTest.expect.equality(tl.text:find("[[1778634445-OMZO|My Note]]", 1, true) ~= nil, true)
+  MiniTest.expect.equality(tl.wikilink_target, "1778634445-OMZO|My Note")
+end
+
+T["backlinks: alias equal to the filename collapses to [[basename]]"] = function()
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/my-note.md", 1)
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result, {
+    resolve_alias = function(_)
+      return "my-note"
+    end,
+  })
+  local tl = lines_of_kind(rendered, "task")[1]
+  MiniTest.expect.equality(tl.text:find("[[my-note]]", 1, true) ~= nil, true)
+  MiniTest.expect.equality(tl.wikilink_target, "my-note")
+end
+
+T["backlinks: resolve_alias nil falls back to basename"] = function()
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/1778634445-OMZO.md", 1)
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result, {
+    resolve_alias = function(_)
+      return nil
+    end,
+  })
+  local tl = lines_of_kind(rendered, "task")[1]
+  MiniTest.expect.equality(tl.text:find("%[%[1778634445%-OMZO%]%]") ~= nil, true)
+  MiniTest.expect.equality(tl.wikilink_target, "1778634445-OMZO")
+end
+
+T["hide.backlinks: wikilink_target is nil"] = function()
+  local task_a = with_src(pt("- [ ] Task A"), "/vault/note.md", 1)
+  local result = make_result({
+    total = 1,
+    hide_flags = { backlinks = true },
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local rendered = layout_mod.layout(result, {
+    resolve_alias = function(_)
+      return "Alias"
+    end,
+  })
+  local tl = lines_of_kind(rendered, "task")[1]
+  MiniTest.expect.equality(tl.wikilink_target, nil)
+end
+
+T["no src_path: wikilink_target is nil"] = function()
+  local task_a = pt("- [ ] Task A")
+  local result = make_result({
+    total = 1,
+    groups = { { name = "", tasks = { task_a } } },
+  })
+  local tl = lines_of_kind(layout_mod.layout(result), "task")[1]
+  MiniTest.expect.equality(tl.wikilink_target, nil)
+end
+
 -- ── hide priority + tags ───────────────────────────────────────────────────
 
 T["hide.priority: priority emoji absent from task line"] = function()
