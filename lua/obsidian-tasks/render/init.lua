@@ -93,6 +93,57 @@ function M.refresh_with_clear_lingers(bufnr, workspace)
   M.rerender_buffer(bufnr, workspace)
 end
 
+--- Mark a windowless buffer for a deferred sync rerender on its next BufEnter.
+---
+--- Called by the reverse_index propagation paths (BufWritePost in autocmds.lua,
+--- apply_source_edit in cmd/init.lua) INSTEAD of rerendering a windowless
+--- buffer directly: a clear+render on a buffer with no window drifts its
+--- stored cursor (line removals during clear carry it, and rerender_buffer's
+--- cursor save/restore is a no-op because win_findbuf finds nothing).  We
+--- defer to the buffer's next BufEnter, when it has a window and the cursor
+--- can be preserved.
+---
+--- Idempotent — only one BufEnter autocmd is registered per buffer even if
+--- several source writes land before the user switches to it.
+---
+--- @param bufnr integer
+function M.mark_dirty_for_deferred_sync(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  if vim.b[bufnr].obsidian_tasks_sync_dirty then
+    return -- a BufEnter autocmd is already pending for this buffer
+  end
+  vim.b[bufnr].obsidian_tasks_sync_dirty = true
+  vim.api.nvim_create_autocmd("BufEnter", {
+    buffer = bufnr,
+    once = true,
+    desc = "obsidian-tasks: deferred dashboard sync after off-screen source edit",
+    callback = function()
+      vim.b[bufnr].obsidian_tasks_sync_dirty = nil
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      -- The current window now shows this buffer; capture the cursor before
+      -- the clear+render pass.  rerender_buffer also saves/restores cursors
+      -- for visible windows, but we restore explicitly afterwards to guard
+      -- against the rendered task at the old row shifting on the rerender.
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      local path = vim.api.nvim_buf_get_name(bufnr)
+      local ws
+      pcall(function()
+        ws = require("obsidian-tasks.util.obsidian").workspace_for_path(path)
+      end)
+      M.rerender_buffer(bufnr, ws)
+      local nlines = vim.api.nvim_buf_line_count(bufnr)
+      local row = math.max(1, math.min(cursor[1], math.max(1, nlines)))
+      local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
+      local col = math.max(0, math.min(cursor[2], #line))
+      pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
+    end,
+  })
+end
+
 -- ── Per-buffer orchestrator state ─────────────────────────────────────────────
 --
 --   M._buffer_state[bufnr] = {

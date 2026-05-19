@@ -574,11 +574,15 @@ function M.apply_source_edit(file_path, row, new_lines, opts)
     end
   end)
 
-  -- Propagate to every OTHER visible buffer whose render references this path.
+  -- Propagate to every OTHER buffer whose render references this path.
   -- writefile() doesn't fire BufWritePost, so the reverse_index propagation in
   -- autocmds.lua never runs for plugin-driven mutations.  We mirror it here.
   -- The user's current buffer is skipped: the dashboard keymap handler that
   -- called us re-renders it separately via do_rerender().
+  --
+  -- Visible buffers rerender immediately; windowless ones are marked dirty
+  -- and rerendered on their next BufEnter (a clear+render with no window in
+  -- scope drifts the buffer's stored cursor — see mark_dirty_for_deferred_sync).
   local render_ok, render = pcall(require, "obsidian-tasks.render")
   local index_ok, index = pcall(require, "obsidian-tasks.index")
   if
@@ -593,12 +597,12 @@ function M.apply_source_edit(file_path, row, new_lines, opts)
       ws = require("obsidian-tasks.util.obsidian").workspace_for_path(file_path)
     end)
     for _, other_bufnr in ipairs(index.reverse_index(file_path)) do
-      if
-        other_bufnr ~= current_buf
-        and vim.api.nvim_buf_is_valid(other_bufnr)
-        and #vim.fn.win_findbuf(other_bufnr) > 0
-      then
-        pcall(render.rerender_buffer, other_bufnr, ws)
+      if other_bufnr ~= current_buf and vim.api.nvim_buf_is_valid(other_bufnr) then
+        if #vim.fn.win_findbuf(other_bufnr) > 0 then
+          pcall(render.rerender_buffer, other_bufnr, ws)
+        elseif type(render.mark_dirty_for_deferred_sync) == "function" then
+          pcall(render.mark_dirty_for_deferred_sync, other_bufnr)
+        end
       end
     end
   end

@@ -248,18 +248,17 @@ function M.setup(opts)
         for _, other_bufnr in ipairs(index.reverse_index(path)) do
           if other_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(other_bufnr) then
             -- rerender_buffer preserves cursor + fold state for *visible*
-            -- buffers via win_findbuf-based save/restore.  Hidden buffers we
-            -- intentionally skip: clear+render on a buffer with no window in
-            -- scope mutates the buffer's stored cursor (it gets carried by
-            -- line removals during clear and never properly restored), so
-            -- when the user later switches back, neovim restores them to a
-            -- fold line instead of where they were.
-            --
-            -- The index has already been refreshed for `path` above, so the
-            -- next time the user enters the buffer they can `<leader>tr` to
-            -- pick up the fresh data without losing their cursor position.
+            -- buffers via win_findbuf-based save/restore.  A windowless
+            -- buffer (e.g. a dashboard in a background tab) can't be cleared
+            -- + rerendered safely: with no window in scope its stored cursor
+            -- gets carried by line removals during clear and never restored,
+            -- dropping the user on a fold line on their next switch-back.
+            -- So we defer the rerender to that buffer's next BufEnter, when
+            -- it has a window and the cursor can be preserved.
             if #vim.fn.win_findbuf(other_bufnr) > 0 then
               render.rerender_buffer(other_bufnr, ws)
+            else
+              render.mark_dirty_for_deferred_sync(other_bufnr)
             end
           end
         end
