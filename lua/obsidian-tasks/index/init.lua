@@ -56,6 +56,7 @@ end
 --- @return table[]
 local function parse_file(abs_path)
   local parse = require("obsidian-tasks.task.parse")
+  local heading = require("obsidian-tasks.index.heading")
   local opts = require("obsidian-tasks").opts
   local global_filter = opts and opts.global_filter
   local use_filename_date = opts and opts.use_filename_as_scheduled_date
@@ -68,10 +69,17 @@ local function parse_file(abs_path)
       return
     end
     local line_num = 0
+    -- Running ATX heading: each task inherits the nearest heading above it.
+    local current_heading = nil
     for line in f:lines() do
       line_num = line_num + 1
-      local task = parse.parse(line)
+      local h = heading.parse(line)
+      if h ~= nil then
+        current_heading = h
+      end
+      local task = (h == nil) and parse.parse(line) or nil
       if task then
+        task.heading = current_heading
         -- global_filter: post-parse exclusion
         if global_filter and global_filter ~= "" then
           if not task.description:find(global_filter, 1, true) then

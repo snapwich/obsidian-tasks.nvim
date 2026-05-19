@@ -100,8 +100,14 @@ local function backlink_group(_task, path)
   return (fname:gsub("%.[^.]+$", ""))
 end
 
-local function heading_group(_task, _path)
-  return "No heading" -- not tracked in v1
+local function heading_group(task, _path)
+  -- Nearest ATX heading above the task, recorded by the indexer.
+  -- Label mirrors upstream's HeadingField grouper for the no-heading case.
+  local h = task.heading
+  if h and h ~= "" then
+    return h
+  end
+  return "(No heading)"
 end
 
 local function recurrence_group(task)

@@ -176,6 +176,9 @@ end
 ---   },
 ---   tags,                 -- list of '#tag' strings found anywhere on the line
 ---   raw_line,             -- original input unchanged
+---   heading,              -- nearest ATX heading above the task's source line;
+---                         --   set by the indexer (index/init.lua, index/scan.lua),
+---                         --   NOT by this parser, which only ever sees one line.
 ---   _origin,              -- { field_key = 'emoji'|'dataview', ... }
 ---   _raw_fields,          -- { field_key = "raw_string" } for fields whose value
 ---                         --   failed validation (parsed value is nil but the

@@ -94,4 +94,27 @@ T["no group_by directives: single empty-string group bucket"] = function()
   eq(names[1], "")
 end
 
+-- ── Group by heading ─────────────────────────────────────────────────────
+
+T["group by heading: uses task.heading as the group name"] = function()
+  local t = pt("- [ ] Task")
+  t.heading = "Stretch goals"
+  local names = group_mod.resolve(t, "/v/note.md", { { key = "heading", reverse = false } })
+  eq(#names, 1)
+  eq(names[1], "Stretch goals")
+end
+
+T["group by heading: nil heading → '(No heading)' fallback"] = function()
+  local t = pt("- [ ] Task")
+  local names = group_mod.resolve(t, "/v/note.md", { { key = "heading", reverse = false } })
+  eq(names[1], "(No heading)")
+end
+
+T["group by heading: empty-string heading → '(No heading)' fallback"] = function()
+  local t = pt("- [ ] Task")
+  t.heading = ""
+  local names = group_mod.resolve(t, "/v/note.md", { { key = "heading", reverse = false } })
+  eq(names[1], "(No heading)")
+end
+
 return T

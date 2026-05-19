@@ -123,7 +123,8 @@ local function extract(task, path, key)
     return (task.description or ""):lower(), "str"
   end
   if key == "heading" then
-    return "", "str" -- not tracked in v1
+    -- Nearest ATX heading above the task, recorded by the indexer.
+    return (task.heading or ""):lower(), "str"
   end
   if key == "tags" then
     -- Sort by first tag alphabetically (or empty string).

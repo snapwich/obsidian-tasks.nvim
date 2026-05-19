@@ -354,6 +354,100 @@ scan_tests["walk: files exceeding max_file_bytes are skipped"] = function()
   MiniTest.expect.equality(tasks[1].description, "Small task")
 end
 
+scan_tests["walk: task.heading tracks the nearest preceding ATX heading"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  -- Headings and tasks interleaved in line order, as ripgrep emits a file.
+  local rows = make_matches({
+    { "/vault/note.md", "# Top", 1 },
+    { "/vault/note.md", "- [ ] Under top", 3 },
+    { "/vault/note.md", "## Section A", 5 },
+    { "/vault/note.md", "- [ ] Under A one", 6 },
+    { "/vault/note.md", "- [ ] Under A two", 7 },
+    { "/vault/note.md", "### Section B ###", 9 },
+    { "/vault/note.md", "- [ ] Under B", 10 },
+  })
+
+  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
+    search_async = function(_, _, on_match, on_exit)
+      for _, m in ipairs(rows) do
+        on_match(m)
+      end
+      on_exit(0)
+    end,
+  })
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local orig_stat = vim.uv.fs_stat
+  vim.uv.fs_stat = function(_)
+    return { size = 100, mtime = { sec = 1000 } }
+  end
+
+  local scan = fresh("obsidian-tasks.index.scan")
+  local tasks = {}
+  scan.walk({ root = VAULT }, function(task, _, _)
+    tasks[#tasks + 1] = task
+  end, function() end)
+
+  vim.uv.fs_stat = orig_stat
+  cleanup_obs()
+  cleanup_ign()
+
+  -- Heading lines are consumed internally, not yielded as tasks.
+  MiniTest.expect.equality(#tasks, 4)
+  MiniTest.expect.equality(tasks[1].heading, "Top")
+  MiniTest.expect.equality(tasks[2].heading, "Section A")
+  MiniTest.expect.equality(tasks[3].heading, "Section A")
+  MiniTest.expect.equality(tasks[4].heading, "Section B") -- closing ### stripped
+end
+
+scan_tests["walk: a task above any heading has nil heading"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  local rows = make_matches({
+    { "/vault/note.md", "- [ ] Orphan task", 1 },
+    { "/vault/note.md", "# Later heading", 2 },
+  })
+
+  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
+    search_async = function(_, _, on_match, on_exit)
+      for _, m in ipairs(rows) do
+        on_match(m)
+      end
+      on_exit(0)
+    end,
+  })
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local orig_stat = vim.uv.fs_stat
+  vim.uv.fs_stat = function(_)
+    return { size = 100, mtime = { sec = 1000 } }
+  end
+
+  local scan = fresh("obsidian-tasks.index.scan")
+  local tasks = {}
+  scan.walk({ root = VAULT }, function(task, _, _)
+    tasks[#tasks + 1] = task
+  end, function() end)
+
+  vim.uv.fs_stat = orig_stat
+  cleanup_obs()
+  cleanup_ign()
+
+  MiniTest.expect.equality(#tasks, 1)
+  MiniTest.expect.equality(tasks[1].heading, nil)
+end
+
 T["scan"] = scan_tests
 
 -- ── index/init.lua ────────────────────────────────────────────────────────
@@ -383,6 +477,38 @@ init_tests["refresh_file: parses tasks from real fixture file (tasks_a.md)"] = f
   MiniTest.expect.equality(type(entry), "table")
   -- tasks_a.md has 5 task lines (- [ ] or - [x])
   MiniTest.expect.equality(#entry.tasks >= 4, true)
+end
+
+init_tests["refresh_file: tasks carry the nearest preceding heading"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  -- work/sprint.md: tasks under "# Sprint May 2026", then "## Stretch goals".
+  local path = fixture("work/sprint.md")
+  index.refresh_file(path)
+
+  cleanup_ign()
+
+  local entry = index._raw()[path]
+  MiniTest.expect.equality(type(entry), "table")
+
+  local heading_of = {}
+  for _, item in ipairs(entry.tasks) do
+    heading_of[item.task.description] = item.task.heading
+  end
+
+  MiniTest.expect.equality(heading_of["Ship auth refactor #task #work #sprint"], "Sprint May 2026")
+  MiniTest.expect.equality(heading_of["Migrate analytics SDK #task #work #sprint"], "Stretch goals")
+  MiniTest.expect.equality(heading_of["Onboarding doc refresh #task #work"], "Stretch goals")
 end
 
 init_tests["refresh_file: mtime no-op — second call does not re-allocate"] = function()

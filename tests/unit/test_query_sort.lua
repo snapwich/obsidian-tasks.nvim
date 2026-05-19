@@ -107,4 +107,37 @@ T["sort by due desc: no-date tasks STILL sort last (reverse only flips dated tas
   eq(items[3].task.fields.due, "2024-01-01")
 end
 
+-- ── Sort by heading ──────────────────────────────────────────────────────
+
+--- Parse a task line and attach a heading (as the indexer would).
+local function pt_heading(desc, heading)
+  local t = pt("- [ ] " .. desc)
+  t.heading = heading
+  return t
+end
+
+T["sort by heading: alphabetical, case-insensitive"] = function()
+  local items = wrap({
+    { task = pt_heading("c", "Zebra") },
+    { task = pt_heading("a", "apple") },
+    { task = pt_heading("b", "Mango") },
+  })
+  local cmp = sort_mod.make_comparator({ { key = "heading", reverse = false } })
+  table.sort(items, cmp)
+  eq(items[1].task.description, "a") -- apple
+  eq(items[2].task.description, "b") -- Mango
+  eq(items[3].task.description, "c") -- Zebra
+end
+
+T["sort by heading: no-heading tasks sort first (empty string is least)"] = function()
+  local items = wrap({
+    { task = pt_heading("withheading", "Section") },
+    { task = pt_heading("noheading", nil) },
+  })
+  local cmp = sort_mod.make_comparator({ { key = "heading", reverse = false } })
+  table.sort(items, cmp)
+  eq(items[1].task.description, "noheading")
+  eq(items[2].task.description, "withheading")
+end
+
 return T

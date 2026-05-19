@@ -160,8 +160,9 @@ local function task_text_field(task, path, field)
     return task.description or ""
   end
   if field == "heading" then
-    -- Not stored in task for v1; return empty string (filter will miss).
-    return ""
+    -- Nearest ATX heading above the task's source line, recorded by the
+    -- indexer (nil when the task sits above any heading).
+    return task.heading or ""
   end
   if field == "recurrence" then
     return task.fields and task.fields.recurrence or ""
