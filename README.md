@@ -3,6 +3,8 @@
 A Neovim port of the [obsidian-tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) plugin.
 Render, filter, and edit tasks across your Obsidian vault — directly in Neovim.
 
+![A tasks.md dashboard rendering grouped task queries in Neovim](obsidian-tasks.nvim.png)
+
 > **Status:** v1 in development. See [v1 Features & Limitations](#v1-features--limitations).
 
 ## Requirements
