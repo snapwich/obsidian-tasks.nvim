@@ -55,7 +55,8 @@ require("obsidian-tasks").setup({
   default_folded = true,           -- boolean
 
   -- Install buffer-local leader keymaps (<leader>tt, <leader>te, etc.) on
-  -- dashboard buffers.  Set false to manage keymaps yourself.
+  -- every markdown buffer in a vault workspace.  Set false to manage keymaps
+  -- yourself.
   setup_keymaps = true,            -- boolean
 
   -- strftime pattern used when stamping the done date (✅) on task completion.
@@ -152,23 +153,37 @@ edit the underlying query:
 | `zR`        | Open all folds in the buffer             |
 | `zM`        | Close all folds in the buffer            |
 
-### Rendered regions are read-only — except for the checkbox
+### Editing rendered tasks in place
 
-Rendered task lines below the fence are managed by the plugin. **Direct edits are
-reverted** on the next event-loop tick. To mutate a task, use the leader keymaps,
-or press `<CR>` with the cursor on the trailing `[[wikilink]]` to follow it (handled
-by obsidian.nvim), or use `<leader>tg` to jump from anywhere on the row.
+Rendered task lines below the fence are managed by the plugin, but you can edit
+them directly — the changes propagate back to the source file:
 
-**Exception: the status character.** Typing a configured status symbol over the
-character between `[` and `]` of a rendered task line commits the change to the
-source file (same end-state as pressing `<leader>tt`). For example, `r x` over
-the space in `- [ ] task` writes `- [x] task` to the source. Any other change to
-the row reverts, so a single keystroke is all you can change at once. The new
-symbol must be in your configured `statuses` set; unknown chars revert.
+- **Insert-mode edits.** Change a task's description or a field value while in
+  insert mode; on `InsertLeave` the edit is flushed to the source file.
+  Natural-language date values (e.g. `📅 next monday`) are normalized to ISO
+  dates during the flush.
+- **Inserting a task.** Add a new line inside a rendered region to create a new
+  task; group-by attributes for the region are auto-added so the row stays in
+  its group.
+- **Deleting a task.** Delete a rendered row to remove the corresponding task
+  line from the source file.
 
-Note on undo: pressing `u` in the dashboard after a status edit reverts the
-visual line back to `[ ]` but does not undo the source-file change. To undo the
-status change, navigate to the source buffer and undo there.
+**Status character.** In normal mode, typing a configured status symbol over the
+character between `[` and `]` commits the change to the source (same end-state as
+`<leader>tt`). For example, `r x` over the space in `- [ ] task` writes
+`- [x] task`. The symbol must be in your configured `statuses` set; unknown chars
+revert.
+
+Edits the plugin can't classify — normal-mode tampering with managed text, or an
+unrecognized change — are **reverted** on the next event-loop tick. The rendered
+region snaps back to its canonical state. You can also use the leader keymaps to
+mutate a task, press `<CR>` with the cursor on the trailing `[[wikilink]]` to
+follow it (handled by obsidian.nvim), or `<leader>tg` to jump to the source.
+
+**Undo.** `u` and `<C-r>` are overridden on dashboard buffers: they walk a
+per-dashboard undo/redo ring that reverses the source-file mutation (not just the
+visual line). When the ring is empty they fall back to native `:undo` / `:redo`,
+so prose edits still undo normally.
 
 ### Save semantics (BufWriteCmd)
 
@@ -199,9 +214,14 @@ Set either option to `false` for obsidian-tasks-desktop parity (immediate vanish
 
 ## Keymaps
 
-### Dashboard buffer keymaps (auto-installed when `setup_keymaps = true`)
+All keymaps below are auto-installed when `setup_keymaps = true` (the default).
+Set `setup_keymaps = false` in your `setup()` call to opt out and wire your own.
 
-These are installed automatically on every rendered dashboard buffer:
+### Universal task keymaps
+
+Installed on **every markdown buffer in a vault workspace** — both rendered
+dashboard rows and raw source task lines. The handlers resolve the task under
+the cursor either way (managed extmark first, then a source-line parse):
 
 | Keymap       | Action                                              |
 | ------------ | --------------------------------------------------- |
@@ -210,31 +230,24 @@ These are installed automatically on every rendered dashboard buffer:
 | `<leader>tp` | Cycle priority (none → highest → … → lowest → none) |
 | `<leader>td` | Set/edit due date (YYYY-MM-DD prompt)               |
 | `<leader>tT` | Edit tags (comma-separated prompt)                  |
-| `<leader>tg` | Jump to source from anywhere on a rendered task row |
+| `<leader>tg` | Jump to source from anywhere on a task row          |
 | `<leader>tD` | Delete task (confirm prompt, removes source line)   |
-| `<leader>tr` | Force re-render all query regions in this buffer    |
 
-Set `setup_keymaps = false` in your `setup()` call to opt out of these keymaps.
+### Dashboard-only keymaps
+
+Installed only on rendered dashboard buffers (first draw):
+
+| Keymap       | Action                                           |
+| ------------ | ------------------------------------------------ |
+| `<leader>tr` | Force re-render all query regions in this buffer |
+| `u`          | Undo last dashboard edit (plugin ring → native)  |
+| `<C-r>`      | Redo last dashboard edit (plugin ring → native)  |
 
 **Note on `<CR>` and `gf`:** the plugin does _not_ override these. obsidian.nvim's
 ftplugin re-registers its `smart_action` `<CR>` after each render, racing any
 buffer-local handler we'd install. Press `<CR>` with the cursor on the trailing
 `[[wikilink]]` of a rendered task — obsidian.nvim will follow it — or use
 `<leader>tg` to jump from any column on the row.
-
-### Global keymaps (not shipped — wire your own)
-
-For source buffers (regular task files) you may want:
-
-```lua
-vim.keymap.set("n", "<leader>tt", "<cmd>ObsidianTask toggle<cr>",    { desc = "Toggle task status" })
-vim.keymap.set("n", "<leader>td", "<cmd>ObsidianTask done<cr>",      { desc = "Mark task done" })
-vim.keymap.set("n", "<leader>tc", "<cmd>ObsidianTask cancel<cr>",    { desc = "Cancel task" })
-vim.keymap.set("n", "<leader>tD", "<cmd>ObsidianTask due<cr>",       { desc = "Set due date" })
-vim.keymap.set("n", "<leader>ts", "<cmd>ObsidianTask scheduled<cr>", { desc = "Set scheduled date" })
-vim.keymap.set("n", "<leader>tn", "<cmd>ObsidianTask new<cr>",       { desc = "New task" })
-vim.keymap.set("n", "<leader>tr", "<cmd>ObsidianTask refresh<cr>",   { desc = "Refresh task queries" })
-```
 
 ## Commands
 
@@ -254,7 +267,8 @@ vim.keymap.set("n", "<leader>tr", "<cmd>ObsidianTask refresh<cr>",   { desc = "R
 | `:ObsidianTask postpone [N]` | Bump primary date by N days (default +1; due > scheduled > start priority)  |
 | `:ObsidianTask id [VAL]`     | Generate (or set) a 6-char base36 task id for use with `depends on` filters |
 | `:ObsidianTask new`          | Create a new task (appends to `capture_file` or current file)               |
-| `:ObsidianTask refresh`      | Re-render all open query blocks                                             |
+| `:ObsidianTask refresh`      | Clear and re-render all query blocks in the current buffer (clears lingers) |
+| `:ObsidianTask render`       | Render query blocks in the current buffer (for `auto_render = false`)       |
 | `:ObsidianTask goto`         | Jump to the source line of a rendered task                                  |
 
 ## blink.cmp Registration
@@ -285,42 +299,6 @@ buffers. No additional configuration is required beyond `require("obsidian-tasks
 To disable the source without removing it from blink, set `blink_cmp = { enabled = false }` in
 your `setup()` call.
 
-## Troubleshooting
-
-### Rendered tasks not appearing
-
-1. Confirm obsidian.nvim is set up and the file is inside a configured workspace.
-   Run `:lua print(require("obsidian").get_client())` — it should return a client table, not nil.
-2. Try `:ObsidianTask refresh` to force a re-render.
-3. Increase `log_level = "debug"` in `setup()` and check `:messages` for errors.
-4. Check that your dashboard file contains a ` ```tasks ` fence block with a valid query.
-
-### Query block appears collapsed with "(0)" count
-
-Expand the fold with `zo` or `zO` to see whether tasks are rendered. If the count
-is truly 0, check that your filter matches existing tasks. Try an empty query (just
-` ```tasks ` and ` ``` `) to see all tasks.
-
-### obsidian-tasks source not appearing in blink.cmp
-
-1. Confirm the provider is registered under the key `"obsidian-tasks"` (see [blink.cmp Registration](#blinkcmp-registration)).
-2. Confirm `sources.default` includes `"obsidian-tasks"`.
-3. Confirm you are on a task line (`- [ ] …`) inside a vault markdown file.
-4. Confirm `blink_cmp.enabled` is not set to `false` in your `setup()` call.
-5. Check `:lua print(require("obsidian-tasks").opts.blink_cmp.enabled)` — should print `true`.
-
-### Permission errors indexing vault files
-
-If the scanner logs permission-denied errors for some files, those files are silently skipped.
-Check that Neovim has read access to all vault directories.
-
-### External edits not reflected in queries
-
-Edits made outside Neovim — the Obsidian desktop app, `git pull`, syncthing, another editor —
-are not auto-detected. In-Neovim edits propagate across open buffers on `BufWritePost`, but
-external changes need a manual `:ObsidianTask refresh` (or `<leader>tr` in a dashboard) to
-re-index from disk.
-
 ## v1 Features & Limitations
 
 **What works in v1:**
@@ -328,9 +306,9 @@ re-index from disk.
 - Emoji-field and Dataview-field task parsing and serialization
 - Real-text task rendering in dashboard buffers with manual fold per query block
 - BufWriteCmd save handler — only source content (queries + prose) written to disk
-- In-memory vault index (in-Neovim edits propagate on save; external edits picked up via `:ObsidianTask refresh`)
+- In-memory vault index (in-Neovim edits propagate on save; external edits re-indexed automatically when Neovim regains focus, or on demand via `:ObsidianTask refresh`)
 - **Query syntax portable with upstream obsidian-tasks**: bare-infix AND/OR/NOT, case-insensitive operators, optional parens (`A AND B AND C` and `(A) AND (B)` both work). `path` / `folder` / `root` match against the **vault-relative** path (e.g. `daily/2024-03-15.md`, not the absolute filesystem path) so query results match Obsidian's behaviour when the same vault is opened in both
-- Query filters by field: `done` / `not done`, `status.name`, `status.type`, `priority is/above/below`, date filters with `before` / `after` / `on` / `on or before` / `on or after` / `in` (+ two-date ranges and year/month period shortcuts), `tag includes/does not include`, `path` / `folder` / `root` / `filename` / `backlink` / `description` / `heading` (with regex), `is recurring`, `recurrence includes`, `urgency above/below`, `exclude sub-items`, `random`
+- Query filters by field: `done` / `not done`, `status.name`, `status.type`, `priority is/above/below`, date filters with `before` / `after` / `on` / `on or before` / `on or after` / `in` (+ two-date ranges and year / month / ISO-week / quarter period shortcuts), `tag includes/does not include`, `path` / `folder` / `root` / `filename` / `backlink` / `description` / `heading` (with regex), `is recurring`, `recurrence includes`, `urgency above/below`, `exclude sub-items`, `random`
 - **Dependency filters**: `id is <X>`, `depends on <X>`, `is blocking`, `is blocked` (with their negated forms)
 - `sort by` and `group by` for all the above keys, including `random`
 - `limit N` (per group + total cap), `hide <subkey>` for 14 metadata subkeys
@@ -340,7 +318,8 @@ re-index from disk.
 - OnCompletion 🏁: `🏁 delete` removes the line when the task is marked done/toggled to a completed status
 - DateFallback: opt-in (`use_filename_as_scheduled_date`) inheritance of `YYYY-MM-DD` filenames as the task's scheduled date
 - Dim completed tasks and linger rows that drop out of the filter after a mutation
-- Leader keymaps for task mutation directly from the dashboard
+- Leader keymaps for task mutation on any task line — dashboard rows and raw source files
+- Edit-in-place: insert-mode description/field edits, task inserts, and deletes flush to source on `InsertLeave`; per-dashboard undo/redo ring
 - blink.cmp source: field-icon completion, value suggestions, NL date parsing (with number-word forms: `in two weeks`)
 - `:ObsidianTask` command suite (toggle / done / cancel / inProgress / onHold / due / scheduled / start / priority / recurrence / tags / **postpone [N]** / **id** / refresh / render / new / goto)
 
@@ -348,13 +327,9 @@ re-index from disk.
 
 - **Recurrence (🔁):** parsed and preserved as opaque text; `next_occurrence` computation
   is a v2 feature and raises an error if called directly.
-- **Date period shortcuts:** ISO week (`due 2024-W09`) and quarter (`due 2024-Q1`) are
-  not yet supported. Year (`due 2024`), month (`due 2024-03`), and two-date ranges
-  (`due 2024-01-01 2024-01-31`) all work.
 - **Language:** English-only NL date phrases.
-- **External vault edits:** changes from the Obsidian app, `git pull`, syncthing, or another
-  editor are not auto-detected; run `:ObsidianTask refresh` (or `<leader>tr`) to re-index.
-- **Heading-context filter:** `heading includes <X>` operates on an empty heading string in
-  v1 (no surrounding-heading tracking).
+- **External vault edits:** re-indexed automatically when Neovim regains focus, but only for
+  files already in the index — files created externally while Neovim is running are not
+  picked up until opened or until a full `:ObsidianTask refresh`.
 - **JS expression filters (`where filter by function`)** are intentionally not supported —
   the line emits a structured `unsupported` error in the result.
