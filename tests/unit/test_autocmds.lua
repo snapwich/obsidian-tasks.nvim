@@ -445,6 +445,74 @@ T["FocusGained: skips buffer without active render"] = function()
   r2()
 end
 
+T["FocusGained: re-indexes all indexed files via the mtime gate"] = function()
+  local render = make_render_mock()
+  local obsidian = make_obsidian_mock({ root = "/vault" })
+  local index_calls = 0
+  local index_mock = {
+    refresh_all_indexed_mtime = function()
+      index_calls = index_calls + 1
+    end,
+  }
+  local r1 = install_mock("obsidian-tasks.render", render)
+  local r2 = install_mock("obsidian-tasks.util.obsidian", obsidian)
+  local r3 = install_mock("obsidian-tasks.index", index_mock)
+
+  local autocmds = get_autocmds()
+  autocmds.setup({ auto_render = true })
+
+  vim.api.nvim_exec_autocmds("FocusGained", { pattern = "*" })
+
+  r1()
+  r2()
+  r3()
+
+  -- The disk re-index must run regardless of which buffers are visible.
+  MiniTest.expect.equality(index_calls, 1)
+end
+
+T["FocusGained: rerenders without clearing lingers"] = function()
+  local render = make_render_mock()
+  -- Spy: the focus path must NEVER hit refresh_with_clear_lingers — clearing
+  -- lingers is reserved for the manual <leader>tr / :ObsidianTask refresh path.
+  local cleared = false
+  function render.refresh_with_clear_lingers(_bufnr, _ws)
+    cleared = true
+  end
+  local ws = { root = "/vault" }
+  local obsidian = make_obsidian_mock(ws)
+  local r1 = install_mock("obsidian-tasks.render", render)
+  local r2 = install_mock("obsidian-tasks.util.obsidian", obsidian)
+
+  local autocmds = get_autocmds()
+  autocmds.setup({ auto_render = true })
+
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(bufnr, unique_md_path())
+  render._buffer_state[bufnr] = { {} }
+
+  local orig_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_set_current_buf(bufnr)
+
+  vim.api.nvim_exec_autocmds("FocusGained", { pattern = "*" })
+
+  vim.api.nvim_set_current_buf(orig_buf)
+
+  -- rerender_buffer used; refresh_with_clear_lingers untouched.
+  local rerendered = false
+  for _, c in ipairs(render.rerender_calls) do
+    if c.bufnr == bufnr then
+      rerendered = true
+    end
+  end
+  MiniTest.expect.equality(rerendered, true)
+  MiniTest.expect.equality(cleared, false)
+
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  r1()
+  r2()
+end
+
 T["FocusGained: skips non-vault buffer even with active render"] = function()
   local render = make_render_mock()
   local obsidian = make_obsidian_mock(nil) -- not in vault

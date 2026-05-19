@@ -151,6 +151,26 @@ function M.refresh_all_indexed_sync()
   end
 end
 
+--- Re-parse every currently-indexed file synchronously, honouring the
+--- per-file mtime no-op check so unchanged files cost only one `fs_stat`.
+---
+--- Used by the FocusGained autocmd to pick up external edits (Obsidian
+--- desktop app, `git pull`, syncthing) cheaply on every focus event.  Unlike
+--- refresh_all_indexed_sync this does NOT bypass the mtime gate, so it is safe
+--- to run unconditionally — a vault of unchanged files costs N stat calls.
+---
+--- Does NOT discover new files (that would require a vault walk via
+--- refresh_all).  Files no longer on disk are dropped.
+function M.refresh_all_indexed_mtime()
+  local paths = {}
+  for path in pairs(_index) do
+    paths[#paths + 1] = path
+  end
+  for _, path in ipairs(paths) do
+    M.refresh_file(path)
+  end
+end
+
 --- Full vault walk: re-parse every file via async search.
 ---
 --- *on_done* is called (with no arguments) once the walk finishes.

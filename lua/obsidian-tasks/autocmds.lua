@@ -157,6 +157,19 @@ function M.setup(opts)
     callback = function()
       local render = require("obsidian-tasks.render")
 
+      -- Re-index every indexed file from disk so external edits made while
+      -- Neovim was unfocused (Obsidian desktop app, `git pull`, syncthing) are
+      -- picked up automatically — no manual `<leader>tr` needed.  The mtime
+      -- no-op gate inside refresh_file keeps unchanged files at one fs_stat.
+      --
+      -- This only mutates the task index; it never touches linger state.  The
+      -- rerender loop below uses rerender_buffer (lingers intact) — clearing
+      -- lingers is reserved for the manual `<leader>tr` / :ObsidianTask refresh
+      -- path (render.refresh_with_clear_lingers).
+      pcall(function()
+        require("obsidian-tasks.index").refresh_all_indexed_mtime()
+      end)
+
       -- Enumerate all visible buffers (one per window, de-duped).
       local seen = {}
       for _, win in ipairs(vim.api.nvim_list_wins()) do

@@ -542,6 +542,73 @@ init_tests["refresh_file: mtime no-op — second call does not re-allocate"] = f
   MiniTest.expect.equality(entry_after_second.tasks == tasks_ref_first, true)
 end
 
+init_tests["refresh_all_indexed_mtime: picks up an external edit when mtime advances"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local path = vim.fn.tempname() .. ".md"
+  local function write(content)
+    local f = assert(io.open(path, "w"))
+    f:write(content)
+    f:close()
+  end
+
+  write("- [ ] Original task\n")
+  local orig_stat = vim.uv.fs_stat
+  vim.uv.fs_stat = function(_)
+    return { size = 100, mtime = { sec = 1000 } }
+  end
+  index.refresh_file(path)
+  MiniTest.expect.equality(#index._raw()[path].tasks, 1)
+
+  -- External edit: file gains a task and its mtime advances.
+  write("- [ ] Original task\n- [ ] Added externally\n")
+  vim.uv.fs_stat = function(_)
+    return { size = 200, mtime = { sec = 1001 } }
+  end
+  index.refresh_all_indexed_mtime()
+
+  vim.uv.fs_stat = orig_stat
+  cleanup_ign()
+  os.remove(path)
+
+  MiniTest.expect.equality(#index._raw()[path].tasks, 2)
+end
+
+init_tests["refresh_all_indexed_mtime: mtime no-op leaves the tasks table intact"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local path = fixture("tasks_a.md")
+  index.refresh_file(path)
+  local tasks_ref = index._raw()[path].tasks
+
+  -- mtime unchanged → should be a no-op, same table reference (no reparse).
+  index.refresh_all_indexed_mtime()
+
+  cleanup_ign()
+
+  MiniTest.expect.equality(index._raw()[path].tasks == tasks_ref, true)
+end
+
 init_tests["refresh_file: ignored file is dropped from index"] = function()
   set_obsidian_stub()
   reset_opts()
