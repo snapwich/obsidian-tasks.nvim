@@ -171,4 +171,26 @@ function M.merge(user_opts)
   return M.validate(user_opts or {})
 end
 
+--- Return the active opts, falling back to defaults when setup() has not run.
+--- @return table
+function M.resolved()
+  local ok, ot = pcall(require, "obsidian-tasks")
+  if ok and ot.opts and next(ot.opts) then
+    return ot.opts
+  end
+  return M.defaults
+end
+
+--- Return today's date stamp for the done / cancelled fields, formatted per
+--- `done_date_format` and `done_date_tz` (UTC when tz == "utc").
+--- @return string
+function M.completion_date()
+  local opts = M.resolved()
+  local fmt = opts.done_date_format or "%Y-%m-%d"
+  if opts.done_date_tz == "utc" then
+    fmt = "!" .. fmt
+  end
+  return os.date(fmt)
+end
+
 return M

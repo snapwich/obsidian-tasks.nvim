@@ -16,8 +16,7 @@
 
 local M = {}
 
--- Tag pattern — kept in sync with task/parse.lua TAG_PAT.
-local TAG_PAT = "#[%w%-_/]+"
+local TAG_PAT = require("obsidian-tasks.task.fields").TAG_PAT
 
 --- Check whether *tag* exists in *tag_list*.
 --- @param tag_list string[]

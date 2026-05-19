@@ -44,6 +44,17 @@ for _, v in ipairs(VALID_SUBCMDS) do
   VALID_SUBCMDS_SET[v] = true
 end
 
+-- Count leading whitespace characters in a line.
+local function indent_of(line)
+  local s = line:match("^(%s*)")
+  return s and #s or 0
+end
+
+-- A line is blank iff it is empty or whitespace-only.
+local function is_blank(line)
+  return line:match("^%s*$") ~= nil
+end
+
 -- ── Per-dashboard undo / redo ring ────────────────────────────────────────────
 -- apply_source_edit appends each plugin-driven mutation to the undo ring keyed
 -- by the dashboard buffer the user acted in.  dashboard_undo / dashboard_redo
@@ -1205,7 +1216,7 @@ end
 
 --- Insert a new task line after the anchor task's continuation block in *src_path*.
 ---
---- Algorithm (Q11):
+--- Algorithm:
 ---   1. Start at anchor_row + 1.
 ---   2. Walk forward while the row is a continuation of anchor:
 ---      a. Non-blank line with indent > anchor_indent → continuation.
@@ -1231,17 +1242,6 @@ function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_lin
   end
 
   local n = #lines
-
-  -- Count leading whitespace characters in a line (spaces or tabs as-is).
-  local function indent_of(line)
-    local s = line:match("^(%s*)")
-    return s and #s or 0
-  end
-
-  -- A line is blank iff it is empty or whitespace-only.
-  local function is_blank(line)
-    return line:match("^%s*$") ~= nil
-  end
 
   -- Walk forward from anchor_row+1 (0-indexed) past all continuation lines.
   -- lines array is 1-indexed: lines[i+1] is the 0-indexed row i.
@@ -1286,7 +1286,7 @@ end
 
 --- Delete a task and its continuation block from *src_path*.
 ---
---- Algorithm (Q14):
+--- Algorithm:
 ---   1. Start at task_row.
 ---   2. Walk forward past all continuation lines:
 ---      a. Non-blank lines indented more than task_indent are continuations.
@@ -1297,9 +1297,6 @@ end
 ---         — the blank itself is NOT deleted.
 ---   3. Delete task_row through the last continuation row (inclusive) via
 ---      apply_source_edit with count=N.
----
---- Stub: raises error('delete_block not implemented').
---- Implemented by P8 GREEN task ot-vz1m.
 ---
 --- @param src_path    string   path to the source file
 --- @param task_row    integer  0-indexed row of the task to delete
@@ -1313,17 +1310,6 @@ function M.delete_block(src_path, task_row, task_indent)
   end
 
   local n = #lines
-
-  -- Count leading whitespace characters in a line.
-  local function indent_of(line)
-    local s = line:match("^(%s*)")
-    return s and #s or 0
-  end
-
-  -- A line is blank iff it is empty or whitespace-only.
-  local function is_blank(line)
-    return line:match("^%s*$") ~= nil
-  end
 
   -- Walk forward from task_row+1, tracking the last row included in the block.
   -- lines is 1-indexed; i is a 0-indexed row number so lines[i+1] accesses it.

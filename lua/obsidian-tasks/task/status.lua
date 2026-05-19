@@ -145,6 +145,19 @@ function M.bridge_obsidian_checkbox_order()
   end
 end
 
+--- Status types still "actively pending": a task in one of these is NOT
+--- considered done by the `done` / `is blocked` query filters.
+local PENDING_TYPES = { TODO = true, IN_PROGRESS = true, ON_HOLD = true }
+
+--- Return true when *entry* (a status table) is an actively-pending type.
+--- A nil entry (unknown symbol) is treated as pending.
+---
+--- @param entry table|nil  status entry from M.by_symbol
+--- @return boolean
+function M.is_pending(entry)
+  return entry == nil or PENDING_TYPES[entry.type] == true
+end
+
 --- Return true when *symbol* maps to a terminal "completed" status
 --- (DONE or CANCELLED).  Used by the layout pipeline to dim-and-sink
 --- completed tasks to the bottom of each group.

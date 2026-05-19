@@ -1,5 +1,5 @@
 -- lua/obsidian-tasks/render/wikilink.lua
--- Wikilink suffix helpers for the edit-in-place flush path (P5).
+-- Wikilink suffix helpers for the edit-in-place flush path.
 --
 -- At render time the plugin appends `[[<note_basename>]]` to every task line
 -- so the user can navigate to the source file from the dashboard.  When a
@@ -10,8 +10,6 @@
 -- Only the *expected* suffix (the one that matches the current note's basename)
 -- is stripped.  Other `[[...]]` tokens that the user typed as part of the task
 -- description survive verbatim.
---
--- Implementation is a stub; real logic lands in GREEN task ot-v0s1.
 
 local M = {}
 

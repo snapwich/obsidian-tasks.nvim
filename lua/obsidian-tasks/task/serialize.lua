@@ -5,14 +5,9 @@ local M = {}
 
 local fields_mod = require("obsidian-tasks.task.fields")
 
--- Build key → field_def lookup (fields_mod only exposes by_emoji / by_dataview).
-local by_key = {}
-for _, f in ipairs(fields_mod.fields) do
-  by_key[f.key] = f
-end
+local by_key = fields_mod.by_key
 
--- Tag pattern — must stay in sync with task/parse.lua TAG_PAT.
-local TAG_PAT = "#[%w%-_/]+"
+local TAG_PAT = fields_mod.TAG_PAT
 
 -- Field emission order — matches TS DefaultTaskSerializer.
 -- priority, recurrence, dates (start, scheduled, due, created, done, cancelled),

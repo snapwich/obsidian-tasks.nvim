@@ -12,6 +12,8 @@
 
 local M = {}
 
+local status = require("obsidian-tasks.task.status")
+
 -- ── helpers ───────────────────────────────────────────────────────────────────
 
 --- Return today's date as YYYY-MM-DD.
@@ -86,7 +88,6 @@ end
 --- @param task table
 --- @return table|nil
 local function task_status_entry(task)
-  local status = require("obsidian-tasks.task.status")
   return status.by_symbol[task.status_symbol]
 end
 
@@ -188,23 +189,13 @@ local function make_leaf_pred(filter)
   -- inverse — including the "unknown type" case (treated as pending).
   if ft == "done" then
     return function(task)
-      local entry = task_status_entry(task)
-      if entry == nil then
-        return false
-      end
-      local t = entry.type
-      return t ~= "TODO" and t ~= "IN_PROGRESS" and t ~= "ON_HOLD"
+      return not status.is_pending(task_status_entry(task))
     end
   end
 
   if ft == "not_done" then
     return function(task)
-      local entry = task_status_entry(task)
-      if entry == nil then
-        return true
-      end
-      local t = entry.type
-      return t == "TODO" or t == "IN_PROGRESS" or t == "ON_HOLD"
+      return status.is_pending(task_status_entry(task))
     end
   end
 
@@ -482,18 +473,16 @@ local function make_leaf_pred(filter)
   end
 
   -- `is blocking` / `is blocked` need access to the full index for reverse
-  -- lookup.  We compute the maps lazily on first predicate call and memoise
-  -- per query-run.  The index module exports tasks_in() which lets us
-  -- enumerate every indexed task.
+  -- lookup.  The maps are built once per query-run (when this leaf predicate
+  -- is compiled), not per task — a full-index walk inside the predicate body
+  -- would be O(N²).  The index module exports tasks_in() to enumerate tasks.
   local function build_dependency_maps()
     local index = require("obsidian-tasks.index")
     local blockers = {} -- id → true (any other task lists this id in its depends_on)
     local id_to_done = {} -- id → boolean (is the task with this id done?)
     for t in index.tasks_in(nil) do
       if t.fields and t.fields.id and t.fields.id ~= "" then
-        local entry = require("obsidian-tasks.task.status").by_symbol[t.status_symbol]
-        local is_done = entry and (entry.type ~= "TODO" and entry.type ~= "IN_PROGRESS" and entry.type ~= "ON_HOLD")
-        id_to_done[t.fields.id] = is_done or false
+        id_to_done[t.fields.id] = not status.is_pending(status.by_symbol[t.status_symbol])
       end
       if t.fields and t.fields.depends_on then
         for _, dep in ipairs(split_dep_list(t.fields.depends_on)) do
@@ -505,12 +494,12 @@ local function make_leaf_pred(filter)
   end
 
   if ft == "is_blocking" or ft == "is_not_blocking" then
+    local blockers = build_dependency_maps()
     return function(task)
       local id = task.fields and task.fields.id
       if not id or id == "" then
         return ft == "is_not_blocking"
       end
-      local blockers = build_dependency_maps()
       local blocking = blockers[id] == true
       if ft == "is_blocking" then
         return blocking
@@ -521,12 +510,12 @@ local function make_leaf_pred(filter)
   end
 
   if ft == "is_blocked" or ft == "is_not_blocked" then
+    local _, id_to_done = build_dependency_maps()
     return function(task)
       local deps = split_dep_list(task.fields and task.fields.depends_on)
       if #deps == 0 then
         return ft == "is_not_blocked"
       end
-      local _, id_to_done = build_dependency_maps()
       -- A task is blocked iff ANY of its declared dependencies is still
       -- not-done.  When a dependency id isn't present in id_to_done at all
       -- (the dependency task is missing from the index), treat it as

@@ -246,7 +246,8 @@ end
 -- Tracks workspaces for which a refresh_all walk has already been kicked off.
 -- Prevents re-triggering the walk on each recursive render call when the vault
 -- has zero tasks (which would produce an infinite loop).
--- Key: workspace object (identity), value: true.
+-- Keyed by workspace.root string — ad-hoc workspaces are freshly-built tables
+-- each lookup, so object identity would never match.
 local _lazy_init_started = {}
 
 -- ── Opening-fence pattern ─────────────────────────────────────────────────────
@@ -376,8 +377,9 @@ function M.render_buffer(bufnr, workspace)
       -- is the ripgrep walk itself — which the user already pays on the
       -- first dashboard render of a session.
       do
-        if workspace and not _lazy_init_started[workspace] then
-          _lazy_init_started[workspace] = true
+        local ws_key = workspace and tostring(workspace.root)
+        if ws_key and not _lazy_init_started[ws_key] then
+          _lazy_init_started[ws_key] = true
           index.refresh_all(workspace, function()
             vim.schedule(function()
               M.render_buffer(bufnr, workspace)

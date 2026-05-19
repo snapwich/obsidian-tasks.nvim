@@ -12,27 +12,6 @@
 
 local M = {}
 
---- Return merged opts (falls back to config defaults if setup not yet called).
-local function get_opts()
-  local ok, ot = pcall(require, "obsidian-tasks")
-  if ok and ot.opts and next(ot.opts) then
-    return ot.opts
-  end
-  return require("obsidian-tasks.config").defaults
-end
-
---- Build the os.date format string honouring opts.done_date_tz.
---- When done_date_tz is "utc", prepend "!" so os.date returns UTC.
---- @param opts table
---- @return string
-local function date_format(opts)
-  local fmt = opts.done_date_format or "%Y-%m-%d"
-  if opts.done_date_tz == "utc" then
-    return "!" .. fmt
-  end
-  return fmt
-end
-
 --- Apply the cancel mutation to a single resolved task entry.
 ---
 --- @param resolved     table   result of cmd.resolve_task_at()
@@ -47,8 +26,7 @@ local function cancel_one(resolved, active_bufnr)
 
     -- Stamp cancelled date only when it hasn't been set (idempotency).
     if task.fields.cancelled == nil then
-      local opts = get_opts()
-      task.fields.cancelled = os.date(date_format(opts))
+      task.fields.cancelled = require("obsidian-tasks.config").completion_date()
       task._origin.cancelled = "emoji"
     end
 

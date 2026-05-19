@@ -104,6 +104,10 @@ M.by_emoji = {}
 --- @type table<string, table>
 M.by_dataview = {}
 
+--- Lookup: canonical key string → field entry.
+--- @type table<string, table>
+M.by_key = {}
+
 -- Build lookup tables.
 for _, field in ipairs(M.fields) do
   M.by_emoji[field.emoji] = field
@@ -111,7 +115,12 @@ for _, field in ipairs(M.fields) do
     M.by_emoji[alt] = field
   end
   M.by_dataview[field.dataview] = field
+  M.by_key[field.key] = field
 end
+
+--- Lua pattern matching an inline #tag token — single source of truth for
+--- task/parse, task/serialize and cmd/tags.
+M.TAG_PAT = "#[%w%-_/]+"
 
 --- Priority level name → emoji.
 --- Matches obsidian-tasks TS DefaultTaskSerializer ordering.
