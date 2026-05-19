@@ -35,6 +35,84 @@ local function parse_date(s)
   return date_nl.parse(trimmed) or trimmed
 end
 
+-- ── Numbered date-range shorthands ──────────────────────────────────────────
+-- Upstream-compatible query shorthands that expand to an inclusive [start,end]
+-- ISO range: year (`2024`), month (`2024-01`), quarter (`2024-Q1`), ISO week
+-- (`2024-W09`).  Query-filter-only — a task LINE still stores a concrete date,
+-- so these never reach task/parse.lua or task/serialize.lua.
+
+--- Inclusive Monday..Sunday ISO-8601 week range, as YYYY-MM-DD strings.
+--- ISO 8601: weeks start Monday; week 1 is the week containing the year's
+--- first Thursday.  Jan 4 is always in week 1, so we anchor on it and let
+--- os.time normalise day-of-month overflow into adjacent months/years (this
+--- also yields the correct cross-year span for W53 / W01).
+--- @param year integer  ISO week-year
+--- @param week integer  1..53
+--- @return string monday_iso
+--- @return string sunday_iso
+local function iso_week_range(year, week)
+  local jan4 = os.time({ year = year, month = 1, day = 4, hour = 12 })
+  -- os.date wday is Sun=1..Sat=7; convert to ISO weekday Mon=1..Sun=7.
+  local iso_wday = (os.date("*t", jan4).wday + 5) % 7 + 1
+  -- Day-of-January for Monday of the requested week.  May be ≤0 or >31;
+  -- os.time normalises it into the correct month/year.
+  local monday_day = 4 - (iso_wday - 1) + (week - 1) * 7
+  local monday = os.time({ year = year, month = 1, day = monday_day, hour = 12 })
+  local sunday = os.time({ year = year, month = 1, day = monday_day + 6, hour = 12 })
+  local monday_iso = os.date("%Y-%m-%d", monday) --[[@as string]]
+  local sunday_iso = os.date("%Y-%m-%d", sunday) --[[@as string]]
+  return monday_iso, sunday_iso
+end
+
+--- Expand a numbered date-range shorthand to an inclusive [start,end] ISO pair.
+--- Disambiguates purely by structure; returns nil for anything that is not a
+--- recognised shorthand (including bare YYYY-MM-DD point dates).
+--- @param s string  trimmed candidate
+--- @return string|nil start_iso
+--- @return string|nil end_iso
+local function expand_period(s)
+  -- Year: `2024`
+  local y = s:match("^(%d%d%d%d)$")
+  if y then
+    return y .. "-01-01", y .. "-12-31"
+  end
+  -- ISO week: `2024-W09`
+  local wy, ww = s:match("^(%d%d%d%d)%-[Ww](%d%d)$")
+  if wy then
+    local week = tonumber(ww)
+    if week and week >= 1 and week <= 53 then
+      return iso_week_range(tonumber(wy), week)
+    end
+    return nil
+  end
+  -- Quarter: `2024-Q1`
+  local qy, qq = s:match("^(%d%d%d%d)%-[Qq](%d)$")
+  if qy then
+    local q = tonumber(qq)
+    if q and q >= 1 and q <= 4 then
+      local first_month = (q - 1) * 3 + 1
+      -- Last day of the quarter: day 0 of the month after the quarter ends.
+      local last_t = os.time({ year = tonumber(qy), month = first_month + 3, day = 0, hour = 12 })
+      local last_iso = os.date("%Y-%m-%d", last_t) --[[@as string]]
+      return string.format("%s-%02d-01", qy, first_month), last_iso
+    end
+    return nil
+  end
+  -- Month: `2024-01`
+  local my, mm = s:match("^(%d%d%d%d)%-(%d%d)$")
+  if my then
+    local m = tonumber(mm)
+    if m and m >= 1 and m <= 12 then
+      -- Last day of month: day 0 of the following month.
+      local last_t = os.time({ year = tonumber(my), month = m + 1, day = 0, hour = 12 })
+      local last_iso = os.date("%Y-%m-%d", last_t) --[[@as string]]
+      return my .. "-" .. mm .. "-01", last_iso
+    end
+    return nil
+  end
+  return nil
+end
+
 -- ── Field / keyword tables ──────────────────────────────────────────────────
 
 --- Ordered list of date fields (for deterministic prefix matching).
@@ -330,42 +408,38 @@ local function parse_leaf_filter(s, orig)
             value_end = d2,
           }
         end
+        -- Numbered date-range shorthand (`due before 2024-W09`): the operator
+        -- composes with the expanded [start,end] range in filter.lua.
+        local p_start, p_end = expand_period(raw)
+        if p_start then
+          return {
+            type = "date",
+            field = field,
+            operator = op.canon,
+            value = p_start,
+            value_end = p_end,
+          }
+        end
         local date_val = parse_date(raw)
         return { type = "date", field = field, operator = op.canon, value = date_val }
       end
     end
-    -- ── Period shortcuts: `<field> 2024`, `<field> 2024-03` ────────────
-    -- The implicit "in" form: no operator, the value is a year/month range.
+    -- ── Period shortcuts: `<field> 2024`, `<field> 2024-03`, `<field>
+    --    2024-Q1`, `<field> 2024-W09` ─────────────────────────────────────
+    -- The implicit "in" form: no operator, the value is a numbered date range.
     local prefix_bare = field .. " "
     if #s > #prefix_bare and s:sub(1, #prefix_bare) == prefix_bare then
       local rest = orig:sub(#prefix_bare + 1):match("^%s*(.-)%s*$")
-      -- Year (`due 2024`).
-      local y = rest:match("^(%d%d%d%d)$")
-      if y then
+      -- Year / month / quarter / ISO week.
+      local p_start, p_end = expand_period(rest)
+      if p_start then
         return {
           type = "date",
           field = field,
           operator = "in",
-          value = y .. "-01-01",
-          value_end = y .. "-12-31",
+          value = p_start,
+          value_end = p_end,
         }
-      end
-      -- Month (`due 2024-03`).
-      local ym_y, ym_m = rest:match("^(%d%d%d%d)%-(%d%d)$")
-      if ym_y and ym_m then
-        local mn = tonumber(ym_m)
-        if mn and mn >= 1 and mn <= 12 then
-          -- Last day of month: jump to first of next month and subtract a day.
-          local last_day_t = os.time({ year = tonumber(ym_y), month = mn + 1, day = 0, hour = 12 })
-          local last_day_iso = os.date("%Y-%m-%d", last_day_t) --[[@as string]]
-          return {
-            type = "date",
-            field = field,
-            operator = "in",
-            value = ym_y .. "-" .. ym_m .. "-01",
-            value_end = last_day_iso,
-          }
-        end
       end
       -- Bare two-date range without operator (`due 2024-01-01 2024-02-01`).
       local rd1, rd2 = rest:match("^(%d%d%d%d%-%d%d%-%d%d)%s+(%d%d%d%d%-%d%d%-%d%d)$")

@@ -3,9 +3,8 @@
 --
 -- Covers the supported v1 operators: has/no/before/after/on/in/date_invalid.
 --
--- KNOWN GAPS vs upstream (tracked for Bucket B / Phase 2):
---   • ISO-week period (`due 2024-W09`) — not yet supported
---   • Quarter period (`due 2024-Q1`) — not yet supported
+-- Numbered date-range shorthands (year / month / quarter / ISO week) all
+-- expand to an inclusive [start,end] range and compose with the operators.
 
 local T = MiniTest.new_set()
 
@@ -218,6 +217,65 @@ end
 T["due 2023-02: non-leap year February ends on 28"] = function()
   eq(matches("due 2023-02", pt("- [ ] T 📅 2023-02-28")), true)
   eq(matches("due 2023-02", pt("- [ ] T 📅 2023-03-01")), false)
+end
+
+-- ── quarter period (`due 2024-Q1`) ────────────────────────────────────────
+
+T["due 2024-Q1: matches any date in Jan–Mar"] = function()
+  eq(matches("due 2024-Q1", pt("- [ ] T 📅 2024-01-01")), true)
+  eq(matches("due 2024-Q1", pt("- [ ] T 📅 2024-03-31")), true)
+  eq(matches("due 2024-Q1", pt("- [ ] T 📅 2024-04-01")), false)
+  eq(matches("due 2024-Q1", pt("- [ ] T 📅 2023-12-31")), false)
+end
+
+T["due 2024-Q4: spans Oct–Dec"] = function()
+  eq(matches("due 2024-Q4", pt("- [ ] T 📅 2024-10-01")), true)
+  eq(matches("due 2024-Q4", pt("- [ ] T 📅 2024-12-31")), true)
+  eq(matches("due 2024-Q4", pt("- [ ] T 📅 2024-09-30")), false)
+end
+
+-- ── ISO-week period (`due 2024-W09`) ──────────────────────────────────────
+
+T["due 2024-W09: Mon 2024-02-26 .. Sun 2024-03-03 inclusive"] = function()
+  eq(matches("due 2024-W09", pt("- [ ] T 📅 2024-02-26")), true) -- Monday
+  eq(matches("due 2024-W09", pt("- [ ] T 📅 2024-03-03")), true) -- Sunday
+  eq(matches("due 2024-W09", pt("- [ ] T 📅 2024-02-25")), false)
+  eq(matches("due 2024-W09", pt("- [ ] T 📅 2024-03-04")), false)
+end
+
+T["due 2024-W01: week 1 of 2024 starts Mon 2024-01-01"] = function()
+  eq(matches("due 2024-W01", pt("- [ ] T 📅 2024-01-01")), true)
+  eq(matches("due 2024-W01", pt("- [ ] T 📅 2024-01-07")), true)
+  eq(matches("due 2024-W01", pt("- [ ] T 📅 2023-12-31")), false)
+end
+
+T["due 2026-W53: 53-week year, spans into Jan 2027"] = function()
+  eq(matches("due 2026-W53", pt("- [ ] T 📅 2026-12-28")), true) -- Monday
+  eq(matches("due 2026-W53", pt("- [ ] T 📅 2027-01-03")), true) -- Sunday
+  eq(matches("due 2026-W53", pt("- [ ] T 📅 2026-12-27")), false)
+end
+
+T["due 2025-W01: ISO week-year ≠ calendar year (starts 2024-12-30)"] = function()
+  eq(matches("due 2025-W01", pt("- [ ] T 📅 2024-12-30")), true)
+  eq(matches("due 2025-W01", pt("- [ ] T 📅 2025-01-05")), true)
+  eq(matches("due 2025-W01", pt("- [ ] T 📅 2024-12-29")), false)
+end
+
+-- ── shorthands compose with operators ─────────────────────────────────────
+
+T["due before 2024-W09: before the week's Monday"] = function()
+  eq(matches("due before 2024-W09", pt("- [ ] T 📅 2024-02-25")), true)
+  eq(matches("due before 2024-W09", pt("- [ ] T 📅 2024-02-26")), false)
+end
+
+T["due after 2024-Q1: after the quarter's last day"] = function()
+  eq(matches("due after 2024-Q1", pt("- [ ] T 📅 2024-04-01")), true)
+  eq(matches("due after 2024-Q1", pt("- [ ] T 📅 2024-03-31")), false)
+end
+
+T["due before 2024: before the year start"] = function()
+  eq(matches("due before 2024", pt("- [ ] T 📅 2023-12-31")), true)
+  eq(matches("due before 2024", pt("- [ ] T 📅 2024-01-01")), false)
 end
 
 return T

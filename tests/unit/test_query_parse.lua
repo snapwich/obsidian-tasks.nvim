@@ -204,6 +204,63 @@ T["filter: happens date is invalid"] = function()
   leaf("happens date is invalid", { type = "date_invalid", field = "happens" })
 end
 
+-- ── numbered date-range shorthands (year / month / quarter / ISO week) ─────
+
+T["filter: due 2024 → bare year range"] = function()
+  leaf("due 2024", { type = "date", field = "due", operator = "in", value = "2024-01-01", value_end = "2024-12-31" })
+end
+
+T["filter: due 2024-03 → bare month range"] = function()
+  leaf("due 2024-03", { type = "date", field = "due", operator = "in", value = "2024-03-01", value_end = "2024-03-31" })
+end
+
+T["filter: due 2024-Q1 → bare quarter range"] = function()
+  leaf("due 2024-Q1", { type = "date", field = "due", operator = "in", value = "2024-01-01", value_end = "2024-03-31" })
+end
+
+T["filter: scheduled 2024-Q3 → quarter range (Jul–Sep)"] = function()
+  leaf(
+    "scheduled 2024-Q3",
+    { type = "date", field = "scheduled", operator = "in", value = "2024-07-01", value_end = "2024-09-30" }
+  )
+end
+
+T["filter: due 2024-W09 → bare ISO-week range"] = function()
+  leaf(
+    "due 2024-W09",
+    { type = "date", field = "due", operator = "in", value = "2024-02-26", value_end = "2024-03-03" }
+  )
+end
+
+T["filter: due 2026-W53 → ISO-week range in 53-week year"] = function()
+  leaf(
+    "due 2026-W53",
+    { type = "date", field = "due", operator = "in", value = "2026-12-28", value_end = "2027-01-03" }
+  )
+end
+
+T["filter: shorthand composes with operator (due before 2024-W09)"] = function()
+  leaf(
+    "due before 2024-W09",
+    { type = "date", field = "due", operator = "before", value = "2024-02-26", value_end = "2024-03-03" }
+  )
+end
+
+T["filter: shorthand composes with operator (due after 2024-Q1)"] = function()
+  leaf(
+    "due after 2024-Q1",
+    { type = "date", field = "due", operator = "after", value = "2024-01-01", value_end = "2024-03-31" }
+  )
+end
+
+T["filter: invalid week number → not a shorthand → parse_error"] = function()
+  err1("due 2024-W00", "parse_error")
+end
+
+T["filter: invalid quarter number → not a shorthand → parse_error"] = function()
+  err1("due 2024-Q5", "parse_error")
+end
+
 -- ── text field filters ────────────────────────────────────────────────────
 
 local text_fields = {
