@@ -8,8 +8,7 @@ local fields = require("obsidian-tasks.task.fields")
 -- Task prefix pattern: indent, list marker, status symbol, remainder body.
 local PREFIX_PAT = "^(%s*)([-*+]) %[(.)%] ?(.*)"
 
--- Tag pattern (same as obsidian-tasks TS plugin).
-local TAG_PAT = "#[%w%-_/]+"
+local TAG_PAT = fields.TAG_PAT
 
 -- Dataview inline-field pattern: [key:: value]
 local DV_PAT = "%[([%w_]+)::%s*([^%]]*)%]"
@@ -143,10 +142,14 @@ local function strip_trailing_wikilinks(s)
 end
 
 --- Collect all #tag tokens present in *s*.
+---
+--- `[[wikilink#heading]]` anchors are heading references, not tags, so
+--- wikilink tokens are dropped before scanning to avoid false positives.
 --- @param s string
 --- @return string[]
 local function collect_tags(s)
   local result = {}
+  s = s:gsub("%[%[[^%]]*%]%]", "")
   for tag in s:gmatch(TAG_PAT) do
     table.insert(result, tag)
   end

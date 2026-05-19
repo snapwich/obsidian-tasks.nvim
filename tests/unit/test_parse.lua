@@ -450,6 +450,12 @@ T["tags: tag with underscore"] = function()
   eq(t.tags[1], "#my_tag")
 end
 
+T["tags: wikilink heading anchor not collected as tag"] = function()
+  local t = parse.parse("- [ ] Task [[note#some-heading|alias]] #real")
+  eq(#t.tags, 1)
+  eq(t.tags[1], "#real")
+end
+
 T["tags: from dataview line collected too"] = function()
   local t = parse.parse("- [ ] Task [due:: 2024-01-01] #someTag")
   local found = false
