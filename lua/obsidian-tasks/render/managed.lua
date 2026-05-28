@@ -161,6 +161,30 @@ function M.add_region(bufnr, start_row, end_row)
   return mark_id
 end
 
+--- Resize an existing bracketing extmark to span start_row..end_row in place.
+---
+--- Reuses the same mark id (so callers holding it stay valid) and preserves the
+--- region gravity (start left, end right).  Used by the sentinel demote path to
+--- shrink a region so a now-user-owned row is no longer treated as managed.
+---
+--- @param bufnr          integer
+--- @param region_mark_id integer
+--- @param start_row      integer  0-indexed
+--- @param end_row        integer  0-indexed (inclusive)
+function M.resize_region(bufnr, region_mark_id, start_row, end_row)
+  if not _region_marks[bufnr] or not _region_marks[bufnr][region_mark_id] then
+    return
+  end
+  local ns = M.namespace()
+  vim.api.nvim_buf_set_extmark(bufnr, ns, start_row, 0, {
+    id = region_mark_id,
+    end_row = end_row,
+    end_col = 0,
+    right_gravity = false,
+    end_right_gravity = true,
+  })
+end
+
 --- Return the bracketing extmark + its current [start, end] range covering row,
 --- or nil if no region extmark covers row.
 ---

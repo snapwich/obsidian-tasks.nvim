@@ -364,6 +364,37 @@ do_revert = function(bufnr)
   end
 end
 
+-- ── Internal: sentinel demote snapshot maintenance ───────────────────────────
+
+--- Remove a now-demoted sentinel row from the region snapshot.
+---
+--- The sentinel is always its region's last row, so shrink that region's end by
+--- one; drop the region entirely when the sentinel was its only row (zero-task
+--- dashboard).  Keeps the snapshot aligned with the shrunken managed-region
+--- extmark that draw.demote_sentinel applied, so do_revert / flush no longer
+--- treat the demoted row as managed.
+---
+--- @param bufnr integer
+--- @param row   integer  0-indexed row that was demoted
+local function drop_sentinel_from_snapshot(bufnr, row)
+  local snap = _region_snapshot[bufnr]
+  if not snap then
+    return
+  end
+  local new_snap = {}
+  for _, region in ipairs(snap) do
+    if region[1] <= row and row <= region[2] then
+      if region[1] <= row - 1 then
+        new_snap[#new_snap + 1] = { region[1], row - 1 }
+      end
+      -- else: region was sentinel-only → drop it
+    else
+      new_snap[#new_snap + 1] = region
+    end
+  end
+  _region_snapshot[bufnr] = new_snap
+end
+
 -- ── Internal: on_lines callback ───────────────────────────────────────────────
 
 --- Called by Neovim whenever buffer text changes.
@@ -389,15 +420,54 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
   -- check_end is the exclusive right boundary covering both old and new.
   local check_end = math.max(last_line, new_lastline)
 
+  -- ── Sentinel demote ─────────────────────────────────────────────────────────
+  -- If the user typed into a sentinel row (turning it non-empty), release it
+  -- from management so the typed content persists rather than being reverted.
+  -- Done before the touched check below so the rest of this callback operates on
+  -- the shrunken snapshot.  draw.demote_typed_sentinels handles the draw/managed
+  -- side (extmark + region + inserted_range); we mirror the change into the
+  -- revert-side region snapshot here.
+  local demoted = require("obsidian-tasks.render.draw").demote_typed_sentinels(bufnr, first_line, check_end)
+  if #demoted > 0 then
+    for _, drow in ipairs(demoted) do
+      drop_sentinel_from_snapshot(bufnr, drow)
+    end
+    require("obsidian-tasks.render.hygiene").mark_dirty(bufnr)
+    snapshot = _region_snapshot[bufnr]
+
+    -- When the edit touched no managed task row (only the now-demoted sentinel),
+    -- there is nothing to revert — the demoted content is the user's to keep.
+    local meta_by_row = _meta_snapshot[bufnr] or {}
+    local touches_task = false
+    for row = first_line, check_end - 1 do
+      if meta_by_row[row] then
+        touches_task = true
+        break
+      end
+    end
+    if not touches_task then
+      return
+    end
+  end
+
+  if not snapshot or #snapshot == 0 then
+    return
+  end
+
   -- Overlap: snapshot region [r_start, r_end] (inclusive) overlaps
   -- [first_line, check_end) when: r_start < check_end AND r_end >= first_line.
   -- The "+1" on r_end accommodates pure inserts immediately past the region
   -- (e.g. `o` on the last managed row) — that new row should be treated as an
   -- appended task belonging to the region, so flush()'s INSERT detection
-  -- can pick it up.
+  -- can pick it up.  It applies ONLY to pure insertions: an in-place edit one
+  -- row past the region end (e.g. typing into a just-demoted sentinel row) is
+  -- NOT a new managed row and must fall through to the prose branch so its
+  -- modified flag is preserved and no spurious revert fires.
+  local is_pure_insert = (last_line == first_line and new_lastline > first_line)
+  local end_slop = is_pure_insert and 1 or 0
   local touched = false
   for _, region in ipairs(snapshot) do
-    if region[1] < check_end and region[2] + 1 >= first_line then
+    if region[1] < check_end and region[2] + end_slop >= first_line then
       touched = true
       break
     end

@@ -181,15 +181,51 @@ function M.draw(bufnr, fence_range, layout_lines)
     vim.api.nvim_buf_set_lines(bufnr, insert_at, insert_at, false, task_texts)
   end
 
+  -- ── 1b. EOF sentinel ───────────────────────────────────────────────────────
+  -- When the dashboard's last managed row is the buffer's last line, append a
+  -- single empty sentinel line.  obsidian.nvim anchors its note footer at the
+  -- last buffer line; without the sentinel its footer extmark collides with
+  -- ours on the same row and their draw order is non-deterministic.  The
+  -- sentinel guarantees obsidian.nvim's anchor lands strictly below ours.
+  --
+  -- The sentinel is folded into the managed region (stripped on :w, reverted on
+  -- edit) and tracked by its own extmark so the demote path can detect the user
+  -- typing into it.
+  local sentinel_row = nil
+  do
+    -- The last managed row is the last task when tasks were inserted, otherwise
+    -- the closing fence (zero-result dashboards anchor their footer at fence_last).
+    local last_managed_row = (#task_texts > 0) and (insert_at + #task_texts - 1) or fence_last
+    if last_managed_row == vim.api.nvim_buf_line_count(bufnr) - 1 then
+      sentinel_row = last_managed_row + 1
+      vim.api.nvim_buf_set_lines(bufnr, sentinel_row, sentinel_row, false, { "" })
+    end
+  end
+
   -- ── 2. Anchor managed-region extmarks ─────────────────────────────────────
 
   -- Fence extmark — marks the opening fence line in the managed namespace.
   local managed_fence_id = managed.add_block(bufnr, fence_first, fence_last)
 
-  -- Region extmark — brackets all inserted task lines.
+  -- Region extmark — brackets all inserted task lines (plus the sentinel, when
+  -- present, so it is stripped on :w and reverted on edit alongside the tasks).
   local managed_region_id = nil
   if #task_texts > 0 then
-    managed_region_id = managed.add_region(bufnr, insert_at, insert_at + #task_texts - 1)
+    local region_end = sentinel_row or (insert_at + #task_texts - 1)
+    managed_region_id = managed.add_region(bufnr, insert_at, region_end)
+  elseif sentinel_row ~= nil then
+    -- Zero-task EOF dashboard: bracket the lone sentinel so it is stripped on
+    -- :w and reverted on edit just like a task row.
+    managed_region_id = managed.add_region(bufnr, sentinel_row, sentinel_row)
+  end
+
+  -- Sentinel-tracking extmark (draw NS): the demote path resolves the sentinel's
+  -- live row via this id in on_lines.  Tracked in all_eids so clear_block tears
+  -- it down with the rest of the block's draw-NS extmarks.
+  local sentinel_extmark_id = nil
+  if sentinel_row ~= nil then
+    sentinel_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, NS, sentinel_row, 0, {})
+    all_eids[#all_eids + 1] = sentinel_extmark_id
   end
 
   -- ── 3. Walk layout_lines and attach draw-NS extmarks ─────────────────────
@@ -331,7 +367,9 @@ function M.draw(bufnr, fence_range, layout_lines)
 
   local inserted_range = nil
   if #task_texts > 0 then
-    inserted_range = { insert_at, insert_at + #task_texts - 1 }
+    inserted_range = { insert_at, sentinel_row or (insert_at + #task_texts - 1) }
+  elseif sentinel_row ~= nil then
+    inserted_range = { sentinel_row, sentinel_row }
   end
 
   if not _state[bufnr] then
@@ -344,6 +382,7 @@ function M.draw(bufnr, fence_range, layout_lines)
     all_eids = all_eids,
     managed_fence_id = managed_fence_id,
     managed_region_id = managed_region_id,
+    sentinel_extmark_id = sentinel_extmark_id,
   }
 
   -- Attach buffer-local keymap and BufWriteCmd save handler on first draw.
@@ -463,6 +502,95 @@ end
 --- @return table|nil  per-block state map, or nil
 function M.render_state(bufnr)
   return _state[bufnr]
+end
+
+--- Demote the sentinel of a single block: stop managing it so user-typed
+--- content on the sentinel row persists (not stripped on :w, not reverted).
+---
+--- Mutates all draw/managed-owned state for the block:
+---   • deletes the sentinel-tracking extmark and clears sentinel_extmark_id;
+---   • shrinks the managed region to exclude the sentinel row (removing the
+---     region entirely when the sentinel was its only row — zero-task dashboard);
+---   • shrinks inserted_range likewise (nil when the sentinel was the only row).
+---
+--- No-op when the block has no sentinel.  The caller (revert.on_lines) is
+--- responsible for the revert-side _region_snapshot update and mark_dirty.
+---
+--- @param bufnr       integer
+--- @param fence_first integer  0-indexed opening-fence row identifying the block
+function M.demote_sentinel(bufnr, fence_first)
+  local block = _state[bufnr] and _state[bufnr][fence_first]
+  if not block or not block.sentinel_extmark_id then
+    return
+  end
+
+  -- Resolve the sentinel's live row before deleting its tracking extmark.
+  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, block.sentinel_extmark_id, {})
+  local srow = pos and pos[1] or nil
+
+  pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, block.sentinel_extmark_id)
+  block.sentinel_extmark_id = nil
+
+  if srow == nil then
+    return
+  end
+
+  -- Shrink / remove the managed region so the demoted row is no longer managed.
+  if block.managed_region_id then
+    local region = managed.region_for_row(bufnr, srow)
+    if region then
+      local rstart = region.range[1]
+      if rstart <= srow - 1 then
+        managed.resize_region(bufnr, region.mark_id, rstart, srow - 1)
+      else
+        -- Sentinel was the region's only row (zero-task dashboard): drop it.
+        managed.cleanup_region(bufnr, region.mark_id)
+        block.managed_region_id = nil
+      end
+    end
+  end
+
+  -- Shrink inserted_range to match (nil when the sentinel was its only row).
+  if block.inserted_range then
+    if block.inserted_range[1] <= srow - 1 then
+      block.inserted_range[2] = srow - 1
+    else
+      block.inserted_range = nil
+    end
+  end
+end
+
+--- Demote every block sentinel that the user typed into during an edit.
+---
+--- For each block with a live sentinel extmark whose row falls in
+--- [first_line, check_end) and whose current content is non-empty, releases the
+--- sentinel via M.demote_sentinel.  Returns the list of demoted 0-indexed rows
+--- so the caller can update its own region snapshot.
+---
+--- @param bufnr      integer
+--- @param first_line integer  0-indexed first changed row of the edit
+--- @param check_end  integer  0-indexed exclusive end of the changed range
+--- @return integer[]  demoted sentinel rows (0-indexed)
+function M.demote_typed_sentinels(bufnr, first_line, check_end)
+  local blocks = _state[bufnr]
+  if not blocks then
+    return {}
+  end
+  local demoted = {}
+  for fence_first, block in pairs(blocks) do
+    if block.sentinel_extmark_id then
+      local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, block.sentinel_extmark_id, {})
+      local srow = pos and pos[1] or nil
+      if srow and srow >= first_line and srow < check_end then
+        local cur = vim.api.nvim_buf_get_lines(bufnr, srow, srow + 1, false)[1]
+        if cur ~= nil and not cur:match("^%s*$") then
+          M.demote_sentinel(bufnr, fence_first)
+          demoted[#demoted + 1] = srow
+        end
+      end
+    end
+  end
+  return demoted
 end
 
 return M

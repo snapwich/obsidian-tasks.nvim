@@ -240,8 +240,9 @@ T["rerender_buffer: new block at end gets default fold, existing fold state pres
   render.configure({ default_folded = true })
   local restore_idx = install_one_task_stub()
 
-  -- Single-block buffer.
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Single-block buffer with trailing prose so the dashboard does not end at
+  -- EOF (no sentinel) — this test exercises fold lifecycle, not sentinel logic.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "## Notes" })
   local winid = open_in_win(bufnr)
 
   -- Initial render: 1 block, 1 task inserted → fold at lines 1..4.
@@ -251,9 +252,8 @@ T["rerender_buffer: new block at end gets default fold, existing fold state pres
   open_fold_at(bufnr, 1)
   local pre_fc1 = fold_closed_at(bufnr, 1)
 
-  -- Add a new source block to the buffer AFTER the rendered task line.
-  -- Buffer currently (0-indexed): ```tasks(0), not done(1), ```(2), - [ ] Task(3).
-  -- Append 3 more lines (new source block) starting at row 4.
+  -- Insert a new source block AFTER the rendered task line (before the prose).
+  -- Buffer currently (0-indexed): ```tasks(0), not done(1), ```(2), - [ ] Task(3), ## Notes(4).
   vim.api.nvim_buf_set_lines(bufnr, 4, 4, false, { "```tasks", "not done", "```" })
 
   -- Re-render.
@@ -284,7 +284,8 @@ T["rerender_buffer: deleted block cleaned up, remaining block renders correctly"
   render.configure({ default_folded = true })
   local restore_idx = install_zero_task_stub()
 
-  -- Two-block buffer (no task lines rendered since 0 tasks).
+  -- Two-block buffer (no task lines rendered since 0 tasks).  Trailing prose
+  -- keeps block 2 off EOF so no sentinel is appended (orthogonal to this test).
   local bufnr = make_buf({
     "```tasks", -- block 1: source lines 1-3
     "not done",
@@ -292,6 +293,7 @@ T["rerender_buffer: deleted block cleaned up, remaining block renders correctly"
     "```tasks", -- block 2: source lines 4-6
     "not done",
     "```",
+    "## Notes", -- trailing prose: source line 7
   })
   local winid = open_in_win(bufnr)
 
@@ -305,7 +307,7 @@ T["rerender_buffer: deleted block cleaned up, remaining block renders correctly"
   -- Simulate user deleting block 1: remove its 3 source lines (rows 0-2, 0-indexed).
   vim.api.nvim_buf_set_lines(bufnr, 0, 3, false, {})
 
-  -- Buffer now has only the old block 2 (lines 1-3 in 1-indexed).
+  -- Buffer now has old block 2 (lines 1-3) + trailing prose (line 4).
   local lines_after_del = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
   -- Re-render: should clear orphaned state and render the surviving block.
@@ -323,8 +325,8 @@ T["rerender_buffer: deleted block cleaned up, remaining block renders correctly"
   eq(fc1_initial, 1)
   eq(fc2_initial, 4)
 
-  -- After deletion buffer had 3 lines (only old block 2 remaining).
-  eq(#lines_after_del, 3)
+  -- After deletion buffer had block 2's 3 lines + trailing prose = 4 lines.
+  eq(#lines_after_del, 4)
 
   -- rerender_buffer must not error.
   eq(ok, true)
@@ -332,8 +334,8 @@ T["rerender_buffer: deleted block cleaned up, remaining block renders correctly"
   -- Surviving block now at line 1, rendered with a fold.
   eq(post_fc1, 1)
 
-  -- No extra lines inserted (0 tasks in stub).
-  eq(post_line_count, 3)
+  -- 0 tasks in stub → 3 source lines + trailing prose = 4 lines.
+  eq(post_line_count, 4)
 end
 
 -- ── T5: insert new block ABOVE existing rendered content ─────────────────────
@@ -351,12 +353,13 @@ T["rerender_buffer: insert block above — no corruption, existing fold state pr
   render.configure({ default_folded = true })
   local restore_idx = install_one_task_stub()
 
-  -- Single-block buffer: source at lines 1-3, 1 task inserted at line 4.
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Single-block buffer with trailing prose so the dashboard does not end at
+  -- EOF (no sentinel) — this test exercises insert-above corruption, not sentinels.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "## Notes" })
   local winid = open_in_win(bufnr)
 
   render.render_buffer(bufnr, nil)
-  -- After render: fence at lines 1-3, task at line 4 → fold 1..4.
+  -- After render: fence at lines 1-3, task at line 4, prose at line 5 → fold 1..4.
 
   -- Open the fold (we want to verify the open state is preserved after rerender).
   open_fold_at(bufnr, 1)
@@ -377,6 +380,7 @@ T["rerender_buffer: insert block above — no corruption, existing fold state pr
   -- After rerender:
   --   New block (C) at source pos 1: fence 1-3, task at line 4  → fold 1..4 (closed)
   --   Old block (A) at source pos 4: fence 5-7, task at line 8  → fold 5..8 (open)
+  --   Trailing prose: line 9.
   local post_line_count = #vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local post_fc_new = fold_closed_at(bufnr, 1) -- new block: closed
   local post_fc_old = fold_closed_at(bufnr, 5) -- original block: was open → stays open
@@ -388,13 +392,13 @@ T["rerender_buffer: insert block above — no corruption, existing fold state pr
 
   -- Preconditions.
   eq(pre_fc1, -1) -- fold was opened before insert
-  eq(#lines_before_rerender, 7) -- 3 source (C) + 3 source (A) + 1 task (A)
+  eq(#lines_before_rerender, 8) -- 3 source (C) + 3 source (A) + 1 task (A) + prose
 
   -- No error during rerender.
   eq(ok, true)
 
-  -- Buffer has correct size: 3 fence + 1 task (C) + 3 fence + 1 task (A) = 8 lines.
-  eq(post_line_count, 8)
+  -- Buffer size: 3 fence + 1 task (C) + 3 fence + 1 task (A) + 1 prose = 9 lines.
+  eq(post_line_count, 9)
 
   -- New block gets default fold (closed).
   eq(post_fc_new, 1)
@@ -414,7 +418,8 @@ T["rerender_buffer: delete non-trailing block, surviving block with tasks render
   render.configure({ default_folded = true })
   local restore_idx = install_one_task_stub()
 
-  -- Two-block buffer, each gets 1 task rendered.
+  -- Two-block buffer, each gets 1 task rendered.  Trailing prose keeps block A
+  -- off EOF so no sentinel is appended (orthogonal to this test).
   local bufnr = make_buf({
     "```tasks", -- block B: source lines 1-3
     "not done",
@@ -422,12 +427,13 @@ T["rerender_buffer: delete non-trailing block, surviving block with tasks render
     "```tasks", -- block A: source lines 4-6
     "not done",
     "```",
+    "## Notes", -- trailing prose: source line 7
   })
   local winid = open_in_win(bufnr)
 
   render.render_buffer(bufnr, nil)
-  -- Rendered buffer (8 lines):
-  --   lines 1-3: B fence, line 4: B task, lines 5-7: A fence, line 8: A task.
+  -- Rendered buffer (9 lines):
+  --   lines 1-3: B fence, line 4: B task, lines 5-7: A fence, line 8: A task, line 9: prose.
 
   local fc_b_initial = fold_closed_at(bufnr, 1) -- B closed
   local fc_a_initial = fold_closed_at(bufnr, 5) -- A closed
@@ -457,8 +463,8 @@ T["rerender_buffer: delete non-trailing block, surviving block with tasks render
   -- No error.
   eq(ok, true)
 
-  -- Surviving block A: fence (3 lines) + task (1 line) = 4 lines total.
-  eq(#post_lines, 4)
+  -- Surviving block A: fence (3 lines) + task (1 line) + trailing prose = 5 lines.
+  eq(#post_lines, 5)
 
   -- A is rendered and folded at line 1.
   eq(post_fc_a, 1)
@@ -484,6 +490,7 @@ T["clear_state + re-render: multi-block buffer survives buffer reload"] = functi
   render.configure({ default_folded = true })
   local restore_idx = install_one_task_stub()
 
+  -- Trailing prose keeps block 5 off EOF so no sentinel is appended.
   local source_lines = {
     "```tasks", -- block 1: source lines 1-3
     "not done",
@@ -500,13 +507,14 @@ T["clear_state + re-render: multi-block buffer survives buffer reload"] = functi
     "```tasks", -- block 5: source lines 13-15
     "not done",
     "```",
+    "## Notes", -- trailing prose: source line 16
   }
 
   local bufnr = make_buf(source_lines)
   local winid = open_in_win(bufnr)
 
   render.render_buffer(bufnr, nil)
-  -- After render: 5 fences (3 lines each) + 5 tasks = 20 lines total.
+  -- After render: 5 fences (3 lines each) + 5 tasks + 1 prose = 21 lines total.
   local rendered_line_count = #vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
   -- Simulate `:e` reload: buffer text is fully replaced with source content
@@ -521,7 +529,7 @@ T["clear_state + re-render: multi-block buffer survives buffer reload"] = functi
   -- Now BufReadPost re-renders from a clean slate.
   render.render_buffer(bufnr, nil)
 
-  -- All 5 blocks should be rendered: 5 fences (3 each) + 5 tasks = 20 lines.
+  -- All 5 blocks rendered: 5 fences (3 each) + 5 tasks + 1 prose = 21 lines.
   local post_line_count = #vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local managed = require("obsidian-tasks.render.managed")
   local regions = managed.all_regions(bufnr)
@@ -531,8 +539,8 @@ T["clear_state + re-render: multi-block buffer survives buffer reload"] = functi
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
 
-  eq(rendered_line_count, 20)
-  eq(post_line_count, 20)
+  eq(rendered_line_count, 21)
+  eq(post_line_count, 21)
   eq(#regions, 5)
 end
 

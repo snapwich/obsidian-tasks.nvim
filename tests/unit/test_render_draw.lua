@@ -208,15 +208,16 @@ end
 -- ── draw: no task lines ───────────────────────────────────────────────────────
 
 T["draw: buffer unchanged when layout has no task lines"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Trailing prose keeps the dashboard off EOF so no sentinel is appended.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "trailing prose" })
   local layout = {
     { kind = "footer", text = "─ 0 results ─" },
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
 
-  -- Buffer should still have exactly 3 lines (fence only, no task lines inserted).
+  -- Buffer should still have exactly 4 lines (no task lines inserted).
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  eq(#lines, 3)
+  eq(#lines, 4)
   draw_mod.clear(bufnr)
 end
 
@@ -242,6 +243,133 @@ T["draw: zero-task footer anchors at fence_last, not inside the fence"] = functi
     end
   end
   eq(footer_row, 2)
+  draw_mod.clear(bufnr)
+end
+
+-- ── draw: EOF sentinel ────────────────────────────────────────────────────────
+-- When the rendered dashboard's last managed row is the last line of the buffer,
+-- draw appends a single empty sentinel line so obsidian.nvim's footer extmark
+-- (which anchors at the last buffer line) lands strictly below ours.
+
+T["draw: EOF dashboard with tasks gets a tracked sentinel line"] = function()
+  -- 3-line fence buffer: the dashboard occupies the whole buffer → ends at EOF.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] Task"))
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  -- fence rows 0-2, task row 3, sentinel row 4.
+  eq(#lines, 5)
+  eq(lines[4], "- [ ] Task")
+  eq(lines[5], "") -- sentinel: a single empty line
+
+  local state = draw_mod.render_state(bufnr)[0]
+  -- Sentinel is tracked by a draw-NS extmark id recorded in block state.
+  eq(type(state.sentinel_extmark_id), "number")
+  -- inserted_range extends to cover the sentinel row (task 3 + sentinel 4).
+  eq(state.inserted_range[1], 3)
+  eq(state.inserted_range[2], 4)
+  -- The managed region brackets the sentinel row too.
+  MiniTest.expect.equality(managed.region_for_row(bufnr, 4) ~= nil, true)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: zero-task EOF dashboard gets a tracked sentinel"] = function()
+  -- Whole-buffer fence, zero results → footer anchors at fence_last and the
+  -- dashboard ends at EOF, so a sentinel is appended below the closing fence.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local layout = {
+    { kind = "footer", text = "─ 0 results ─" },
+  }
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  -- fence rows 0-2, sentinel row 3.
+  eq(#lines, 4)
+  eq(lines[4], "")
+
+  local state = draw_mod.render_state(bufnr)[0]
+  eq(type(state.sentinel_extmark_id), "number")
+  -- A managed region is created to bracket the lone sentinel row.
+  eq(state.inserted_range[1], 3)
+  eq(state.inserted_range[2], 3)
+  MiniTest.expect.equality(managed.region_for_row(bufnr, 3) ~= nil, true)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: no sentinel when content follows the dashboard"] = function()
+  -- Prose after the closing fence means the dashboard does not end at EOF.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "## More notes" })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] Task"))
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  -- fence rows 0-2, task row 3, existing prose row 4 → no sentinel appended.
+  eq(#lines, 5)
+  eq(lines[5], "## More notes")
+
+  local state = draw_mod.render_state(bufnr)[0]
+  eq(state.sentinel_extmark_id, nil)
+  eq(state.inserted_range[2], 3) -- task row only
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: only the EOF-ending block gets a sentinel in a multi-block buffer"] = function()
+  -- Two stacked fences; nothing follows the second, so only it ends at EOF.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "```tasks", "not done", "```" })
+  -- Block 1 (fence 0-2): task at row 3; block 2 fence still follows → not EOF.
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] One", "/v/a.md", 1))
+  -- Block 1's task insert shifted block 2's fence down to rows 4-6.
+  draw_mod.draw(bufnr, fence(4, 6), simple_layout("- [ ] Two", "/v/b.md", 2))
+
+  local s1 = draw_mod.render_state(bufnr)[0]
+  local s2 = draw_mod.render_state(bufnr)[4]
+  eq(s1.sentinel_extmark_id, nil) -- block 1: not at EOF → no sentinel
+  eq(type(s2.sentinel_extmark_id), "number") -- block 2: at EOF → sentinel
+
+  -- Buffer: b1fence(0-2), b1task(3), b2fence(4-6), b2task(7), sentinel(8).
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(#lines, 9)
+  eq(lines[9], "")
+
+  draw_mod.clear(bufnr)
+end
+
+-- ── draw: demote_sentinel ─────────────────────────────────────────────────────
+-- Demoting releases the sentinel from management: the user typed into it, so it
+-- becomes ordinary buffer content (no longer stripped on :w or reverted on edit).
+
+T["draw: demote_sentinel releases the sentinel but keeps task rows (with tasks)"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, fence(0, 2), simple_layout("- [ ] Task"))
+  -- sentinel row 4, region [3,4], inserted_range {3,4}
+  draw_mod.demote_sentinel(bufnr, 0)
+
+  local state = draw_mod.render_state(bufnr)[0]
+  eq(state.sentinel_extmark_id, nil) -- tracking extmark dropped
+  eq(state.inserted_range[1], 3)
+  eq(state.inserted_range[2], 3) -- shrunk to exclude the sentinel row
+  -- Managed region no longer covers the sentinel row 4 …
+  eq(managed.region_for_row(bufnr, 4), nil)
+  -- … but still covers the task row 3.
+  MiniTest.expect.equality(managed.region_for_row(bufnr, 3) ~= nil, true)
+
+  draw_mod.clear(bufnr)
+end
+
+T["draw: demote_sentinel removes the region entirely for a zero-task dashboard"] = function()
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, fence(0, 2), { { kind = "footer", text = "─ 0 results ─" } })
+  -- sentinel row 3, region [3,3] (sentinel-only), inserted_range {3,3}
+  draw_mod.demote_sentinel(bufnr, 0)
+
+  local state = draw_mod.render_state(bufnr)[0]
+  eq(state.sentinel_extmark_id, nil)
+  eq(state.inserted_range, nil) -- region was sentinel-only → gone
+  eq(state.managed_region_id, nil)
+  eq(managed.region_for_row(bufnr, 3), nil)
+
   draw_mod.clear(bufnr)
 end
 
@@ -331,13 +459,14 @@ T["draw: managed region extmark covers all task rows"] = function()
 end
 
 T["draw: no managed region extmark when no task lines"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Trailing prose keeps the dashboard off EOF so no sentinel (hence no region).
+  local bufnr = make_buf({ "```tasks", "not done", "```", "trailing prose" })
   local layout = {
     { kind = "footer", text = "─ 0 results ─" },
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
 
-  -- No tasks → no region extmark → region_for_row returns nil for all rows.
+  -- No tasks and no sentinel → no region extmark → region_for_row returns nil.
   eq(managed.region_for_row(bufnr, 3), nil)
 
   draw_mod.clear(bufnr)
@@ -574,7 +703,9 @@ T["render_state: fence_range matches argument"] = function()
 end
 
 T["render_state: inserted_range covers task lines"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Trailing prose keeps this dashboard off EOF so no sentinel is appended;
+  -- inserted_range then covers exactly the two task rows.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "after the fence" })
   local hash_a = vim.fn.sha256("- [ ] A"):sub(1, 16)
   local hash_b = vim.fn.sha256("- [ ] B"):sub(1, 16)
   local layout = {
@@ -592,7 +723,9 @@ T["render_state: inserted_range covers task lines"] = function()
 end
 
 T["render_state: inserted_range is nil when no task lines"] = function()
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Trailing prose keeps the dashboard off EOF so no sentinel is appended;
+  -- with neither tasks nor a sentinel, inserted_range stays nil.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "trailing prose" })
   local layout = {
     { kind = "footer", text = "─ 0 results ─" },
   }

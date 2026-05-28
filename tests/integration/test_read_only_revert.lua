@@ -651,6 +651,7 @@ T["revert: pure insert at region start row — both inserted row and managed row
     "```tasks", -- row 4  (block B fence start)
     "not done", -- row 5
     "```", -- row 6
+    "## Notes", -- row 7  trailing prose (keeps block B off EOF, no sentinel)
   })
 
   render.render_buffer(bufnr, nil)
@@ -660,9 +661,10 @@ T["revert: pure insert at region start row — both inserted row and managed row
   --   row 4   : ""
   --   row 5-7 : block B fence
   --   row 8   : block B's rendered task   ← managed region [8, 8]
+  --   row 9   : "## Notes"
 
   local pre_line_count = vim.api.nvim_buf_line_count(bufnr)
-  eq(pre_line_count, 9)
+  eq(pre_line_count, 10)
 
   -- Simulate `o` on the closed block A fold landing at row 3 (the first row
   -- of the rendered region) — what Vim does after foldopen+=insert resolves
@@ -674,7 +676,7 @@ T["revert: pure insert at region start row — both inserted row and managed row
 
   -- Both blocks back to their pre-edit positions; no stray rendered tasks.
   local post_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  eq(#post_lines, 9)
+  eq(#post_lines, 10)
   eq(post_lines[1], "```tasks")
   eq(post_lines[3], "```")
   eq(post_lines[4], "- [ ] Block A task [[stub]]")
@@ -682,6 +684,7 @@ T["revert: pure insert at region start row — both inserted row and managed row
   eq(post_lines[6], "```tasks")
   eq(post_lines[8], "```")
   eq(post_lines[9], "- [ ] Block A task [[stub]]")
+  eq(post_lines[10], "## Notes")
 
   render.clear_buffer(bufnr)
   index_mod.tasks_in = saved.tasks_in

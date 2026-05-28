@@ -127,6 +127,58 @@ T["on_write_cmd: modified prose persisted, task rows still dropped"] = function(
   eq(written[4], "New prose paragraph")
 end
 
+-- ── on_write_cmd: EOF sentinel stripped ──────────────────────────────────────
+
+T["on_write_cmd: EOF sentinel is dropped, not written to source"] = function()
+  -- Whole-buffer fence dashboard with 1 task → draw appends a trailing sentinel.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, { 0, 2 }, simple_layout("- [ ] Task A"))
+
+  -- Buffer is now: fence(0-2), task(3), sentinel(4).
+  local before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(#before, 5)
+  eq(before[5], "") -- sentinel
+
+  local tmpfile = vim.fn.tempname()
+  save.on_write_cmd({ buf = bufnr, file = tmpfile })
+
+  local written = vim.fn.readfile(tmpfile)
+  vim.fn.delete(tmpfile)
+  draw_mod.clear(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Only the 3 fence lines written; the task AND the sentinel are dropped.
+  eq(#written, 3)
+  eq(written[1], "```tasks")
+  eq(written[2], "not done")
+  eq(written[3], "```")
+end
+
+T["on_write_cmd: demoted sentinel line is written to source"] = function()
+  -- Render an EOF dashboard (sentinel at row 4), then demote it as if the user
+  -- had typed into it, and overwrite the now-unmanaged row with their content.
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  draw_mod.draw(bufnr, { 0, 2 }, simple_layout("- [ ] Task A"))
+  draw_mod.demote_sentinel(bufnr, 0)
+  -- Row 4 is no longer managed; simulate the user's typed content there.
+  vim.api.nvim_buf_set_lines(bufnr, 4, 5, false, { "user note" })
+
+  local tmpfile = vim.fn.tempname()
+  save.on_write_cmd({ buf = bufnr, file = tmpfile })
+
+  local written = vim.fn.readfile(tmpfile)
+  vim.fn.delete(tmpfile)
+  draw_mod.clear(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+
+  -- Fence lines kept, task row dropped, demoted "user note" written.
+  eq(#written, 4)
+  eq(written[1], "```tasks")
+  eq(written[2], "not done")
+  eq(written[3], "```")
+  eq(written[4], "user note")
+end
+
 -- ── on_write_cmd: garbage typed in managed row dropped ───────────────────────
 
 T["on_write_cmd: garbage in managed row is dropped"] = function()

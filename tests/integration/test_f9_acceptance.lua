@@ -358,8 +358,9 @@ T["AC4: new block at end rendered + folded; existing open fold preserved"] = fun
   render.configure({ default_folded = true })
   local restore = install_one_task_stub("- [ ] AC4 task")
 
-  -- Single-block buffer.
-  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  -- Single-block buffer with trailing prose so the dashboard does not end at
+  -- EOF (no sentinel) — this test exercises fold lifecycle, not sentinel logic.
+  local bufnr = make_buf({ "```tasks", "not done", "```", "## Notes" })
   local winid = open_in_win(bufnr)
 
   -- Initial render: 1 block, fold at lines 1..4.
@@ -371,8 +372,8 @@ T["AC4: new block at end rendered + folded; existing open fold preserved"] = fun
   end)
   local pre_fc1 = fold_closed_at(bufnr, 1) -- should be -1 (open)
 
-  -- Append a new source block after the existing rendered content.
-  -- Buffer is currently: fence(0-2), task(3).
+  -- Insert a new source block after the rendered task (before the prose line).
+  -- Buffer is currently: fence(0-2), task(3), ## Notes(4).
   vim.api.nvim_buf_set_lines(bufnr, 4, 4, false, { "```tasks", "done", "```" })
 
   -- Re-render (simulates BufWritePost after :w).
@@ -402,7 +403,8 @@ T["AC5: deleted block region removed; surviving block unchanged"] = function()
   render.configure({ default_folded = true })
   local restore = install_zero_task_stub()
 
-  -- Two-block buffer (zero tasks → no task lines, only folds).
+  -- Two-block buffer (zero tasks → no task lines, only folds).  Trailing prose
+  -- keeps block 2 off EOF so no sentinel is appended (orthogonal to this test).
   local bufnr = make_buf({
     "```tasks", -- block 1: rows 0-2
     "not done",
@@ -410,6 +412,7 @@ T["AC5: deleted block region removed; surviving block unchanged"] = function()
     "```tasks", -- block 2: rows 3-5
     "done",
     "```",
+    "## Notes", -- trailing prose: row 6
   })
   local winid = open_in_win(bufnr)
 
@@ -424,7 +427,8 @@ T["AC5: deleted block region removed; surviving block unchanged"] = function()
   -- Re-render: block 1's state must be cleaned up; block 2 must survive.
   local ok = pcall(render.rerender_buffer, bufnr, nil)
 
-  -- Surviving block 2 is now at source pos 1; with 0 tasks it keeps its 3 lines.
+  -- Surviving block 2 is now at source pos 1; with 0 tasks it keeps its 3 lines
+  -- plus the trailing prose line.
   local post_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local post_fc = fold_closed_at(bufnr, 1) -- block 2 now at line 1
 
@@ -436,7 +440,7 @@ T["AC5: deleted block region removed; surviving block unchanged"] = function()
   eq(fc1_initial, 1, "AC5: precondition — block 1 was folded")
   eq(fc2_initial, 4, "AC5: precondition — block 2 was folded")
   eq(ok, true, "AC5: rerender_buffer must not error after block deletion")
-  eq(#post_lines, 3, "AC5: only block 2's 3 source lines must remain")
+  eq(#post_lines, 4, "AC5: block 2's 3 source lines + trailing prose must remain")
   eq(post_fc, 1, "AC5: surviving block must be folded at line 1")
 end
 
