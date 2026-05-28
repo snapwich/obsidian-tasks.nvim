@@ -220,6 +220,31 @@ T["draw: buffer unchanged when layout has no task lines"] = function()
   draw_mod.clear(bufnr)
 end
 
+T["draw: zero-task footer anchors at fence_last, not inside the fence"] = function()
+  -- Buffer has prose after the fence so this dashboard does NOT end at EOF
+  -- (keeps the assertion stable once the EOF sentinel lands).
+  local bufnr = make_buf({ "```tasks", "not done", "```", "after the fence" })
+  local layout = {
+    { kind = "footer", text = "─ 0 results ─" },
+  }
+  draw_mod.draw(bufnr, fence(0, 2), layout)
+
+  -- The footer virt_line must anchor on the closing fence (row 2 = fence_last)
+  -- so it renders AFTER ``` rather than inside the fence at row 0 (fence_first).
+  local footer_row = nil
+  for _, em in ipairs(virt_line_ems(bufnr)) do
+    for _, row in ipairs(em[4].virt_lines) do
+      for _, chunk in ipairs(row) do
+        if type(chunk[1]) == "string" and chunk[1]:find("0 results", 1, true) then
+          footer_row = em[2]
+        end
+      end
+    end
+  end
+  eq(footer_row, 2)
+  draw_mod.clear(bufnr)
+end
+
 -- ── draw: managed-region extmarks ────────────────────────────────────────────
 
 T["draw: managed fence extmark created for each block"] = function()

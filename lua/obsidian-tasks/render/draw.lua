@@ -298,7 +298,10 @@ function M.draw(bufnr, fence_range, layout_lines)
       task_index = task_index + 1
     elseif kind == "footer" then
       -- Flush any remaining pending_virt before the footer row.
-      local anchor = last_task_lnum or fence_first
+      -- With zero tasks the anchor falls back to fence_last (the closing ```),
+      -- so virt_lines_above=false renders the footer AFTER the fence rather than
+      -- inside it (between the opening ``` and the query body).
+      local anchor = last_task_lnum or fence_last
       local virts = {}
       for _, pv in ipairs(pending_virt) do
         virts[#virts + 1] = pv
@@ -316,7 +319,7 @@ function M.draw(bufnr, fence_range, layout_lines)
 
   -- Flush any leftover pending_virt (e.g., errors with no following task).
   if #pending_virt > 0 then
-    local anchor = last_task_lnum or fence_first
+    local anchor = last_task_lnum or fence_last
     local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, anchor, 0, {
       virt_lines = pending_virt,
       virt_lines_above = false,
