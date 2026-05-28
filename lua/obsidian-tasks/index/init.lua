@@ -113,19 +113,26 @@ end
 ---
 --- @param abs_path string  absolute path to the markdown file
 function M.refresh_file(abs_path)
-  local ignore = require("obsidian-tasks.index.ignore")
+  local mtime = get_mtime(abs_path)
 
-  -- Ignored files are always dropped.
+  -- File no longer on disk: drop the entry and skip the ignore check
+  -- (parse_frontmatter on a missing file logs a misleading "cannot read
+  -- frontmatter" warn, and the entry would otherwise persist with nil mtime
+  -- and re-trigger the warn on every refresh_all_indexed_mtime).
+  if mtime == nil then
+    _index[abs_path] = nil
+    return
+  end
+
+  local ignore = require("obsidian-tasks.index.ignore")
   if ignore.is_ignored(abs_path) then
     _index[abs_path] = nil
     return
   end
 
-  local mtime = get_mtime(abs_path)
-
   -- mtime no-op: if entry exists and mtime hasn't changed, skip.
   local entry = _index[abs_path]
-  if entry and mtime and entry.mtime == mtime then
+  if entry and entry.mtime == mtime then
     return
   end
 

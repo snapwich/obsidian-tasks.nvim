@@ -609,6 +609,88 @@ init_tests["refresh_all_indexed_mtime: mtime no-op leaves the tasks table intact
   MiniTest.expect.equality(index._raw()[path].tasks == tasks_ref, true)
 end
 
+init_tests["refresh_file: deleted file is dropped from index"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  -- ignore is never consulted for a deleted file — the stat short-circuit
+  -- runs first. We assert that by failing if it's called.
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      error("is_ignored must not be called for a missing file")
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  -- Create a real file, index it.
+  local path = vim.fn.tempname() .. ".md"
+  local f = assert(io.open(path, "w"))
+  f:write("- [ ] To be deleted\n")
+  f:close()
+
+  -- Restore ignore stub for the initial parse, which DOES consult ignore.
+  cleanup_ign()
+  local cleanup_ign_ok = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+  index.refresh_file(path)
+  MiniTest.expect.equality(index._raw()[path] ~= nil, true)
+  cleanup_ign_ok()
+
+  -- Now delete the file and re-stub ignore to error if called.
+  os.remove(path)
+  local cleanup_ign_fail = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      error("is_ignored must not be called for a missing file")
+    end,
+  })
+
+  -- refresh_file on the now-missing path must drop the entry without
+  -- consulting ignore (which would log a misleading frontmatter warn).
+  index.refresh_file(path)
+  cleanup_ign_fail()
+
+  MiniTest.expect.equality(index._raw()[path], nil)
+end
+
+init_tests["refresh_all_indexed_mtime: deleted files are dropped"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local kept = vim.fn.tempname() .. ".md"
+  local gone = vim.fn.tempname() .. ".md"
+  for _, p in ipairs({ kept, gone }) do
+    local f = assert(io.open(p, "w"))
+    f:write("- [ ] Task in " .. p .. "\n")
+    f:close()
+    index.refresh_file(p)
+  end
+  MiniTest.expect.equality(index._raw()[kept] ~= nil, true)
+  MiniTest.expect.equality(index._raw()[gone] ~= nil, true)
+
+  os.remove(gone)
+  index.refresh_all_indexed_mtime()
+
+  cleanup_ign()
+  os.remove(kept)
+
+  MiniTest.expect.equality(index._raw()[gone], nil)
+  MiniTest.expect.equality(index._raw()[kept] ~= nil, true)
+end
+
 init_tests["refresh_file: ignored file is dropped from index"] = function()
   set_obsidian_stub()
   reset_opts()
