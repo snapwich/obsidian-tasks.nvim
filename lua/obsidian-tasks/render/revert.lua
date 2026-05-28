@@ -474,6 +474,29 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
   end
 
   if not touched then
+    -- Deleting the line(s) directly below a managed region that now leaves the
+    -- region at the buffer's last line must re-append the EOF sentinel.  This is
+    -- the demote-then-delete case: typing into the sentinel demotes it (the row
+    -- becomes unmanaged user content), and deleting that row returns the
+    -- dashboard to EOF.  The deleted row is unmanaged, so the touched path skips
+    -- it; schedule a re-render via the normal debounce path so draw re-appends a
+    -- fresh sentinel and re-anchors the footer.
+    local is_pure_delete = (new_lastline < last_line and last_line > first_line)
+    if is_pure_delete then
+      local last_row = vim.api.nvim_buf_line_count(bufnr) - 1
+      for _, region in ipairs(snapshot) do
+        if region[2] == first_line - 1 and region[2] == last_row then
+          if not _scheduled[bufnr] then
+            _scheduled[bufnr] = true
+            vim.schedule(function()
+              do_revert(bufnr)
+            end)
+          end
+          break
+        end
+      end
+    end
+
     -- The edit did not touch any managed region (prose or query fence edit).
     -- It is a real user edit, so the buffer now has pending unsaved content
     -- outside what we wrote — subsequent plugin re-renders must NOT clear the

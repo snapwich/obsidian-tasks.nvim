@@ -104,6 +104,28 @@ local function child_line_count(child)
   return child.lua_get("vim.api.nvim_buf_line_count(_G._dash_bufnr)")
 end
 
+--- Capture the child's screen as an array of trailing-trimmed row strings.
+--- Uses mini.test's get_screenshot (which redraws first), so virtual lines and
+--- folds are reflected exactly as a user would see them.
+local function screen_rows(child)
+  local ss = child.get_screenshot()
+  local rows = {}
+  for i = 1, #ss.text do
+    rows[i] = (table.concat(ss.text[i], ""):gsub("%s+$", ""))
+  end
+  return rows
+end
+
+--- 1-indexed screen row containing *needle* (plain substring), or nil.
+local function screen_find(rows, needle)
+  for i, r in ipairs(rows) do
+    if r:find(needle, 1, true) then
+      return i
+    end
+  end
+  return nil
+end
+
 local TASK_ROW = 3 -- fence(0-2), task(3)
 local SENTINEL_ROW = 4 -- sentinel appended below the task
 
@@ -212,6 +234,85 @@ T["o on last task: new task lands before the sentinel; sentinel relocates"] = fu
   local n = child_line_count(child)
   eq(child_line(child, n - 1), "") -- last line is the (relocated) sentinel
   eq(child_line(child, n - 2):find("New task") ~= nil, true) -- new task directly above it
+
+  child.stop()
+  pcall(vim.fn.delete, src_path)
+end
+
+-- ── bug 1: folded zero-result fence keeps its footer visible ──────────────────
+-- The results footer must render as the line right after the collapsed fence
+-- fold, not vanish into it.  With the footer anchored below fence_last (inside
+-- the fold) it disappears when the fold closes; anchoring it above the trailing
+-- (sentinel) row keeps it visible.
+
+T["fold: zero-result footer stays visible below the closed fence fold"] = function()
+  -- A non-task source line yields zero results, so the dashboard renders only a
+  -- footer + sentinel at EOF.
+  local child, src_path = spawn_child_with_dashboard("no tasks here")
+
+  -- Fold the fence lines (mirrors render/folds.apply_folds) and close the fold.
+  child.lua("vim.cmd('setlocal foldmethod=manual'); vim.cmd('1,3fold')")
+
+  local rows = screen_rows(child)
+  local fold_row = screen_find(rows, "tasks") -- default foldtext echoes the ```tasks line
+  local footer_row = screen_find(rows, "result") -- "─ 0 results ─"
+
+  -- Footer must be on screen at all while folded …
+  eq(footer_row ~= nil, true)
+  -- … and sit immediately below the collapsed fence fold.
+  eq(fold_row ~= nil and footer_row > fold_row, true)
+
+  child.stop()
+  pcall(vim.fn.delete, src_path)
+end
+
+-- ── bug 2: `o` on the last task lands the new line above the footer ───────────
+-- Opening a line under the last task should look like inserting inside the
+-- query (above the results footer), not below it.  Screenshot while still in
+-- insert mode: the in-flight revert is gated off during insert, so the footer's
+-- position reflects the extmark anchoring alone.
+
+T["o on last task: the new line renders above the footer (inside the query)"] = function()
+  local child, src_path = spawn_child_with_dashboard("- [ ] Walk dog #task")
+
+  child.api.nvim_win_set_cursor(0, { TASK_ROW + 1, 0 })
+  -- Stay in insert mode (no <Esc>) so no re-render fires before the screenshot.
+  child.type_keys("o", "- [ ] new task")
+
+  local rows = screen_rows(child)
+  local new_row = screen_find(rows, "new task")
+  local footer_row = screen_find(rows, "result") -- "─ 1 result ─"
+  eq(new_row ~= nil and footer_row ~= nil, true)
+  -- The freshly opened line is above the footer.
+  eq(new_row < footer_row, true)
+
+  child.type_keys("<Esc>")
+  child.stop()
+  pcall(vim.fn.delete, src_path)
+end
+
+-- ── bug 3: deleting a demoted sentinel restores a fresh sentinel ──────────────
+-- Typing into the sentinel demotes it (the line becomes the user's content).
+-- Deleting that line returns the dashboard to EOF, so a fresh sentinel must be
+-- re-appended below the last task.
+
+T["demote then delete: removing the demoted line restores the sentinel"] = function()
+  local child, src_path = spawn_child_with_dashboard("- [ ] Walk dog #task")
+
+  -- Demote the sentinel by typing into it.
+  child.api.nvim_win_set_cursor(0, { SENTINEL_ROW + 1, 0 })
+  child.type_keys("i", "test", "<Esc>")
+  vim.loop.sleep(250)
+  eq(child_line(child, SENTINEL_ROW), "test") -- demoted: content persisted
+
+  -- Delete the demoted line; the dashboard is back at EOF.
+  child.type_keys("dd")
+  vim.loop.sleep(250)
+
+  -- A fresh empty sentinel is restored below the task.
+  eq(child_line_count(child), 5) -- fence(3) + task(1) + sentinel(1)
+  eq(child_line(child, SENTINEL_ROW), "")
+  eq(child_line(child, TASK_ROW):find("Walk dog") ~= nil, true)
 
   child.stop()
   pcall(vim.fn.delete, src_path)

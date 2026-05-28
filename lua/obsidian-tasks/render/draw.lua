@@ -334,10 +334,16 @@ function M.draw(bufnr, fence_range, layout_lines)
       task_index = task_index + 1
     elseif kind == "footer" then
       -- Flush any remaining pending_virt before the footer row.
-      -- With zero tasks the anchor falls back to fence_last (the closing ```),
-      -- so virt_lines_above=false renders the footer AFTER the fence rather than
-      -- inside it (between the opening ``` and the query body).
-      local anchor = last_task_lnum or fence_last
+      -- Anchor ABOVE the row that follows the last managed row (the EOF sentinel,
+      -- or the pre-existing next line otherwise) via virt_lines_above=true.  That
+      -- row always exists by now — the sentinel block above appended one whenever
+      -- the last managed row was the buffer's last line.  Anchoring above the
+      -- trailing line (rather than below the last task) (a) keeps the footer
+      -- visible when the fence is folded — for zero results the old fence_last
+      -- anchor sat INSIDE the fold and vanished when closed — and (b) makes `o`
+      -- on the last task open the new line ABOVE the footer (the footer's
+      -- right-gravity extmark shifts down with the inserted line).
+      local anchor = (last_task_lnum or fence_last) + 1
       local virts = {}
       for _, pv in ipairs(pending_virt) do
         virts[#virts + 1] = pv
@@ -347,18 +353,19 @@ function M.draw(bufnr, fence_range, layout_lines)
 
       local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, anchor, 0, {
         virt_lines = virts,
-        virt_lines_above = false,
+        virt_lines_above = true,
       })
       all_eids[#all_eids + 1] = eid
     end
   end
 
   -- Flush any leftover pending_virt (e.g., errors with no following task).
+  -- Same above-the-trailing-line anchoring as the footer (see above).
   if #pending_virt > 0 then
-    local anchor = last_task_lnum or fence_last
+    local anchor = (last_task_lnum or fence_last) + 1
     local eid = vim.api.nvim_buf_set_extmark(bufnr, NS, anchor, 0, {
       virt_lines = pending_virt,
-      virt_lines_above = false,
+      virt_lines_above = true,
     })
     all_eids[#all_eids + 1] = eid
   end

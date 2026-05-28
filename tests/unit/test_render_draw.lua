@@ -221,28 +221,32 @@ T["draw: buffer unchanged when layout has no task lines"] = function()
   draw_mod.clear(bufnr)
 end
 
-T["draw: zero-task footer anchors at fence_last, not inside the fence"] = function()
+T["draw: zero-task footer anchors below the closing fence, not inside it"] = function()
   -- Buffer has prose after the fence so this dashboard does NOT end at EOF
-  -- (keeps the assertion stable once the EOF sentinel lands).
+  -- (keeps the assertion stable; no sentinel is appended).
   local bufnr = make_buf({ "```tasks", "not done", "```", "after the fence" })
   local layout = {
     { kind = "footer", text = "─ 0 results ─" },
   }
   draw_mod.draw(bufnr, fence(0, 2), layout)
 
-  -- The footer virt_line must anchor on the closing fence (row 2 = fence_last)
-  -- so it renders AFTER ``` rather than inside the fence at row 0 (fence_first).
-  local footer_row = nil
+  -- The footer anchors ABOVE the line after the closing fence (row 3) with
+  -- virt_lines_above=true, so it renders AFTER ``` and — unlike the old
+  -- fence_last anchor, which sat inside the fence fold and vanished when the
+  -- fold closed — stays visible while the fence is folded.
+  local footer_row, footer_above = nil, nil
   for _, em in ipairs(virt_line_ems(bufnr)) do
     for _, row in ipairs(em[4].virt_lines) do
       for _, chunk in ipairs(row) do
         if type(chunk[1]) == "string" and chunk[1]:find("0 results", 1, true) then
           footer_row = em[2]
+          footer_above = em[4].virt_lines_above
         end
       end
     end
   end
-  eq(footer_row, 2)
+  eq(footer_row, 3)
+  eq(footer_above, true)
   draw_mod.clear(bufnr)
 end
 
