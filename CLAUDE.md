@@ -3,7 +3,7 @@
 ## Project
 
 Neovim plugin (Lua), v1 in development. Port of the obsidian-tasks desktop plugin.
-No vimdoc, no docs site for v1.
+Vimdoc lives at `doc/obsidian-tasks.txt` (`:help obsidian-tasks`). No docs site for v1.
 
 ## Hard dependencies
 

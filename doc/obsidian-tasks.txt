@@ -1,0 +1,483 @@
+*obsidian-tasks.txt*    Render, filter, and edit Obsidian tasks in Neovim
+
+==============================================================================
+CONTENTS                                              *obsidian-tasks-contents*
+
+  1. Introduction ............................ |obsidian-tasks-introduction|
+  2. Requirements ............................ |obsidian-tasks-requirements|
+  3. Setup ................................... |obsidian-tasks-setup|
+  4. Configuration ........................... |obsidian-tasks-config|
+  5. Commands ................................ |obsidian-tasks-commands|
+  6. Keymaps ................................. |obsidian-tasks-keymaps|
+  7. Rendering ............................... |obsidian-tasks-rendering|
+  8. Query language .......................... |obsidian-tasks-query|
+  9. blink.cmp ............................... |obsidian-tasks-cmp|
+ 10. Highlights .............................. |obsidian-tasks-highlights|
+ 11. Limitations ............................. |obsidian-tasks-limitations|
+
+==============================================================================
+1. INTRODUCTION                                   *obsidian-tasks-introduction*
+
+obsidian-tasks.nvim is a Neovim port of the obsidian-tasks Obsidian plugin.
+It parses task lines across an Obsidian vault, renders the results of
+`tasks` query blocks as real buffer text, and lets you mutate tasks (status,
+priority, dates, tags, …) in place from any markdown buffer in the vault.
+
+Vault format is portable with the upstream desktop plugin: emoji fields
+(📅 ⏳ 🛫 ✅ ❌ ➕ ⏫ 🔁 🆔 ⛔ 🏁) and Dataview inline fields are both
+recognised, query syntax matches upstream, and path-based filters resolve
+against vault-relative paths.
+
+==============================================================================
+2. REQUIREMENTS                                   *obsidian-tasks-requirements*
+
+- Neovim >= 0.10
+- obsidian.nvim    (https://github.com/obsidian-nvim/obsidian.nvim)
+- blink.cmp        (https://github.com/saghen/blink.cmp)
+
+==============================================================================
+3. SETUP                                                 *obsidian-tasks-setup*
+
+Call `setup()` once during startup. All options have sensible defaults.
+>lua
+    require("obsidian-tasks").setup({})
+<
+With lazy.nvim:
+>lua
+    {
+      "snapwich/obsidian-tasks.nvim",
+      dependencies = {
+        "obsidian-nvim/obsidian.nvim",
+        "saghen/blink.cmp",
+      },
+      config = function()
+        require("obsidian-tasks").setup({})
+      end,
+    }
+<
+                                                  *obsidian-tasks.setup()*
+require("obsidian-tasks").setup({opts})
+    Bootstrap the plugin. {opts} is an optional table; see
+    |obsidian-tasks-config| for the full schema. Safe to call multiple times.
+
+==============================================================================
+4. CONFIGURATION                                        *obsidian-tasks-config*
+
+Full opts schema with defaults:
+>lua
+    require("obsidian-tasks").setup({
+      global_filter = nil,
+      auto_render = true,
+      default_folded = true,
+      setup_keymaps = true,
+      done_date_format = "%Y-%m-%d",
+      done_date_tz = "local",
+      capture_file = nil,
+      statuses = nil,
+      hide_query_metadata = false,
+      linger_on_filter_exit = true,
+      linger_hl_group = "ObsidianTasksLinger",
+      dim_completed_tasks = true,
+      blink_cmp = { enabled = true },
+      date_input = {
+        natural_language = true,
+        suggestions = {
+          "today", "tomorrow", "next monday", "next week", "in 3 days",
+        },
+      },
+      log_level = "info",
+      max_file_bytes = 1048576,
+      use_filename_as_scheduled_date = false,
+    })
+<
+                                            *obsidian-tasks-config-options*
+
+global_filter                                          string | nil  (nil)
+    Only parse/render tasks whose description contains this string.
+
+auto_render                                            boolean  (true)
+    Render task extmarks when a vault markdown buffer is opened.
+
+default_folded                                         boolean  (true)
+    Fold each ```tasks block by default on dashboard open. Foldtext shows
+    a query summary and result count.
+
+setup_keymaps                                          boolean  (true)
+    Install buffer-local leader keymaps on every vault markdown buffer
+    (see |obsidian-tasks-keymaps|). Set false to wire your own.
+
+done_date_format                                       string  ("%Y-%m-%d")
+    `strftime` pattern used when stamping the done date (✅) on completion.
+    Must contain `%`.
+
+done_date_tz                                           "local" | "utc"  ("local")
+    Timezone for the done date stamp. "utc" prepends "!" to the format.
+
+capture_file                                           string | nil  (nil)
+    Default file for `:ObsidianTask new` when no heading context is found.
+    Absolute or vault-relative path.
+
+statuses                                               table | nil  (nil)
+    Override the default status cycle (Todo → InProgress → Done →
+    Cancelled → OnHold). Each entry:
+        { char = "x", name = "Done", next = "todo" }
+
+hide_query_metadata                                    boolean  (false)
+    Hide `tasks:` / `filter:` metadata lines in rendered query blocks.
+
+linger_on_filter_exit                                  boolean  (true)
+    When a mutation drops a task from the live filter (e.g. completing a
+    task in a `not done` query), keep the row visible but dimmed.
+    Cleared by |:ObsidianTask| `refresh`, `<leader>tr`, buffer reload, or
+    when the task re-enters the filter. Set false for upstream parity
+    (immediate vanish).
+
+linger_hl_group                                        string  ("ObsidianTasksLinger")
+    Highlight group applied to lingered rows. Linked to `Comment` by
+    default.
+
+dim_completed_tasks                                    boolean  (true)
+    Sink live Done/Cancelled tasks to the bottom of each group and dim
+    them. User sort order is preserved within each tier.
+
+blink_cmp.enabled                                      boolean  (true)
+    Enable the blink.cmp source. See |obsidian-tasks-cmp|.
+
+date_input.natural_language                            boolean  (true)
+    Parse natural-language date input ("next monday", "in 3 days") in
+    the cmp source and in mutation prompts.
+
+date_input.suggestions                                 string[]
+    Suggestion phrases shown in the date-field dropdown.
+
+log_level                                              string  ("info")
+    "debug" | "info" | "warn" | "error".
+
+max_file_bytes                                         integer  (1048576)
+    Files larger than this are skipped by the vault scanner.
+
+use_filename_as_scheduled_date                         boolean  (false)
+    Tasks in files whose basename contains `YYYY-MM-DD` inherit that as
+    their scheduled date when none is set. Mirrors upstream's
+    `useFilenameAsScheduledDate`.
+
+==============================================================================
+5. COMMANDS                                           *obsidian-tasks-commands*
+
+All commands are subcommands of `:ObsidianTask`.
+
+                                                          *:ObsidianTask*
+:ObsidianTask {subcommand} [args]
+    Dispatcher for all task operations. Tab-completes subcommands.
+
+Task mutation:                                  *obsidian-tasks-commands-mutate*
+    toggle                Cycle the status of the task under the cursor
+    done                  Mark task done, stamp done date. Honors `🏁 delete`
+    cancel                Mark task cancelled
+    inProgress            Set status to In Progress (`[/]`)
+    onHold                Set status to On Hold (`[h]`)
+    due [DATE]            Set / edit the due date (📅)
+    scheduled [DATE]      Set / edit the scheduled date (⏳)
+    start [DATE]          Set / edit the start date (🛫)
+    priority              Cycle / set priority
+    recurrence            Set the recurrence pattern (🔁)
+    tags                  Edit the task's tags
+    postpone [N]          Bump primary date by N days (default +1).
+                          Priority: due > scheduled > start
+    id [VAL]              Generate (or set) a 6-char base36 task id
+    new                   Create a new task (appends to `capture_file` or
+                          current file)
+
+Buffer:                                         *obsidian-tasks-commands-buffer*
+    refresh               Clear and re-render all query blocks in the
+                          current buffer; also clears lingered rows
+    render                Render query blocks (use with `auto_render = false`)
+    goto                  Jump to the source line of a rendered task
+
+==============================================================================
+6. KEYMAPS                                             *obsidian-tasks-keymaps*
+
+Installed when `setup_keymaps = true` (the default). Set false to opt out.
+
+Universal task keymaps ~
+
+Installed on every markdown buffer in a vault workspace. The handlers
+resolve the task under the cursor either way (managed extmark first,
+then a source-line parse).
+
+    <leader>tt    Toggle done / not-done
+    <leader>te    Edit task description (vim.ui.input prompt)
+    <leader>tp    Cycle priority (none → highest → … → lowest → none)
+    <leader>td    Set / edit due date (YYYY-MM-DD prompt)
+    <leader>tT    Edit tags (comma-separated prompt)
+    <leader>tg    Jump to source from anywhere on a task row
+    <leader>tD    Delete task (confirm prompt; removes source line)
+
+Dashboard-only keymaps ~
+
+Installed only on rendered dashboard buffers (first draw):
+
+    <leader>tr    Force re-render all query regions in this buffer
+    u             Undo last dashboard edit (plugin ring → native)
+    <C-r>         Redo last dashboard edit (plugin ring → native)
+
+Note: <CR> / gf are NOT overridden. Press <CR> with the cursor on the
+trailing `[[wikilink]]` of a rendered task — obsidian.nvim's
+`smart_action` follows it. Use `<leader>tg` to jump from any column.
+
+==============================================================================
+7. RENDERING                                         *obsidian-tasks-rendering*
+
+Dashboard files contain ```tasks query blocks. When such a buffer is
+opened, matching tasks are inserted as real buffer text below each fence
+and wrapped in a manual fold so the dashboard stays compact.
+
+Default-folded layout ~
+
+With `default_folded = true`, every query block opens with its fence
+lines collapsed into a one-line summary; rendered task lines remain
+visible below.
+>
+    📋 not done  (3)
+    - [ ] Task A 📅 2026-05-12 [[note-a]]
+    - [ ] Task B 📅 2026-05-13 [[note-b]]
+    - [ ] Task C 📅 2026-05-14 [[note-c]]
+<
+Fold keys:
+    i            Open fold and enter insert mode on query
+    zo / zO      Open fold (stay in normal mode)
+    zc           Close fold
+    zR           Open all folds in the buffer
+    zM           Close all folds in the buffer
+
+Editing rendered tasks in place ~
+
+Rendered task lines below the fence are managed by the plugin but you
+can edit them directly:
+
+- Insert-mode edits — change description or a field value while in
+  insert mode; on `InsertLeave` the edit is flushed to the source file.
+  Natural-language date values (e.g. `📅 next monday`) are normalized to
+  ISO dates during the flush.
+- Inserting a task — add a new line inside a rendered region to create
+  a new task; group-by attributes for the region are auto-added.
+- Deleting a task — delete a rendered row to remove the corresponding
+  task line from the source file.
+- Status character — in normal mode, typing a configured status symbol
+  over the character between `[` and `]` commits the change (same end
+  state as `<leader>tt`). The symbol must be in your configured
+  `statuses` set; unknown chars revert.
+
+Edits the plugin can't classify are reverted on the next event-loop
+tick. The rendered region snaps back to its canonical state.
+
+Save semantics (BufWriteCmd) ~
+
+Saving a dashboard buffer (`:w`) writes only the source content — query
+blocks and prose — to disk. Rendered task lines are never written.
+Reopening the file produces the same visual state.
+
+==============================================================================
+8. QUERY LANGUAGE                                        *obsidian-tasks-query*
+
+Query blocks live inside a fenced ```tasks block in any markdown file.
+The query language is portable with upstream obsidian-tasks: the same
+block parses identically in Neovim and in the Obsidian desktop plugin.
+
+Each non-blank, non-`#`-comment line is one of:
+
+  - a filter expression (leaf or boolean combination)
+  - `sort by [reverse] <key>`
+  - `group by [reverse] <key>`
+  - `limit <N>`
+  - `hide <subkey>`
+  - `explain`
+
+                                                      *obsidian-tasks-query-bool*
+Boolean operators ~
+
+Bare-infix `AND`, `OR`, `NOT`, case-insensitive. Operands need not be
+parenthesised. Chains are left-associative:
+>
+    not done AND priority is high
+    (due before 2026-06-01) OR (status.name is InProgress)
+    NOT (tag includes #archive)
+<
+                                                    *obsidian-tasks-query-filters*
+Filters ~
+
+Status:
+    done                                   not done
+    status.name is <name>                  status.type is <TYPE>
+    is recurring                           is not recurring
+
+Priority:
+    priority is <level>                    priority above <level>
+    priority below <level>                 priority not is <level>
+
+    <level> ∈ none, lowest, low, medium, high, highest
+
+Dates (field ∈ due, scheduled, start, done, cancelled, created, happens):
+    has <field> date                       no <field> date
+    <field> date is invalid
+    <field> before <date>                  <field> after <date>
+    <field> on <date>                      <field> in <date>
+    <field> on or before <date>            <field> on or after <date>
+
+  <date> accepts ISO `YYYY-MM-DD` or natural language ("today",
+  "tomorrow", "next monday", "in 3 days").
+
+  Two-date range:
+      due in 2026-01-01 2026-02-01
+
+  Period shortcuts (also work as a bare `<field> <period>` form,
+  implicitly meaning `in`):
+      due 2026                  (year)
+      due 2026-03               (month)
+      due 2026-Q1               (quarter)
+      due 2026-W09              (ISO week)
+
+Text fields (path, folder, root, backlink, filename, description,
+heading, recurrence, id):
+    <field> includes <val>                 <field> does not include <val>
+    <field> regex matches <pat>            <field> regex does not match <pat>
+
+  `path` / `folder` / `root` match against the **vault-relative** path.
+
+Tags:
+    has tag                                no tag
+    tag includes <val>                     tag does not include <val>
+    (plural forms `tags include` / `tags do not include` also accepted)
+
+Dependencies:
+    id is <X>                              depends on <X>
+    is blocking                            is not blocking
+    is blocked                             is not blocked
+
+Misc:
+    exclude sub-items
+    urgency above <N>                      urgency below <N>
+    random
+
+                                                    *obsidian-tasks-query-sort*
+sort by ~
+
+    sort by <key>                          sort by reverse <key>
+
+Sort keys: status, priority, due, scheduled, start, done, created,
+cancelled, happens, path, folder, root, backlink, description, heading,
+filename, tags, urgency, recurrence, recurring, id, blocking, random.
+
+Multiple `sort by` lines stack (primary, secondary, …).
+
+                                                   *obsidian-tasks-query-group*
+group by ~
+
+    group by <key>                         group by reverse <key>
+
+Group keys are the sort keys minus `description` and `blocking`.
+Multiple `group by` lines nest.
+
+                                                   *obsidian-tasks-query-limit*
+limit ~
+
+    limit <N>
+
+Caps the result list at N tasks per group (and N total when no group
+is set).
+
+                                                    *obsidian-tasks-query-hide*
+hide ~
+
+    hide <subkey>
+
+Recognised subkeys: priority, due date, scheduled date, start date,
+done date, created date, cancelled date, recurrence rule, on completion,
+tags, id, depends on, backlinks, task count, tree, edit button,
+postpone button.
+
+                                                 *obsidian-tasks-query-explain*
+explain ~
+
+The literal keyword `explain` prepends a human-readable summary of the
+parsed query to the rendered result. Useful for debugging.
+
+Example query block:
+>
+    ```tasks
+    not done
+    (due before 2026-06-01) OR priority is high
+    tag includes #work
+    sort by priority
+    sort by due
+    group by folder
+    limit 20
+    hide backlinks
+    explain
+    ```
+<
+                                              *obsidian-tasks-query-unsupported*
+Unsupported ~
+
+- `filter by function ...` (JS expression filters) emits a structured
+  `unsupported` error in the result. Use the declarative filters above.
+
+==============================================================================
+9. BLINK.CMP                                               *obsidian-tasks-cmp*
+
+obsidian-tasks ships a blink.cmp source providing field-icon completion,
+per-field value suggestions (dates, recurrence patterns, …), and
+natural-language date parsing on task lines.
+
+Register the source:
+>lua
+    require("blink.cmp").setup({
+      sources = {
+        default = { "lsp", "path", "snippets", "buffer", "obsidian-tasks" },
+        providers = {
+          ["obsidian-tasks"] = {
+            module = "obsidian-tasks.cmp.source",
+            name = "ObsidianTasks",
+          },
+        },
+      },
+    })
+<
+The source activates automatically on task lines (`- [ ] …`) inside
+vault buffers. Disable without unregistering by setting
+`blink_cmp = { enabled = false }` in `setup()`.
+
+==============================================================================
+10. HIGHLIGHTS                                       *obsidian-tasks-highlights*
+
+Default highlight groups (all defined with `default = true` — user
+colorschemes win):
+
+    ObsidianTasksLinger          Lingered/dimmed rows (link: Comment)
+    ObsidianTasksFieldInvalid    Invalid field value
+                                   (link: DiagnosticUnderlineError)
+    ObsidianTasksGroupHeader     Group-by section header
+                                   (H2 fg dimmed toward background, bold)
+
+Override in your colorscheme or after `setup()`:
+>lua
+    vim.api.nvim_set_hl(0, "ObsidianTasksLinger",
+      { fg = "#666666", italic = true })
+<
+==============================================================================
+11. LIMITATIONS                                     *obsidian-tasks-limitations*
+
+v1 limitations:
+
+- Recurrence (🔁) is parsed and preserved as opaque text;
+  `next_occurrence` computation is a v2 feature and raises an error if
+  called directly.
+- Natural-language date phrases are English-only.
+- External vault edits are re-indexed automatically when Neovim regains
+  focus, but only for files already in the index. Files created
+  externally while Neovim is running are not picked up until opened or
+  until a full `:ObsidianTask refresh`.
+- `filter by function` (JS expression filters) is not supported.
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:
