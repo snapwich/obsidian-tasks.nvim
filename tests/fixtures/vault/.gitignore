@@ -1,0 +1,3 @@
+# Scratch notes written by integration_real tests (see test_focus_reindex.lua et al).
+# Tests clean these up on completion; an interrupted run can leave them behind.
+qa_*.md
