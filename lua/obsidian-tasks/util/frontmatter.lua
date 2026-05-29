@@ -92,41 +92,43 @@ function M.parse(lines)
   for _, raw in ipairs(lines) do
     local line = raw:gsub("\r$", "")
     local trimmed = trim(line)
-    if trimmed == "" or trimmed:sub(1, 1) == "#" then
-      -- Blank or comment line: ignore. A blank does not terminate a YAML block,
-      -- so current_key is preserved.
-    elseif current_key and trimmed:match("^%-%s+") then
-      -- Block list item (any indent), belonging to current_key.
-      if type(result[current_key]) ~= "table" then
-        result[current_key] = {}
-      end
-      local v = parse_scalar(trimmed:match("^%-%s+(.*)$"))
-      if v ~= nil then
-        local t = result[current_key]
-        t[#t + 1] = v
-      end
-    else
-      local indent = #(line:match("^(%s*)"))
-      if indent == 0 then
-        local key, rest = line:match("^([%w%-_%.]+):%s*(.*)$")
-        if key then
-          if trim(rest) == "" then
-            current_key = key -- block follows; container made lazily by children
+    -- Skip blank and comment lines. A blank does not terminate a YAML block, so
+    -- current_key is preserved across them.
+    local skippable = trimmed == "" or trimmed:sub(1, 1) == "#"
+    if not skippable then
+      if current_key and trimmed:match("^%-%s+") then
+        -- Block list item (any indent), belonging to current_key.
+        if type(result[current_key]) ~= "table" then
+          result[current_key] = {}
+        end
+        local v = parse_scalar(trimmed:match("^%-%s+(.*)$"))
+        if v ~= nil then
+          local t = result[current_key]
+          t[#t + 1] = v
+        end
+      else
+        local indent = #(line:match("^(%s*)"))
+        if indent == 0 then
+          local key, rest = line:match("^([%w%-_%.]+):%s*(.*)$")
+          if key then
+            if trim(rest) == "" then
+              current_key = key -- block follows; container made lazily by children
+            else
+              result[key] = parse_value(rest)
+              current_key = nil
+            end
           else
-            result[key] = parse_value(rest)
             current_key = nil
           end
-        else
-          current_key = nil
-        end
-      elseif current_key then
-        -- Indented, not a list item → nested map entry under current_key.
-        local subkey, subrest = line:match("^%s*([%w%-_%.]+):%s*(.*)$")
-        if subkey then
-          if type(result[current_key]) ~= "table" then
-            result[current_key] = {}
+        elseif current_key then
+          -- Indented, not a list item → nested map entry under current_key.
+          local subkey, subrest = line:match("^%s*([%w%-_%.]+):%s*(.*)$")
+          if subkey then
+            if type(result[current_key]) ~= "table" then
+              result[current_key] = {}
+            end
+            result[current_key][subkey] = parse_value(subrest)
           end
-          result[current_key][subkey] = parse_value(subrest)
         end
       end
     end
