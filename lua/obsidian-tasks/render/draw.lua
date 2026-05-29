@@ -328,6 +328,7 @@ function M.draw(bufnr, fence_range, layout_lines)
         task_text = ll.source_text or strip_wikilink(ll.text, ll.wikilink_target),
         rendered_text = ll.text,
         wikilink_target = ll.wikilink_target,
+        linger = ll.linger or nil,
       })
 
       last_task_lnum = task_lnum

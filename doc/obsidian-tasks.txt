@@ -201,6 +201,12 @@ Buffer:                                         *obsidian-tasks-commands-buffer*
                           current buffer; also clears lingered rows
     render                Render query blocks (use with `auto_render = false`)
     goto                  Jump to the source line of a rendered task
+    quickfix              Build a quickfix list from the rendered task block
+                          under the cursor (its live tasks only; lingered /
+                          fading rows are excluded). Opens the quickfix
+                          window without leaving the dashboard. No-op when
+                          the cursor is not in a task block or the block has
+                          no tasks.
 
 ==============================================================================
 6. KEYMAPS                                             *obsidian-tasks-keymaps*
@@ -226,6 +232,7 @@ Dashboard-only keymaps ~
 Installed only on rendered dashboard buffers (first draw):
 
     <leader>tr    Force re-render all query regions in this buffer
+    <leader>tq    Build a quickfix list from the task block under the cursor
     u             Undo last dashboard edit (plugin ring → native)
     <C-r>         Redo last dashboard edit (plugin ring → native)
 

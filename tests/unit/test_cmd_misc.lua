@@ -913,7 +913,7 @@ end
 -- Dispatcher: all 15 subcommands route correctly (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["dispatcher: all 17 subcommands route without 'unknown' error"] = function()
+T["dispatcher: all 18 subcommands route without 'unknown' error"] = function()
   local cmd = require("obsidian-tasks.cmd")
 
   local subcmds = {
@@ -934,6 +934,7 @@ T["dispatcher: all 17 subcommands route without 'unknown' error"] = function()
     "render",
     "new",
     "goto",
+    "quickfix",
   }
 
   for _, name in ipairs(subcmds) do
@@ -1013,7 +1014,7 @@ end
 -- Tab completion: all 16 subcmds returned (feature verification)
 -- ════════════════════════════════════════════════════════════════════════════
 
-T["completion: all 17 subcommands present in empty-prefix result"] = function()
+T["completion: all 18 subcommands present in empty-prefix result"] = function()
   local cmd = require("obsidian-tasks.cmd")
   local result = cmd._completion("", "ObsidianTask ", 13)
 
@@ -1035,6 +1036,7 @@ T["completion: all 17 subcommands present in empty-prefix result"] = function()
     "render",
     "new",
     "goto",
+    "quickfix",
   }
 
   MiniTest.expect.equality(#result, #expected)

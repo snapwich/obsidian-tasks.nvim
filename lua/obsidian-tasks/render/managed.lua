@@ -213,6 +213,35 @@ function M.region_for_row(bufnr, row)
   return nil
 end
 
+--- Return the per-task meta entries whose extmarks fall within the inclusive
+--- 0-indexed row range start_row..end_row, in buffer-position order.
+---
+--- The managed namespace is shared by region, fence, and per-task extmarks, so
+--- this filters the enumerated ids down to those present in _task_meta[bufnr]
+--- (region/fence marks are excluded).  Returns the meta tables themselves (the
+--- _task_meta entries), not copies.  Empty table if the buffer has no tasks.
+---
+--- @param bufnr     integer
+--- @param start_row integer  0-indexed inclusive
+--- @param end_row   integer  0-indexed inclusive
+--- @return table[]  list of meta tables in buffer-position order
+function M.tasks_in_range(bufnr, start_row, end_row)
+  if not _task_meta[bufnr] then
+    return {}
+  end
+  local ns = M.namespace()
+  local ems = vim.api.nvim_buf_get_extmarks(bufnr, ns, { start_row, 0 }, { end_row, -1 }, {})
+  local metas = {}
+  for _, em in ipairs(ems) do
+    local mark_id = em[1]
+    local meta = _task_meta[bufnr][mark_id]
+    if meta then
+      metas[#metas + 1] = meta
+    end
+  end
+  return metas
+end
+
 --- Delete the bracketing extmark, all per-task extmarks within its range,
 --- and their task_meta entries.
 ---

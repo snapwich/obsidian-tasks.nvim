@@ -37,6 +37,7 @@ local VALID_SUBCMDS = {
   "render",
   "new",
   "goto",
+  "quickfix",
 }
 
 local VALID_SUBCMDS_SET = {}

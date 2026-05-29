@@ -11,6 +11,7 @@
 --     <leader>tg — jump to source (delegates to :ObsidianTask goto)
 --     <leader>tD — delete task (vim.fn.confirm, then remove source line)
 --     <leader>tr — force re-render all regions in this buffer
+--     <leader>tq — build quickfix list from the task block under the cursor
 --
 -- M.detach(bufnr): remove all buffer-local mappings above.
 --
@@ -160,6 +161,23 @@ local function make_jump_handler(_bufnr)
     local cursor = vim.api.nvim_win_get_cursor(0)
     require("obsidian-tasks.cmd").dispatch({
       fargs = { "goto" },
+      line1 = cursor[1],
+      line2 = cursor[1],
+    })
+  end
+end
+
+-- ── Quickfix handler (<leader>tq) ────────────────────────────────────────────
+
+--- Build the `<leader>tq` quickfix handler closed over *bufnr*.
+--- Delegates to `:ObsidianTask quickfix` so the keymap and command stay in sync.
+--- @param _bufnr integer
+--- @return fun()
+local function make_quickfix_handler(_bufnr)
+  return function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    require("obsidian-tasks.cmd").dispatch({
+      fargs = { "quickfix" },
       line1 = cursor[1],
       line2 = cursor[1],
     })
@@ -367,6 +385,7 @@ local UNIVERSAL_LHS = {
 -- only on first draw of a dashboard.
 local DASHBOARD_LEADER_LHS = {
   "<leader>tr",
+  "<leader>tq",
 }
 
 -- Non-leader keymaps installed alongside the dashboard leader set: u / <C-r>
@@ -455,6 +474,7 @@ function M.attach_dashboard(bufnr)
     return
   end
   kmap(bufnr, "<leader>tr", make_refresh_handler(bufnr), "force re-render all regions")
+  kmap(bufnr, "<leader>tq", make_quickfix_handler(bufnr), "build quickfix list from this task block")
   kmap(bufnr, "u", make_undo_handler(bufnr), "undo dashboard edit (plugin ring → native)")
   kmap(bufnr, "<C-r>", make_redo_handler(bufnr), "redo dashboard edit (plugin ring → native)")
 end
