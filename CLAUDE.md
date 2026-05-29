@@ -5,10 +5,21 @@
 Neovim plugin (Lua), v1 in development. Port of the obsidian-tasks desktop plugin.
 Vimdoc lives at `doc/obsidian-tasks.txt` (`:help obsidian-tasks`). No docs site for v1.
 
-## Hard dependencies
+## Dependencies
 
-- **obsidian.nvim** — vault/workspace/frontmatter/file-walker/path APIs
-- **blink.cmp** — field suggestor source
+Hard requirement: **ripgrep** (`rg`) on PATH — the native vault scanner
+(`util/rg.lua` + `util/obsidian.search_async` via `vim.system`) shells out to it.
+No required Neovim-plugin deps. Vault detection is the `.obsidian/` marker walk in
+`util/obsidian.workspace_for_path`; frontmatter is parsed by `util/frontmatter.lua`.
+
+Optional integrations (auto-detected, guarded, never required):
+
+- **obsidian.nvim** — when the `Obsidian` global is set, `task/status.lua`'s
+  `bridge_obsidian_checkbox_order` adopts its `checkbox.order` symbols.
+- **blink.cmp** — `cmp/source.lua` is registered by the user via blink's provider
+  registry; the plugin never `require`s blink.
+
+Run `:checkhealth obsidian-tasks` (`lua/obsidian-tasks/health.lua`) for readiness.
 
 ## Module layout (`lua/obsidian-tasks/`)
 

@@ -10,8 +10,19 @@ Render, filter, and edit tasks across your Obsidian vault — directly in Neovim
 ## Requirements
 
 - Neovim ≥ 0.10
-- [obsidian.nvim](https://github.com/obsidian-nvim/obsidian.nvim)
-- [blink.cmp](https://github.com/saghen/blink.cmp)
+- [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) on your `PATH` — used to scan the vault
+
+That's it: obsidian-tasks has **no required Neovim-plugin dependencies**. It detects
+your vault by walking up to the nearest `.obsidian/` directory and scans it with
+ripgrep directly. Run `:checkhealth obsidian-tasks` to confirm your setup.
+
+### Optional integrations
+
+- [obsidian.nvim](https://github.com/obsidian-nvim/obsidian.nvim) — when present, its
+  checkbox-symbol cycle (`Obsidian.opts.checkbox.order`) is bridged so symbols it cycles
+  through are accepted as valid statuses rather than reverted.
+- [blink.cmp](https://github.com/saghen/blink.cmp) — enables task-field completion (see
+  [blink.cmp Registration](#blinkcmp-registration-optional)).
 
 ## Installation
 
@@ -20,15 +31,15 @@ Render, filter, and edit tasks across your Obsidian vault — directly in Neovim
 ```lua
 {
   "snapwich/obsidian-tasks.nvim",
-  dependencies = {
-    "obsidian-nvim/obsidian.nvim",
-    "saghen/blink.cmp",
-  },
   config = function()
     require("obsidian-tasks").setup({})
   end,
 }
 ```
+
+ripgrep is a system requirement, not a plugin — install it via your package manager
+(`brew install ripgrep`, `apt install ripgrep`, …). Add `obsidian.nvim` / `blink.cmp`
+to `dependencies` only if you want those optional integrations.
 
 ## Setup
 
@@ -245,11 +256,12 @@ Installed only on rendered dashboard buffers (first draw):
 | `u`          | Undo last dashboard edit (plugin ring → native)  |
 | `<C-r>`      | Redo last dashboard edit (plugin ring → native)  |
 
-**Note on `<CR>` and `gf`:** the plugin does _not_ override these. obsidian.nvim's
-ftplugin re-registers its `smart_action` `<CR>` after each render, racing any
-buffer-local handler we'd install. Press `<CR>` with the cursor on the trailing
-`[[wikilink]]` of a rendered task — obsidian.nvim will follow it — or use
-`<leader>tg` to jump from any column on the row.
+**Note on `<CR>` and `gf`:** the plugin does _not_ override these. When obsidian.nvim
+is installed, its ftplugin re-registers its `smart_action` `<CR>` after each render,
+racing any buffer-local handler we'd install — press `<CR>` with the cursor on the
+trailing `[[wikilink]]` of a rendered task and obsidian.nvim will follow it. Either way,
+`<leader>tg` jumps to the source from any column on the row. (Without obsidian.nvim,
+`<CR>` / `gf` keep their native behavior.)
 
 ## Commands
 
@@ -273,11 +285,12 @@ buffer-local handler we'd install. Press `<CR>` with the cursor on the trailing
 | `:ObsidianTask render`       | Render query blocks in the current buffer (for `auto_render = false`)       |
 | `:ObsidianTask goto`         | Jump to the source line of a rendered task                                  |
 
-## blink.cmp Registration
+## blink.cmp Registration (optional)
 
-obsidian-tasks ships a [blink.cmp](https://github.com/saghen/blink.cmp) source that provides
-field-icon completions, per-field value suggestions (dates, recurrence patterns, …), and
-natural-language date parsing on every task line.
+obsidian-tasks ships an optional [blink.cmp](https://github.com/saghen/blink.cmp) source that
+provides field-icon completions, per-field value suggestions (dates, recurrence patterns, …),
+and natural-language date parsing on every task line. It is only active if you install
+blink.cmp and register the source; the plugin never requires it.
 
 Register the source in your blink.cmp config:
 
@@ -295,8 +308,9 @@ require("blink.cmp").setup({
 })
 ```
 
-The source activates automatically on task lines (`- [ ] …`) inside obsidian.nvim vault
-buffers. No additional configuration is required beyond `require("obsidian-tasks").setup({})`.
+The source activates automatically on task lines (`- [ ] …`) inside any Obsidian vault
+(a folder containing a `.obsidian/` directory). No additional configuration is required
+beyond `require("obsidian-tasks").setup({})`.
 
 To disable the source without removing it from blink, set `blink_cmp = { enabled = false }` in
 your `setup()` call.

@@ -32,8 +32,18 @@ against vault-relative paths.
 2. REQUIREMENTS                                   *obsidian-tasks-requirements*
 
 - Neovim >= 0.10
-- obsidian.nvim    (https://github.com/obsidian-nvim/obsidian.nvim)
-- blink.cmp        (https://github.com/saghen/blink.cmp)
+- ripgrep (`rg`) on PATH  (https://github.com/BurntSushi/ripgrep)
+
+obsidian-tasks has NO required Neovim-plugin dependencies. The vault is
+detected by walking up to the nearest `.obsidian/` directory, and scanned
+with ripgrep directly. Run `:checkhealth obsidian-tasks` to verify.
+
+Optional integrations (auto-detected, never required):
+- obsidian.nvim  (https://github.com/obsidian-nvim/obsidian.nvim)
+    When loaded, its checkbox-symbol cycle (Obsidian.opts.checkbox.order)
+    is bridged so those symbols are accepted as valid statuses.
+- blink.cmp      (https://github.com/saghen/blink.cmp)
+    Enables task-field completion; see |obsidian-tasks-cmp|.
 
 ==============================================================================
 3. SETUP                                                 *obsidian-tasks-setup*
@@ -42,14 +52,12 @@ Call `setup()` once during startup. All options have sensible defaults.
 >lua
     require("obsidian-tasks").setup({})
 <
-With lazy.nvim:
+With lazy.nvim (ripgrep is a system requirement, not a plugin; add
+obsidian.nvim / blink.cmp to `dependencies` only for those optional
+integrations):
 >lua
     {
       "snapwich/obsidian-tasks.nvim",
-      dependencies = {
-        "obsidian-nvim/obsidian.nvim",
-        "saghen/blink.cmp",
-      },
       config = function()
         require("obsidian-tasks").setup({})
       end,
@@ -423,11 +431,12 @@ Unsupported ~
   `unsupported` error in the result. Use the declarative filters above.
 
 ==============================================================================
-9. BLINK.CMP                                               *obsidian-tasks-cmp*
+9. BLINK.CMP (optional)                                    *obsidian-tasks-cmp*
 
-obsidian-tasks ships a blink.cmp source providing field-icon completion,
-per-field value suggestions (dates, recurrence patterns, …), and
-natural-language date parsing on task lines.
+obsidian-tasks ships an OPTIONAL blink.cmp source providing field-icon
+completion, per-field value suggestions (dates, recurrence patterns, …), and
+natural-language date parsing on task lines. It is inert unless you install
+blink.cmp and register the source below; the plugin never requires blink.cmp.
 
 Register the source:
 >lua
@@ -443,9 +452,9 @@ Register the source:
       },
     })
 <
-The source activates automatically on task lines (`- [ ] …`) inside
-vault buffers. Disable without unregistering by setting
-`blink_cmp = { enabled = false }` in `setup()`.
+The source activates automatically on task lines (`- [ ] …`) inside any
+Obsidian vault (a folder containing a `.obsidian/` directory). Disable without
+unregistering by setting `blink_cmp = { enabled = false }` in `setup()`.
 
 ==============================================================================
 10. HIGHLIGHTS                                       *obsidian-tasks-highlights*
