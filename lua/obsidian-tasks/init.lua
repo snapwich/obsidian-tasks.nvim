@@ -77,10 +77,12 @@ function M.setup(opts)
   -- Merge user status overrides so toggle/done/cancel respect custom statuses.
   local status_mod = require("obsidian-tasks.task.status")
   status_mod.merge(M.opts.statuses)
-  -- Bridge obsidian.nvim's checkbox.order so symbols it cycles through (e.g.
+  -- Optional obsidian.nvim integration (the plugin does not require it):
+  -- bridge obsidian.nvim's checkbox.order so symbols it cycles through (e.g.
   -- ~, !, > in the default { " ", "~", "!", ">", "x" }) are accepted by our
   -- status-edit detector instead of getting reverted as foreign edits.
-  -- If obsidian.nvim sets up AFTER us, we re-bridge on its workspace event.
+  -- No-ops when obsidian.nvim is absent. If it sets up AFTER us, we re-bridge
+  -- on its workspace event.
   status_mod.bridge_obsidian_checkbox_order()
   vim.api.nvim_create_autocmd("User", {
     pattern = "ObsidianWorkpspaceSet", -- typo intentional (matches obsidian.nvim)
