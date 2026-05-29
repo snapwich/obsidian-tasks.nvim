@@ -64,7 +64,7 @@ T["dashboard :w does not silently clobber externally-appended content"] = functi
     vim.cmd("noswapfile edit " .. vim.fn.fnameescape(dash_path))
     local dash_buf = vim.api.nvim_get_current_buf()
     opened_bufs[#opened_bufs + 1] = dash_buf
-    render.render_buffer(dash_buf, Obsidian.workspace)
+    render.render_buffer(dash_buf, require("fixture_ws")())
 
     -- External writer appends to the dashboard file, then bumps the mtime
     -- forward so the on-disk timestamp is strictly newer than the buffer's

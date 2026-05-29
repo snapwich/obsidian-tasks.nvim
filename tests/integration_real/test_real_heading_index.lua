@@ -16,7 +16,7 @@ T["refresh_all: real vault walk records task.heading"] = function()
   idx._reset()
 
   local done = false
-  idx.refresh_all(Obsidian.workspace, function()
+  idx.refresh_all(require("fixture_ws")(), function()
     done = true
   end)
   vim.wait(5000, function()

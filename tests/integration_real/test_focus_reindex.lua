@@ -87,7 +87,7 @@ T["FocusGained re-indexes external edits and preserves lingers"] = function()
     local dash_buf = vim.api.nvim_get_current_buf()
     opened_bufs[#opened_bufs + 1] = dash_buf
     vim.bo[dash_buf].filetype = "markdown"
-    render.render_buffer(dash_buf, Obsidian.workspace)
+    render.render_buffer(dash_buf, require("fixture_ws")())
 
     -- Drain any async lazy-init vault walk so it can't race the external edit.
     vim.wait(300, function()

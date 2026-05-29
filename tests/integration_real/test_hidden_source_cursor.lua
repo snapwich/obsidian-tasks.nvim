@@ -82,7 +82,7 @@ T["hidden source buffer cursor survives a dashboard-driven source mutation"] = f
     eq(vim.api.nvim_buf_is_loaded(src_buf), true)
     eq(#vim.fn.win_findbuf(src_buf), 0)
 
-    render.render_buffer(dash_buf, Obsidian.workspace)
+    render.render_buffer(dash_buf, require("fixture_ws")())
 
     local target
     for i, l in ipairs(vim.api.nvim_buf_get_lines(dash_buf, 0, -1, false)) do

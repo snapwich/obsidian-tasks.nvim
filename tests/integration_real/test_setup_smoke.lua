@@ -1,24 +1,16 @@
 -- tests/integration_real/test_setup_smoke.lua
--- Smoke test: both obsidian.nvim and obsidian-tasks loaded for real;
--- the workspace points at our fixture vault; util/obsidian adapter works.
+-- Smoke test: obsidian-tasks loaded for real WITHOUT obsidian.nvim present.
+-- setup() must populate M.opts and the native util/obsidian adapter must detect
+-- the fixture vault from its `.obsidian/` marker alone.
+--
+-- The obsidian.nvim-integration smoke (the `Obsidian` global / workspace) lives
+-- in tests/integration_obsidian/test_obsidian_smoke.lua.
 
 local T = MiniTest.new_set()
 
 local eq = MiniTest.expect.equality
 
 local fixture_vault = vim.fn.fnamemodify("tests/fixtures/vault", ":p"):gsub("/$", "")
-
-T["Obsidian global is set"] = function()
-  eq(type(_G.Obsidian), "table")
-end
-
-T["Obsidian.workspace points at fixture vault"] = function()
-  eq(type(Obsidian.workspace), "table")
-  eq(type(Obsidian.workspace.root), "table") -- obsidian.nvim wraps root in a Path object
-  -- Path objects stringify via tostring(); accept either string or Path.
-  local root_str = tostring(Obsidian.workspace.root)
-  eq(root_str:find(fixture_vault, 1, true) ~= nil, true)
-end
 
 T["obsidian-tasks setup ran (M.opts populated)"] = function()
   local ot = require("obsidian-tasks")

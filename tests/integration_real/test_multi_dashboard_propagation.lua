@@ -90,12 +90,12 @@ T["dashboard B refreshes when dashboard A toggles a shared source task"] = funct
     vim.cmd("noswapfile edit " .. vim.fn.fnameescape(dash_a))
     local buf_a = vim.api.nvim_get_current_buf()
     opened_bufs[#opened_bufs + 1] = buf_a
-    render.render_buffer(buf_a, Obsidian.workspace)
+    render.render_buffer(buf_a, require("fixture_ws")())
 
     vim.cmd("noswapfile split " .. vim.fn.fnameescape(dash_b))
     local buf_b = vim.api.nvim_get_current_buf()
     opened_bufs[#opened_bufs + 1] = buf_b
-    render.render_buffer(buf_b, Obsidian.workspace)
+    render.render_buffer(buf_b, require("fixture_ws")())
 
     local function find_ms(bufnr)
       for i, l in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do

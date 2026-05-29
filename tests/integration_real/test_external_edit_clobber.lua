@@ -76,7 +76,7 @@ T["external disk edit is preserved when dashboard toggles a task (loaded source 
     vim.cmd("noswapfile edit " .. vim.fn.fnameescape(dash_path))
     local dash_buf = vim.api.nvim_get_current_buf()
     opened_bufs[#opened_bufs + 1] = dash_buf
-    render.render_buffer(dash_buf, Obsidian.workspace)
+    render.render_buffer(dash_buf, require("fixture_ws")())
 
     -- Load source buffer (hidden) so apply_source_edit hits its loaded-buf branch.
     local src_buf = vim.fn.bufadd(source_path)

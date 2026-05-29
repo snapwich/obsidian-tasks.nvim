@@ -41,7 +41,7 @@ T["same-buffer toggle: disk + buffer + index all synchronized after edit"] = fun
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(path))
   local bufnr = vim.api.nvim_get_current_buf()
   vim.bo[bufnr].filetype = "markdown"
-  require("obsidian-tasks.render").render_buffer(bufnr, Obsidian.workspace)
+  require("obsidian-tasks.render").render_buffer(bufnr, require("fixture_ws")())
   eq(vim.b[bufnr].obsidian_tasks_dashboard, true)
   eq(vim.bo[bufnr].buftype, "") -- regression: must NOT be "acwrite"
 
@@ -91,7 +91,7 @@ T["same-buffer toggle: rendered region not clobbered by source edit"] = function
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(path))
   local bufnr = vim.api.nvim_get_current_buf()
   vim.bo[bufnr].filetype = "markdown"
-  require("obsidian-tasks.render").render_buffer(bufnr, Obsidian.workspace)
+  require("obsidian-tasks.render").render_buffer(bufnr, require("fixture_ws")())
   local before_count = vim.api.nvim_buf_line_count(bufnr)
   eq(before_count > 7, true, "rendered region added lines below the fence")
 
@@ -124,7 +124,7 @@ T["same-buffer toggle: second toggle on rendered row round-trips back"] = functi
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(path))
   local bufnr = vim.api.nvim_get_current_buf()
   vim.bo[bufnr].filetype = "markdown"
-  require("obsidian-tasks.render").render_buffer(bufnr, Obsidian.workspace)
+  require("obsidian-tasks.render").render_buffer(bufnr, require("fixture_ws")())
   local cmd = require("obsidian-tasks.cmd")
 
   -- First toggle: [ ] → [x].
@@ -157,7 +157,7 @@ T["same-buffer toggle: dashboard_undo replays via same-buffer branch"] = functio
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(path))
   local bufnr = vim.api.nvim_get_current_buf()
   vim.bo[bufnr].filetype = "markdown"
-  require("obsidian-tasks.render").render_buffer(bufnr, Obsidian.workspace)
+  require("obsidian-tasks.render").render_buffer(bufnr, require("fixture_ws")())
   local cmd = require("obsidian-tasks.cmd")
 
   cmd.apply_source_edit(path, 2, { "- [x] tA #task 📅 2026-05-20" }, { dashboard_bufnr = bufnr })

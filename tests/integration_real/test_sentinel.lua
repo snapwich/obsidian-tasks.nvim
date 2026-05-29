@@ -27,21 +27,12 @@ local function spawn_child_with_dashboard(task_text)
     [[
     local cwd, deps_dir = ...
     vim.opt.rtp:prepend(deps_dir .. "/mini.nvim")
-    vim.opt.rtp:prepend(deps_dir .. "/obsidian.nvim")
     vim.opt.rtp:prepend(deps_dir .. "/blink.cmp")
     vim.opt.rtp:prepend(cwd)
 
     local orig = vim.treesitter.start
     vim.treesitter.start = function(...) pcall(orig, ...) end
 
-    local fixture_vault = cwd .. "/tests/fixtures/vault"
-    require("obsidian").setup({
-      workspaces = { { name = "test-vault", path = fixture_vault } },
-      log_level = vim.log.levels.ERROR,
-      completion = { nvim_cmp = false, blink = false },
-      picker = { name = nil },
-      ui = { enable = false },
-    })
     require("obsidian-tasks").setup({ global_filter = "#task" })
   ]],
     { cwd, deps_dir }

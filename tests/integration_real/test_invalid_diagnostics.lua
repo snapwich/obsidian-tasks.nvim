@@ -42,7 +42,7 @@ T["invalid field diagnostics: one entry per malformed field"] = function()
   require("obsidian-tasks.index").refresh_file(path)
   local render = require("obsidian-tasks.render")
   render.refresh_source_diagnostics(bufnr, path)
-  render.render_buffer(bufnr, Obsidian.workspace)
+  render.render_buffer(bufnr, require("fixture_ws")())
 
   -- Aggregate diagnostics from both namespaces.  Same-buffer dashboards
   -- emit on the source namespace (with the rendered-region duplicate
@@ -109,7 +109,7 @@ T["invalid field diagnostics: clear_buffer resets the namespace"] = function()
   vim.bo[bufnr].filetype = "markdown"
   local render = require("obsidian-tasks.render")
   render.refresh_source_diagnostics(bufnr, path)
-  render.render_buffer(bufnr, Obsidian.workspace)
+  render.render_buffer(bufnr, require("fixture_ws")())
   -- At least one diagnostic (across either namespace) from our malformed
   -- `someday`; same-buffer cases land on the source namespace, cross-buffer
   -- on the rendered namespace.

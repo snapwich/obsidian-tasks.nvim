@@ -50,7 +50,7 @@ T["lazy init: full vault walk fires even when one file pre-indexed"] = function(
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(dash))
   local dash_buf = vim.api.nvim_get_current_buf()
   vim.bo[dash_buf].filetype = "markdown"
-  render.render_buffer(dash_buf, Obsidian.workspace)
+  render.render_buffer(dash_buf, require("fixture_ws")())
   -- refresh_all is async; pump until on_done re-fires render_buffer.
   vim.wait(2000, function()
     local n = 0

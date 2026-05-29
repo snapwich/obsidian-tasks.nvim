@@ -1,4 +1,4 @@
-.PHONY: lint format test test-standalone test-integration ci
+.PHONY: lint format test test-standalone test-integration test-obsidian ci
 
 NVIM    ?= nvim
 SELENE  ?= selene
@@ -22,10 +22,15 @@ test:
 test-standalone:
 	$(NVIM) --headless --noplugin -u tests/minit_standalone.lua
 
-# Test (real plugins): run integration suite with real obsidian.nvim loaded.
-# Clones obsidian.nvim to .deps/ on first run. Requires ripgrep (`rg`) on PATH.
+# Test (real plugin, no obsidian): run integration suite WITHOUT obsidian.nvim
+# (blink.cmp still loaded for the cmp tests). Requires ripgrep (`rg`) on PATH.
 test-integration:
 	$(NVIM) --headless --noplugin -u tests/minit_integration.lua
 
+# Test (obsidian integration): isolated suite that DOES load real obsidian.nvim.
+# Clones obsidian.nvim to .deps/ on first run. Requires ripgrep (`rg`) on PATH.
+test-obsidian:
+	$(NVIM) --headless --noplugin -u tests/minit_obsidian.lua
+
 # CI: lint then all test targets
-ci: lint test test-standalone test-integration
+ci: lint test test-standalone test-integration test-obsidian

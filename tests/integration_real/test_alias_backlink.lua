@@ -4,9 +4,9 @@
 -- when the source note has a frontmatter alias, and the edit-flush round-trip
 -- strips that suffix faithfully.
 --
--- Uses real obsidian.nvim so the alias resolver hits the genuine
--- obsidian.frontmatter parser (the stubbed unit test in
--- tests/unit/test_alias_resolver.lua cannot catch API drift there).
+-- Drives the real render/edit stack (no obsidian.nvim) so the alias resolver
+-- hits the genuine native frontmatter scan — the stubbed unit test in
+-- tests/unit/test_alias_resolver.lua cannot catch API drift there.
 --
 -- The source file is a freshly written temp .md (with YAML frontmatter) so the
 -- edit-flush tests can mutate it without touching checked-in fixtures.
@@ -27,17 +27,10 @@ local function spawn(file_lines, query_lines)
     [[
     local cwd, deps_dir = ...
     vim.opt.rtp:prepend(deps_dir .. "/mini.nvim")
-    vim.opt.rtp:prepend(deps_dir .. "/obsidian.nvim")
     vim.opt.rtp:prepend(deps_dir .. "/blink.cmp")
     vim.opt.rtp:prepend(cwd)
     local orig = vim.treesitter.start
     vim.treesitter.start = function(...) pcall(orig, ...) end
-    require("obsidian").setup({
-      workspaces = { { name = "test-vault", path = cwd .. "/tests/fixtures/vault" } },
-      log_level = vim.log.levels.ERROR,
-      completion = { nvim_cmp = false, blink = false },
-      picker = { name = nil }, ui = { enable = false },
-    })
     require("obsidian-tasks").setup({ global_filter = "#task" })
     require("blink.cmp").setup({
       fuzzy = { implementation = "lua" },

@@ -1,6 +1,6 @@
 -- tests/integration_real/test_workspace_membership.lua
 -- Verifies util/obsidian.workspace_for_path (native .obsidian/ detection) inside
--- a process where obsidian.nvim is also loaded — confirms the two coexist and
+-- the standalone integration process (no obsidian.nvim loaded) — confirms
 -- detection returns the expected { root, name } shape.
 
 local T = MiniTest.new_set()

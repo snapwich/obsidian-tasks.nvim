@@ -57,7 +57,7 @@ T["BufWritePost on source file triggers cross-buffer refresh via reverse_index"]
   vim.cmd("noswapfile edit " .. vim.fn.fnameescape(by_tag_path))
   local by_tag_bufnr = vim.api.nvim_get_current_buf()
   vim.bo[by_tag_bufnr].filetype = "markdown"
-  render.render_buffer(by_tag_bufnr, Obsidian.workspace)
+  render.render_buffer(by_tag_bufnr, require("fixture_ws")())
 
   -- Sanity-check: at least one query block in by-tag.md matched a health task.
   local rev_set = {}

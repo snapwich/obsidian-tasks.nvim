@@ -1,17 +1,23 @@
 -- tests/minit_integration.lua
 -- Headless bootstrap for the "real-plugin" integration suite.
 --
+-- This suite runs WITHOUT obsidian.nvim — it proves the full render / edit /
+-- sentinel / insert behavior works while obsidian.nvim is absent (the plugin is
+-- standalone). blink.cmp IS loaded because the cmp tests exercise it as the
+-- optional completion integration. Vault detection here is native (the fixture
+-- vault carries a `.obsidian/` marker) and content scanning uses ripgrep.
+--
 -- Differences from tests/minit.lua:
---   • Clones obsidian.nvim to .deps/ alongside mini.nvim.
---   • Sets up real obsidian.nvim against tests/fixtures/vault.
---   • Sets up obsidian-tasks against that vault.
+--   • Clones blink.cmp to .deps/ alongside mini.nvim.
+--   • Sets up obsidian-tasks against the fixture vault.
 --   • Sources tests/runner_integration.lua (which globs integration_real/).
 --
--- This suite intentionally does NOT stub Obsidian / obsidian.*; it loads them
--- for real so load-order / ftplugin / autocmd-ordering bugs are observable.
+-- The obsidian.nvim-integration validations live in the separate
+-- `make test-obsidian` suite (tests/minit_obsidian.lua) so this suite stays free
+-- of any obsidian.nvim load.
 --
--- External dependency: ripgrep (`rg`) on PATH — required by
--- obsidian.search.find_async / search_async.
+-- External dependency: ripgrep (`rg`) on PATH — the plugin's only hard system
+-- requirement (used by the native content scan).
 
 -- nvim's bundled ftplugin/markdown.lua calls vim.treesitter.start(); CI runners
 -- have no parsers installed so it asserts. Swallow that so bufload of .md files
@@ -26,7 +32,6 @@ end
 local root = vim.fn.getcwd()
 local deps_dir = root .. "/.deps"
 local mini_path = deps_dir .. "/mini.nvim"
-local obsidian_path = deps_dir .. "/obsidian.nvim"
 local blink_path = deps_dir .. "/blink.cmp"
 
 local function clone(url, dest, label, ref)
@@ -46,9 +51,6 @@ end
 if not vim.uv.fs_stat(mini_path) then
   clone("https://github.com/echasnovski/mini.nvim", mini_path, "mini.nvim")
 end
-if not vim.uv.fs_stat(obsidian_path) then
-  clone("https://github.com/obsidian-nvim/obsidian.nvim", obsidian_path, "obsidian.nvim")
-end
 if not vim.uv.fs_stat(blink_path) then
   -- Pin to v1.x latest; v2 HEAD requires nvim 0.12+ and a separate blink.lib dep.
   -- See lua/obsidian-tasks/cmp/source.lua header for the supported blink range.
@@ -56,26 +58,10 @@ if not vim.uv.fs_stat(blink_path) then
 end
 
 vim.opt.rtp:prepend(mini_path)
-vim.opt.rtp:prepend(obsidian_path)
 vim.opt.rtp:prepend(blink_path)
 vim.opt.rtp:prepend(root)
 
--- ── Set up real obsidian.nvim against the fixture vault ──────────────────────
-
-local fixture_vault = root .. "/tests/fixtures/vault"
-
-require("obsidian").setup({
-  workspaces = {
-    { name = "test-vault", path = fixture_vault },
-  },
-  log_level = vim.log.levels.ERROR,
-  -- Keep features minimal — we only need core API + ftplugin keymaps.
-  completion = { nvim_cmp = false, blink = false },
-  picker = { name = nil },
-  ui = { enable = false },
-})
-
--- ── Set up obsidian-tasks ────────────────────────────────────────────────────
+-- ── Set up obsidian-tasks (no obsidian.nvim present) ─────────────────────────
 
 require("obsidian-tasks").setup({
   global_filter = "#task",

@@ -23,17 +23,10 @@ local function spawn_with_query(task_lines, query_lines)
     [[
     local cwd, deps_dir = ...
     vim.opt.rtp:prepend(deps_dir .. "/mini.nvim")
-    vim.opt.rtp:prepend(deps_dir .. "/obsidian.nvim")
     vim.opt.rtp:prepend(deps_dir .. "/blink.cmp")
     vim.opt.rtp:prepend(cwd)
     local orig = vim.treesitter.start
     vim.treesitter.start = function(...) pcall(orig, ...) end
-    require("obsidian").setup({
-      workspaces = { { name = "test-vault", path = cwd .. "/tests/fixtures/vault" } },
-      log_level = vim.log.levels.ERROR,
-      completion = { nvim_cmp = false, blink = false },
-      picker = { name = nil }, ui = { enable = false },
-    })
     require("obsidian-tasks").setup({ global_filter = "#task" })
     require("blink.cmp").setup({
       fuzzy = { implementation = "lua" },
