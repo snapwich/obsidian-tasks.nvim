@@ -370,7 +370,7 @@ Misc:
                                                     *obsidian-tasks-query-sort*
 sort by ~
 
-    sort by <key>                          sort by reverse <key>
+    sort by <key>                          sort by <key> reverse
 
 Sort keys: status, priority, due, scheduled, start, done, created,
 cancelled, happens, path, folder, root, backlink, description, heading,
@@ -381,7 +381,7 @@ Multiple `sort by` lines stack (primary, secondary, …).
                                                    *obsidian-tasks-query-group*
 group by ~
 
-    group by <key>                         group by reverse <key>
+    group by <key>                         group by <key> reverse
 
 Group keys are the sort keys minus `description` and `blocking`.
 Multiple `group by` lines nest.

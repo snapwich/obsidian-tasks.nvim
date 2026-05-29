@@ -409,15 +409,15 @@ for _, key in ipairs(all_sort_keys) do
     eq(#ast.sort_by, 1)
     eq(ast.sort_by[1], { key = key, reverse = false })
   end
-  T["sort: sort by reverse " .. key] = function()
-    local ast = parse("sort by reverse " .. key)
+  T["sort: sort by " .. key .. " reverse"] = function()
+    local ast = parse("sort by " .. key .. " reverse")
     eq(#ast.sort_by, 1)
     eq(ast.sort_by[1], { key = key, reverse = true })
   end
 end
 
 T["sort: multiple sort directives accumulate in order"] = function()
-  local ast = parse("sort by due\nsort by priority\nsort by reverse status")
+  local ast = parse("sort by due\nsort by priority\nsort by status reverse")
   eq(#ast.sort_by, 3)
   eq(ast.sort_by[1], { key = "due", reverse = false })
   eq(ast.sort_by[2], { key = "priority", reverse = false })
@@ -459,8 +459,8 @@ for _, key in ipairs(all_group_keys) do
     eq(#ast.group_by, 1)
     eq(ast.group_by[1], { key = key, reverse = false })
   end
-  T["group: group by reverse " .. key] = function()
-    local ast = parse("group by reverse " .. key)
+  T["group: group by " .. key .. " reverse"] = function()
+    local ast = parse("group by " .. key .. " reverse")
     eq(#ast.group_by, 1)
     eq(ast.group_by[1], { key = key, reverse = true })
   end
@@ -475,7 +475,7 @@ T["group: 'blocking' is not a valid group key → parse_error"] = function()
 end
 
 T["group: multiple group directives accumulate"] = function()
-  local ast = parse("group by status\ngroup by reverse due")
+  local ast = parse("group by status\ngroup by due reverse")
   eq(#ast.group_by, 2)
   eq(ast.group_by[1], { key = "status", reverse = false })
   eq(ast.group_by[2], { key = "due", reverse = true })
@@ -689,7 +689,7 @@ T["full query: multi-directive query parses all fields"] = function()
     "not done",
     "has due date",
     "sort by due",
-    "sort by reverse priority",
+    "sort by priority reverse",
     "group by status",
     "hide priority",
     "hide recurrence rule",

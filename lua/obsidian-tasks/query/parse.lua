@@ -645,9 +645,10 @@ local function parse_line(ast, line, line_num)
     return
   end
 
-  -- ── sort by [reverse] <key> ──────────────────────────────────────────
+  -- ── sort by <key> [reverse] ──────────────────────────────────────────
+  -- Trailing `reverse` keyword, matching obsidian-tasks (`sort by due reverse`).
   do
-    local key = lower:match("^sort by reverse (.+)$")
+    local key = lower:match("^sort by (.+) reverse$")
     if key and SORT_KEYS[key] then
       ast.sort_by[#ast.sort_by + 1] = { key = key, reverse = true }
       return
@@ -659,9 +660,9 @@ local function parse_line(ast, line, line_num)
     end
   end
 
-  -- ── group by [reverse] <key> ─────────────────────────────────────────
+  -- ── group by <key> [reverse] ─────────────────────────────────────────
   do
-    local key = lower:match("^group by reverse (.+)$")
+    local key = lower:match("^group by (.+) reverse$")
     if key and GROUP_KEYS[key] then
       ast.group_by[#ast.group_by + 1] = { key = key, reverse = true }
       return

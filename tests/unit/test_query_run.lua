@@ -927,7 +927,7 @@ run_tests["group by path reverse: groups in reverse alphabetical order"] = funct
     { task = task_open_due, path = "/vault/a.md" },
     { task = task_high, path = "/vault/z.md" },
   })
-  local result = run("not done\ngroup by reverse path", idx)
+  local result = run("not done\ngroup by path reverse", idx)
   eq(result.groups[1].name, "/vault/z.md")
   eq(result.groups[2].name, "/vault/a.md")
 end
