@@ -636,177 +636,121 @@ function M.apply_source_edit(file_path, row, new_lines, opts)
   return true
 end
 
---- Compare current disk content at *src_row* for *new_count* lines against
---- *expected*.  Returns true iff every line matches (no drift).
+--- Verify the current disk content of *src_path* against each sub-edit's
+--- *expected_key* line-set (drift detection).  Reads the file once; returns
+--- false on any mismatch OR read failure (fail-safe → refuse the replay).
 ---
---- Used by dashboard_undo / dashboard_redo to refuse a replay when the source
---- file changed between the forward edit and the inverse — mirroring the
---- existing `no_drift` pattern in render/keymap.lua.
+--- Mirrors the `no_drift` pattern in render/keymap.lua: we refuse a replay when
+--- the source changed between the forward edit and the inverse.  The check uses
+--- the sub-edits' stored (pre-replay) row positions — correct for 1-for-1
+--- replacements (the common case); multi-line expansions may yield a
+--- false-positive refusal, which is safe (no data corruption, just a retry).
 ---
---- @param src_path   string
---- @param src_row    integer  0-indexed
---- @param expected   string[]  lines we wrote at src_row in the forward edit
---- @return boolean   true = matches (safe to replay)
-local function disk_lines_match(src_path, src_row, expected)
+--- @param src_path     string
+--- @param subs         table[]  sub-edits, each with .src_row (0-indexed) and an
+---                              *expected_key* line-set
+--- @param expected_key string   "new_lines" (undo) | "old_lines" (redo)
+--- @return boolean   true = every sub matches (safe to replay)
+local function disk_subs_match(src_path, subs, expected_key)
   local ok, lines = pcall(vim.fn.readfile, src_path)
   if not ok or type(lines) ~= "table" then
-    -- Cannot verify — fail safe (refuse the undo).
     return false
   end
-  for i, line in ipairs(expected) do
-    if lines[src_row + i] ~= line then
-      return false
+  for _, sub in ipairs(subs) do
+    for i, line in ipairs(sub[expected_key]) do
+      if lines[sub.src_row + i] ~= line then
+        return false
+      end
     end
   end
   return true
 end
 
---- Pop the most recent edit from *dashboard_bufnr*'s undo ring and replay
---- the inverse via apply_source_edit (skip_record=true).  Refuses when the
---- disk content at the recorded position no longer matches what we wrote
---- (drift).  Pushes the popped entry onto the redo ring on success.
+--- Replay the most recent edit on *dashboard_bufnr*'s undo or redo ring.
 ---
---- For batch entries (entry.batch_edits present), ALL sub-edits are reversed
---- in ascending row order (top-down) so that line-count changes from previous
---- inverse sub-edits shift rows correctly for subsequent ones.
+--- dashboard_undo and dashboard_redo are mirror images parametrized by *dir*:
+---   • undo pops the undo ring and applies each edit's `old_lines` (removing
+---     `new_count` rows), having verified the disk still holds the `new_lines`
+---     we wrote; the popped entry is pushed onto the redo ring.
+---   • redo is the same with old/new swapped, and the sub-edit iteration order
+---     flipped — forward edits apply bottom-up (descending rows), so their
+---     inverse applies top-down (ascending rows).
+---
+--- All three recorded entry shapes (single, batch_edits, _multi_file) normalize
+--- to a list of ordered { src_path, subs } groups so one path handles them.
+--- Drift across ALL groups is checked before any mutation; a per-group apply
+--- failure restores the popped entry so the user can retry.
 ---
 --- @param dashboard_bufnr integer
+--- @param dir table  { from_ring, to_ring, verify_key, apply_key, count_key, reverse_subedits }
 --- @return boolean ok
-function M.dashboard_undo(dashboard_bufnr)
-  local r = M._undo_ring[dashboard_bufnr]
-  if not r or #r == 0 then
+local function replay(dashboard_bufnr, dir)
+  local from = dir.from_ring[dashboard_bufnr]
+  if not from or #from == 0 then
     return false
   end
-  local entry = r[#r]
+  local entry = from[#from]
 
-  -- ── Multi-file tick undo (Q13): reverse edits across all files in one call ────
-  -- Produced by render/edit.flush() when > 1 source file was written in a tick.
+  -- Normalize the entry into ordered file groups so multi-file, batch, and
+  -- single edits share one apply path.
+  local groups
   if entry._multi_file then
-    -- Drift check: for every file-batch, verify the new_lines still sit at their
-    -- stored src_rows on disk.
+    groups = {}
     for _, fb in ipairs(entry.file_batches) do
-      local ok_r, disk_check = pcall(vim.fn.readfile, fb.src_path)
-      if not ok_r or type(disk_check) ~= "table" then
-        log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-        return false
-      end
-      for _, sub in ipairs(fb.batch_edits) do
-        for i, line in ipairs(sub.new_lines) do
-          if disk_check[sub.src_row + i] ~= line then
-            log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-            return false
-          end
+      groups[#groups + 1] = { src_path = fb.src_path, subs = fb.batch_edits }
+    end
+  elseif entry.batch_edits then
+    groups = { { src_path = entry.src_path, subs = entry.batch_edits } }
+  else
+    groups = { { src_path = entry.src_path, subs = { entry } } }
+  end
+
+  -- Drift check across every group BEFORE mutating anything.
+  for _, g in ipairs(groups) do
+    if not disk_subs_match(g.src_path, g.subs, dir.verify_key) then
+      log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+      return false
+    end
+  end
+
+  from[#from] = nil
+
+  -- Apply the inverse (undo) / forward (redo) edit per group.  Within a group
+  -- the sub-edits run in the direction-appropriate row order so line-count
+  -- changes shift subsequent rows correctly.
+  local function apply_sub(src_path, sub)
+    return M.apply_source_edit(src_path, sub.src_row, sub[dir.apply_key], {
+      count = sub[dir.count_key],
+      dashboard_bufnr = dashboard_bufnr,
+      skip_record = true,
+    })
+  end
+  local any_failed = false
+  for _, g in ipairs(groups) do
+    if dir.reverse_subedits then
+      for i = #g.subs, 1, -1 do
+        if not apply_sub(g.src_path, g.subs[i]) then
+          any_failed = true
         end
       end
-    end
-
-    r[#r] = nil
-
-    -- Apply inverse edits for every file.  Within each file, sub-edits are
-    -- applied in ascending row order (top-down) so that row-count changes from
-    -- earlier sub-edits correctly shift later indices.
-    local any_failed = false
-    for _, fb in ipairs(entry.file_batches) do
-      for i = #fb.batch_edits, 1, -1 do
-        local sub = fb.batch_edits[i]
-        local ok_sub = M.apply_source_edit(fb.src_path, sub.src_row, sub.old_lines, {
-          count = sub.new_count,
-          dashboard_bufnr = dashboard_bufnr,
-          skip_record = true,
-        })
-        if not ok_sub then
+    else
+      for _, sub in ipairs(g.subs) do
+        if not apply_sub(g.src_path, sub) then
           any_failed = true
         end
       end
     end
-
-    if any_failed then
-      r[#r + 1] = entry -- restore so the user can retry
-      return false
-    end
-
-    M._redo_ring[dashboard_bufnr] = M._redo_ring[dashboard_bufnr] or {}
-    local rr = M._redo_ring[dashboard_bufnr]
-    rr[#rr + 1] = entry
-    local render = require("obsidian-tasks.render")
-    if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
-      pcall(render.rerender_buffer, dashboard_bufnr)
-    end
-    return true
   end
 
-  -- ── Batch undo: reverse every sub-edit ───────────────────────────────────────
-  if entry.batch_edits then
-    -- Drift check: read file once, verify all sub-edits still have new_lines at
-    -- their stored src_row.  Uses original (pre-batch) row positions, which is
-    -- correct for 1-for-1 replacements (the common case).  Multi-line expansions
-    -- may produce false-positive drift warnings (safe — undo is refused rather
-    -- than data corrupted).
-    local ok_r, disk_check = pcall(vim.fn.readfile, entry.src_path)
-    if not ok_r or type(disk_check) ~= "table" then
-      log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-      return false
-    end
-    for _, sub in ipairs(entry.batch_edits) do
-      for i, line in ipairs(sub.new_lines) do
-        if disk_check[sub.src_row + i] ~= line then
-          log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-          return false
-        end
-      end
-    end
-
-    r[#r] = nil
-
-    -- Apply inverse sub-edits in ASCENDING row order (reverse of descending
-    -- batch_edits storage).  Each top-down undo correctly shifts row positions
-    -- for subsequent sub-edits when line counts differ.
-    local any_failed = false
-    for i = #entry.batch_edits, 1, -1 do
-      local sub = entry.batch_edits[i]
-      local ok_sub = M.apply_source_edit(entry.src_path, sub.src_row, sub.old_lines, {
-        count = sub.new_count,
-        dashboard_bufnr = dashboard_bufnr,
-        skip_record = true,
-      })
-      if not ok_sub then
-        any_failed = true
-      end
-    end
-
-    if any_failed then
-      r[#r + 1] = entry -- restore so the user can retry
-      return false
-    end
-
-    M._redo_ring[dashboard_bufnr] = M._redo_ring[dashboard_bufnr] or {}
-    local rr = M._redo_ring[dashboard_bufnr]
-    rr[#rr + 1] = entry
-    local render = require("obsidian-tasks.render")
-    if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
-      pcall(render.rerender_buffer, dashboard_bufnr)
-    end
-    return true
-  end
-
-  -- ── Single-edit undo ──────────────────────────────────────────────────────────
-  if not disk_lines_match(entry.src_path, entry.src_row, entry.new_lines) then
-    log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
+  if any_failed then
+    from[#from + 1] = entry -- restore so the user can retry
     return false
   end
-  r[#r] = nil
-  local ok = M.apply_source_edit(entry.src_path, entry.src_row, entry.old_lines, {
-    count = entry.new_count,
-    dashboard_bufnr = dashboard_bufnr,
-    skip_record = true,
-  })
-  if not ok then
-    r[#r + 1] = entry -- restore so the user can retry
-    return false
-  end
-  M._redo_ring[dashboard_bufnr] = M._redo_ring[dashboard_bufnr] or {}
-  local rr = M._redo_ring[dashboard_bufnr]
-  rr[#rr + 1] = entry
+
+  dir.to_ring[dashboard_bufnr] = dir.to_ring[dashboard_bufnr] or {}
+  local to = dir.to_ring[dashboard_bufnr]
+  to[#to + 1] = entry
+
   -- Rerender the dashboard so the visual state reconciles with the new source.
   local render = require("obsidian-tasks.render")
   if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
@@ -815,146 +759,36 @@ function M.dashboard_undo(dashboard_bufnr)
   return true
 end
 
---- Pop the most recent entry from *dashboard_bufnr*'s redo ring and replay
---- it forward via apply_source_edit (skip_record=true).  Same drift refusal
---- as dashboard_undo, but compared against old_lines (what the row held
---- before the forward edit / after the undo).
+--- Pop the most recent edit from *dashboard_bufnr*'s undo ring and replay the
+--- inverse (see replay()).  Refuses on drift; pushes the entry to the redo ring.
 ---
---- For batch entries (entry.batch_edits present), ALL sub-edits are replayed
---- in DESCENDING row order (bottom-up, same as the original forward batch) so
---- row indices remain valid when line counts differ.
+--- @param dashboard_bufnr integer
+--- @return boolean ok
+function M.dashboard_undo(dashboard_bufnr)
+  return replay(dashboard_bufnr, {
+    from_ring = M._undo_ring,
+    to_ring = M._redo_ring,
+    verify_key = "new_lines",
+    apply_key = "old_lines",
+    count_key = "new_count",
+    reverse_subedits = true,
+  })
+end
+
+--- Pop the most recent entry from *dashboard_bufnr*'s redo ring and replay it
+--- forward (see replay()).  Refuses on drift; pushes the entry to the undo ring.
 ---
 --- @param dashboard_bufnr integer
 --- @return boolean ok
 function M.dashboard_redo(dashboard_bufnr)
-  local rr = M._redo_ring[dashboard_bufnr]
-  if not rr or #rr == 0 then
-    return false
-  end
-  local entry = rr[#rr]
-
-  -- ── Multi-file tick redo ──────────────────────────────────────────────────────
-  if entry._multi_file then
-    -- Drift check: verify old_lines at stored src_rows for every file.
-    for _, fb in ipairs(entry.file_batches) do
-      local ok_r, disk_check = pcall(vim.fn.readfile, fb.src_path)
-      if not ok_r or type(disk_check) ~= "table" then
-        log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-        return false
-      end
-      for _, sub in ipairs(fb.batch_edits) do
-        for i, line in ipairs(sub.old_lines) do
-          if disk_check[sub.src_row + i] ~= line then
-            log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-            return false
-          end
-        end
-      end
-    end
-
-    rr[#rr] = nil
-
-    -- Re-apply forward edits for every file (descending row order = bottom-up).
-    local any_failed = false
-    for _, fb in ipairs(entry.file_batches) do
-      for _, sub in ipairs(fb.batch_edits) do
-        local ok_sub = M.apply_source_edit(fb.src_path, sub.src_row, sub.new_lines, {
-          count = sub.old_count,
-          dashboard_bufnr = dashboard_bufnr,
-          skip_record = true,
-        })
-        if not ok_sub then
-          any_failed = true
-        end
-      end
-    end
-
-    if any_failed then
-      rr[#rr + 1] = entry
-      return false
-    end
-
-    M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
-    local r = M._undo_ring[dashboard_bufnr]
-    r[#r + 1] = entry
-    local render = require("obsidian-tasks.render")
-    if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
-      pcall(render.rerender_buffer, dashboard_bufnr)
-    end
-    return true
-  end
-
-  -- ── Batch redo: re-apply every sub-edit ──────────────────────────────────────
-  if entry.batch_edits then
-    -- Drift check: verify old_lines at stored src_rows (post-undo state).
-    local ok_r, disk_check = pcall(vim.fn.readfile, entry.src_path)
-    if not ok_r or type(disk_check) ~= "table" then
-      log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-      return false
-    end
-    for _, sub in ipairs(entry.batch_edits) do
-      for i, line in ipairs(sub.old_lines) do
-        if disk_check[sub.src_row + i] ~= line then
-          log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-          return false
-        end
-      end
-    end
-
-    rr[#rr] = nil
-
-    -- Apply forward sub-edits in DESCENDING row order (bottom-up, same as the
-    -- original batch).  batch_edits is stored descending, so iterate forward.
-    local any_failed = false
-    for _, sub in ipairs(entry.batch_edits) do
-      local ok_sub = M.apply_source_edit(entry.src_path, sub.src_row, sub.new_lines, {
-        count = sub.old_count,
-        dashboard_bufnr = dashboard_bufnr,
-        skip_record = true,
-      })
-      if not ok_sub then
-        any_failed = true
-      end
-    end
-
-    if any_failed then
-      rr[#rr + 1] = entry
-      return false
-    end
-
-    M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
-    local r = M._undo_ring[dashboard_bufnr]
-    r[#r + 1] = entry
-    local render = require("obsidian-tasks.render")
-    if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
-      pcall(render.rerender_buffer, dashboard_bufnr)
-    end
-    return true
-  end
-
-  -- ── Single-edit redo ──────────────────────────────────────────────────────────
-  if not disk_lines_match(entry.src_path, entry.src_row, entry.old_lines) then
-    log.warn("obsidian-tasks: source drift detected — run <leader>tr to refresh")
-    return false
-  end
-  rr[#rr] = nil
-  local ok = M.apply_source_edit(entry.src_path, entry.src_row, entry.new_lines, {
-    count = entry.old_count,
-    dashboard_bufnr = dashboard_bufnr,
-    skip_record = true,
+  return replay(dashboard_bufnr, {
+    from_ring = M._redo_ring,
+    to_ring = M._undo_ring,
+    verify_key = "old_lines",
+    apply_key = "new_lines",
+    count_key = "old_count",
+    reverse_subedits = false,
   })
-  if not ok then
-    rr[#rr + 1] = entry
-    return false
-  end
-  M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
-  local r = M._undo_ring[dashboard_bufnr]
-  r[#r + 1] = entry
-  local render = require("obsidian-tasks.render")
-  if type(render.rerender_buffer) == "function" and vim.api.nvim_buf_is_valid(dashboard_bufnr) then
-    pcall(render.rerender_buffer, dashboard_bufnr)
-  end
-  return true
 end
 
 --- Drop all undo/redo history for *dashboard_bufnr*.  Called on BufDelete and
