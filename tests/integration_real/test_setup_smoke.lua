@@ -26,10 +26,11 @@ T["obsidian-tasks setup ran (M.opts populated)"] = function()
   eq(ot.opts.global_filter, "#task")
 end
 
-T["util/obsidian.current_workspace returns the test vault"] = function()
+T["util/obsidian.workspace_for_path detects the fixture vault natively"] = function()
   local adapter = require("obsidian-tasks.util.obsidian")
-  local ws = adapter.current_workspace()
+  local ws = adapter.workspace_for_path(fixture_vault .. "/tasks_a.md")
   eq(type(ws), "table")
+  eq(tostring(ws.root):find(fixture_vault, 1, true) ~= nil, true)
 end
 
 return T
