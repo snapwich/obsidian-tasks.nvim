@@ -27,10 +27,9 @@ M.defaults = {
   -- live filter set.  Set false to match obsidian-tasks parity (immediate vanish).
   linger_on_filter_exit = true,
   linger_hl_group = "ObsidianTasksLinger",
-  -- Sink completed (Done / Cancelled) tasks to the bottom of each group and
-  -- dim them via linger_hl_group.  Preserves the user's sort within each
-  -- tier (non-completed first, completed below).  Lingered rows slot below
-  -- live-completed for a uniform "deprioritized" visual.
+  -- Dim completed (Done / Cancelled) tasks IN PLACE via linger_hl_group — they
+  -- stay in their sort-by position, just visually deprioritized (not moved).
+  -- Applies in both flat and `show tree` mode.
   dim_completed_tasks = true,
   -- When true: tasks in files whose basename is a date pattern (YYYY-MM-DD,
   -- with an optional prefix) inherit that date as their scheduled date if

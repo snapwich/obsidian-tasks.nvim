@@ -122,6 +122,20 @@ end
 -- Public API
 -- ---------------------------------------------------------------------------
 
+--- Two-space-per-level indent for a tree row at ABSOLUTE source *depth*.
+--- Mirrors the project's nested-list 2-space convention so the dashboard's
+--- visual nesting matches the on-disk hierarchy.  depth is the TRUE source depth
+--- (the top-level root is depth 0), so a top-level row gets no extra indent and
+--- each level deeper adds two spaces.
+--- @param depth integer|nil
+--- @return string
+local function tree_indent(depth)
+  if not depth or depth <= 0 then
+    return ""
+  end
+  return string.rep("  ", depth)
+end
+
 --- Build the ordered list of render-line records from a QueryResult.
 ---
 --- @param query_result table  QueryResult as returned by query/run.lua
@@ -131,8 +145,8 @@ end
 ---                                                     source_text_hash }
 ---                              opts.group_by      — ast.group_by (used to resolve
 ---                                                   each linger to its group(s))
----                              opts.dim_completed — sink + dim live tasks whose
----                                                   status is Done/Cancelled
+---                              opts.dim_completed — dim live tasks whose status
+---                                                   is Done/Cancelled, in place
 --- @return table[]  ordered list of render-line records
 function M.layout(query_result, opts)
   opts = opts or {}
@@ -258,6 +272,14 @@ function M.layout(query_result, opts)
     return " [[" .. target .. "]]", target
   end
 
+  -- Forward declarations: emit_linger (defined with the shared emit engine,
+  -- below) renders a tree linger's descendant rows via these tree builders, which
+  -- are defined further down.  Declaring them here makes the upvalue bind so the
+  -- closure sees the real implementations at call time.
+  local build_tree_task_line
+  local build_tree_bullet_line
+  local build_tree_blank_line
+
   --- Build a render record for a lingered task in *group_name* at
   --- *group_index* (0-based position within the rendered group body).
   --- @param ent        table
@@ -266,7 +288,17 @@ function M.layout(query_result, opts)
   --- @return table
   local function build_linger_line(ent, group_name, group_index)
     local visible_task = apply_hide_flags(ent.task, hide)
-    local ser = serialize_mod.serialize_with_meta(visible_task, { format = "preserve" })
+    -- FLAT results render FLUSH-LEFT (upstream parity): a matched CHILD task is
+    -- NOT shown at its source indent (that looked like a tree).  Serialize a
+    -- no-indent copy so the display AND invalid_ranges are flush; the real
+    -- on-disk indent is preserved in flat_source_indent for edit write-back.
+    local flat_source_indent = visible_task.indent or ""
+    local ser_task = visible_task
+    if flat_source_indent ~= "" then
+      ser_task = vim.tbl_extend("force", {}, visible_task)
+      ser_task.indent = ""
+    end
+    local ser = serialize_mod.serialize_with_meta(ser_task, { format = "preserve" })
     local task_text = ser.text
     local invalid_ranges = ser.invalid_ranges
     local source_text_hash = ent.task.raw_line and src_hash(ent.task.raw_line) or src_hash(task_text)
@@ -292,6 +324,10 @@ function M.layout(query_result, opts)
       -- drift against a source whose field order differs.
       source_text = ent.task.raw_line,
       indent = ent.task.indent or "",
+      -- Original on-disk leading whitespace, stripped from the FLUSH display.
+      -- render/edit.lua re-applies it on write-back so a matched child keeps its
+      -- source nesting; "" for a top-level task (no re-apply needed).
+      flat_source_indent = flat_source_indent,
       group_name = group_name,
       group_index = group_index,
       invalid_ranges = (invalid_ranges and #invalid_ranges > 0) and invalid_ranges or nil,
@@ -309,7 +345,14 @@ function M.layout(query_result, opts)
   --- @return table
   local function build_live_line(task, group_name, group_index)
     local visible_task = apply_hide_flags(task, hide)
-    local ser = serialize_mod.serialize_with_meta(visible_task, { format = "preserve" })
+    -- FLAT results render FLUSH-LEFT (upstream parity) — see build_linger_line.
+    local flat_source_indent = visible_task.indent or ""
+    local ser_task = visible_task
+    if flat_source_indent ~= "" then
+      ser_task = vim.tbl_extend("force", {}, visible_task)
+      ser_task.indent = ""
+    end
+    local ser = serialize_mod.serialize_with_meta(ser_task, { format = "preserve" })
     local task_text = ser.text
     local invalid_ranges = ser.invalid_ranges
     local source_text_hash = task.raw_line and src_hash(task.raw_line) or src_hash(task_text)
@@ -320,6 +363,9 @@ function M.layout(query_result, opts)
     return {
       kind = "task",
       text = task_text,
+      -- Status symbol carried through so the render loop can classify a row as
+      -- done/cancelled when computing per-subtree fold counts (folds.lua foldtext).
+      status_symbol = task.status_symbol,
       src_path = path,
       src_line = task._src_line,
       src_hash = hash,
@@ -331,6 +377,9 @@ function M.layout(query_result, opts)
       -- See build_linger_line for why this matters (drift check correctness).
       source_text = task.raw_line,
       indent = task.indent or "",
+      -- Original on-disk indent stripped from the FLUSH display; re-applied on
+      -- write-back (render/edit.lua).  "" for a top-level task.
+      flat_source_indent = flat_source_indent,
       group_name = group_name,
       group_index = group_index,
       invalid_ranges = (invalid_ranges and #invalid_ranges > 0) and invalid_ranges or nil,
@@ -339,32 +388,113 @@ function M.layout(query_result, opts)
     }
   end
 
-  --- Emit a group's body (task rows + lingered rows) into the *lines* output.
-  --- Interleaves lingers at their prior_index_within_group, dedups live tasks
-  --- against active lingers (per-block-query: linger wins, live suppressed).
+  -- ── Shared emit engine (single source of truth for FLAT and TREE) ──────────
+  -- Both render modes converge here so linger interleaving, ghost groups, the
+  -- (path,line) dedup, and group-index positioning can never silently diverge
+  -- between paths again.  The difference between modes is ONLY what a "unit"
+  -- emits: a flat unit is one live task → one row; a tree unit is one matched
+  -- ROOT → its whole subtree (root + descendant rows).  A linger emits a single
+  -- dimmed row (flat) or, when the entry carries a reconstructed linger_subtree,
+  -- the whole dimmed subtree block (tree).  In BOTH modes a unit / linger counts
+  -- as exactly ONE index position, so prior_index_within_group splicing is
+  -- identical.
+  --
+  -- ANY new group-emission behavior (new header rule, new linger framing, a new
+  -- per-group annotation) MUST be added HERE, not in a mode-specific branch, or
+  -- the parametrized flat-vs-tree harness (tests/unit/test_flat_tree_parity.lua)
+  -- will fail.
+
+  --- Emit ONE lingered entry.  A tree linger carries linger_subtree rows
+  --- (reconstructed by render/init.lua via tree.subtree_rows): render the WHOLE
+  --- block dimmed — the root via build_linger_line (so it keeps linger=true +
+  --- drift meta) and the descendants via the tree builders forced dim.  A flat
+  --- linger has no subtree → one dimmed row.
+  --- @param ent         table
+  --- @param group_name  string
+  --- @param group_index integer
+  local function emit_linger(ent, group_name, group_index)
+    local sub = ent.linger_subtree
+    if not sub or #sub == 0 then
+      lines[#lines + 1] = build_linger_line(ent, group_name, group_index)
+      return
+    end
+    -- Tree linger: the root row reuses build_linger_line (linger=true, the
+    -- captured task, drift meta), then gets the depth-relative indent + tree
+    -- metadata of its row so it folds + indents like a live subtree root.  Each
+    -- descendant renders through the tree builders, forced dim.
+    for i, row in ipairs(sub) do
+      row.group_name = group_name
+      row.group_index = group_index
+      if i == 1 then
+        local rec = build_linger_line(ent, group_name, group_index)
+        local lead = tree_indent(row.depth)
+        rec.text = lead .. rec.text:gsub("^%s*", "")
+        rec.source_indent = (row.task and row.task.indent) or ent.task.indent or ""
+        rec.tree_kind = "task"
+        rec.depth = row.depth
+        rec.fold_group = row.fold_group
+        rec.matched = false
+        lines[#lines + 1] = rec
+      else
+        local rec
+        if row.kind == "task" then
+          row.dim = true
+          rec = build_tree_task_line(row)
+        elseif row.kind == "bullet" then
+          row.dim = true
+          rec = build_tree_bullet_line(row)
+        else
+          rec = build_tree_blank_line(row)
+        end
+        -- Mark every descendant row as a linger so render/init's line_map and the
+        -- linger-clearing logic treat the whole block as one lingered unit.
+        rec.linger = true
+        rec.dim = true
+        lines[#lines + 1] = rec
+      end
+    end
+  end
+
+  --- Emit a group's body into *lines*: a sequence of LIVE UNITS with lingers
+  --- spliced at their prior_index_within_group, dedup'd against active lingers
+  --- (per-block-query: linger wins, live suppressed).  Shared by FLAT and TREE.
   ---
-  --- @param group_name      string  current group name (may be "")
-  --- @param live_tasks      table[]  partitioned live task list for this group
-  --- @param linger_entries  table[]|nil  linger entries pre-bucketed for this group
-  local function emit_group_body(group_name, live_tasks, linger_entries)
+  --- @param group_name     string    current group name (may be "")
+  --- @param live_units     table[]   { { key="path:line", emit=fn(gname, gidx) }, … }
+  ---                                 in render order; each counts as one index slot
+  --- @param linger_entries table[]|nil  linger entries pre-bucketed for this group
+  local function emit_group_body(group_name, live_units, linger_entries)
     linger_entries = linger_entries or {}
     consumed_linger_groups[group_name] = true
 
-    -- Build dedup key set from active lingers in this group.
+    -- Build dedup key set from active lingers in this group.  A FLAT linger keys
+    -- only its single root (src_path, src_line).  A TREE linger emits a WHOLE
+    -- subtree block (root + descendants via ent.linger_subtree / emit_linger), so
+    -- EVERY row of that block must be keyed — otherwise a descendant whose matched
+    -- ancestor left the filter becomes its own LIVE unit (its own path:line key)
+    -- and renders TWICE: once dimmed inside the lingered block, once live.  Two
+    -- managed rows for one disk line corrupt locate/drift, so suppress the live
+    -- copy by keying every subtree row, not just the root.
     local linger_keys = {}
     for _, ent in ipairs(linger_entries) do
       local path = ent.src_path or (ent.task and ent.task._src_path) or ""
       local line_nr = ent.src_line or (ent.task and ent.task._src_line) or 0
       linger_keys[path .. ":" .. tostring(line_nr)] = true
+      if ent.linger_subtree then
+        for _, row in ipairs(ent.linger_subtree) do
+          local rp = row.src_path or ""
+          local rl = row.src_line or 0
+          linger_keys[rp .. ":" .. tostring(rl)] = true
+        end
+      end
     end
 
-    -- Filter live tasks: drop those whose (src_path, src_line) matches an active
-    -- linger entry in this group (Q8 dedup: linger wins within same query).
+    -- Filter live units: drop those whose key matches an active linger entry in
+    -- this group (Q8 dedup: linger wins within same query).
     local filtered_live = {}
-    for _, task in ipairs(live_tasks) do
-      local key = (task._src_path or "") .. ":" .. tostring(task._src_line or 0)
-      if not linger_keys[key] then
-        filtered_live[#filtered_live + 1] = task
+    for _, unit in ipairs(live_units) do
+      if not linger_keys[unit.key] then
+        filtered_live[#filtered_live + 1] = unit
       end
     end
 
@@ -384,75 +514,349 @@ function M.layout(query_result, opts)
     end)
 
     -- Interleave: walk filtered_live with running output_idx.  Before emitting
-    -- each live task, drain indexed lingers whose prior_index ≤ output_idx
-    -- (linger holds its prior slot; live task gets bumped one position).
+    -- each live unit, drain indexed lingers whose prior_index ≤ output_idx
+    -- (linger holds its prior slot; live unit gets bumped one position).
     local output_idx = 0
     local linger_i = 1
-    for _, task in ipairs(filtered_live) do
+    for _, unit in ipairs(filtered_live) do
       while linger_i <= #indexed and indexed[linger_i].prior_index_within_group <= output_idx do
-        lines[#lines + 1] = build_linger_line(indexed[linger_i], group_name, output_idx)
+        emit_linger(indexed[linger_i], group_name, output_idx)
         linger_i = linger_i + 1
         output_idx = output_idx + 1
       end
-      lines[#lines + 1] = build_live_line(task, group_name, output_idx)
+      unit.emit(group_name, output_idx)
       output_idx = output_idx + 1
     end
 
     -- Remaining indexed lingers whose prior_index exceeded the live count.
     while linger_i <= #indexed do
-      lines[#lines + 1] = build_linger_line(indexed[linger_i], group_name, output_idx)
+      emit_linger(indexed[linger_i], group_name, output_idx)
       linger_i = linger_i + 1
       output_idx = output_idx + 1
     end
 
     -- Unindexed (legacy fallback) lingers appended at end.
     for _, ent in ipairs(unindexed) do
-      lines[#lines + 1] = build_linger_line(ent, group_name, output_idx)
+      emit_linger(ent, group_name, output_idx)
       output_idx = output_idx + 1
     end
   end
 
-  --- Partition a group's task list into [non_completed..., completed...] while
-  --- preserving the input order within each tier.  No-op (returns the input
-  --- unchanged) when dim_completed is false.
-  --- @param tasks table[]
-  --- @return table[]
-  local function partition_completed(tasks)
-    if not dim_completed then
-      return tasks
-    end
-    local active, done = {}, {}
-    for _, t in ipairs(tasks) do
-      if status_mod.is_completed(t.status_symbol) then
-        done[#done + 1] = t
-      else
-        active[#active + 1] = t
-      end
-    end
-    if #done == 0 then
-      return tasks
-    end
-    -- Concatenate active first, then completed.
-    for _, t in ipairs(done) do
-      active[#active + 1] = t
-    end
-    return active
+  --- Build a render record for a tree TASK row.  Reuses build_live_line's
+  --- serialize+backlink path, then prepends the depth-derived 2-space indent so
+  --- the dashboard nesting mirrors the source.  Carries the tree-specific
+  --- metadata (tree_kind / depth / fold_group / matched) so draw can register
+  --- it as a managed EDITABLE row and group it into a per-subtree fold.
+  --- @param row table  tree row from query/tree.lua
+  --- @return table  render record
+  function build_tree_task_line(row)
+    -- Descendant tasks come from the node model (nodes_for); run.lua only sets
+    -- _src_path/_src_line on the MATCHED root, so stamp every tree task's source
+    -- coordinates from the row before serializing.  Without this, a nested task's
+    -- src_line is nil and edit-through can't locate its source line.
+    row.task._src_path = row.src_path
+    row.task._src_line = row.src_line
+    local rec = build_live_line(row.task, row.group_name or "", row.group_index or 0)
+    -- The dashboard renders nested tree tasks with a depth-relative 2-space
+    -- indent (tree_indent), which differs from the task's ON-DISK leading
+    -- whitespace whenever the vault doesn't use exactly 2-space nesting.  On an
+    -- edit-flush the dashboard line is written back to source, so we must record
+    -- the ORIGINAL source indent here and re-apply it on write-back (see
+    -- render/edit.lua) — otherwise a 4-space / tab-indented child would be
+    -- rewritten with the dashboard's 2-space indent, corrupting the nesting.
+    rec.source_indent = row.task.indent or ""
+    -- depth is the TRUE source depth (no re-rooting).  ALWAYS strip the
+    -- serialized text's leading whitespace and re-apply the depth-relative
+    -- 2-space indent — including depth 0, which strips to flush-left.  Only the
+    -- DISPLAY (rec.text) changes; rec.source_indent (true on-disk indent) and
+    -- rec.source_text (verbatim disk line, set by build_live_line) stay intact so
+    -- write-back/locate compare against the real source, not the rendered column.
+    local lead = tree_indent(row.depth)
+    local body = rec.text:gsub("^%s*", "")
+    rec.text = lead .. body
+    rec.tree_kind = "task"
+    rec.depth = row.depth
+    rec.fold_group = row.fold_group
+    rec.matched = row.matched or false
+    -- TRUE structural parent line (nil at top level) for the edit.lua group-attr
+    -- gate's parent-chain walk.
+    rec.parent_line = row.parent_line
+    -- Connector-ancestor (breadcrumb) rows render dimmed (same highlight as
+    -- lingered rows) but stay managed + editable; build_live_line already set
+    -- rec.dim for live-completed, so OR the tree dim flag in.
+    rec.dim = rec.dim or row.dim or nil
+    return rec
   end
 
-  for _, group in ipairs(live_groups) do
-    local group_name = group.name or ""
-    -- Group header: only emit when there is a named group.
-    if group_name ~= "" then
+  --- Build a render record for a tree BULLET (non-task description) row.
+  --- Phase 5a makes bullet rows EDITABLE in-place: they render their literal
+  --- text at the depth-relative indent using the ORIGINAL source marker, and are
+  --- registered as managed EDITABLE rows.  An in-place body edit writes back RAW
+  --- (no task serialize / no `- [ ]` repair): the source line is reconstructed as
+  --- bullet_indent .. marker .. " " .. body (see render/edit.lua's bullet branch).
+  ---
+  --- The dashboard form keeps the marker (so `*`/`+` show as themselves) at the
+  --- depth-relative indent; the source form keeps the original raw indent.  Both
+  --- derive from the same body so they never diverge.
+  --- @param row table
+  --- @return table
+  function build_tree_bullet_line(row)
+    local lead = tree_indent(row.depth)
+    -- The node model stores the bullet's TRIMMED body (no list marker) plus the
+    -- ORIGINAL marker (row.bullet_marker) and raw source indent (row.bullet_indent).
+    -- Render the original marker (not a synthesized "-") so "*"/"+" bullets show
+    -- as themselves; depth supplies the dashboard leading whitespace.
+    local marker = row.bullet_marker or "-"
+    local source_indent = row.bullet_indent or ""
+    local body = (row.text or ""):gsub("^%s*", "")
+    local text = lead .. marker .. " " .. body
+    -- The VERBATIM on-disk line (node.source_line, threaded as bullet_source_text)
+    -- is used as managed.task_text/expected_text for drift+locate so the flush
+    -- compares against the EXACT disk line — mirroring how a task row uses
+    -- task.raw_line.  A trimmed reconstruction (source_indent..marker.." "..body)
+    -- would NOT match a disk line that has trailing spaces or multiple
+    -- post-marker spaces, so M.locate would silently drop the edit/delete.  Fall
+    -- back to the reconstruction only for synthesized rows lacking a source line
+    -- (e.g. tests / generated rows), matching the task-row fallback.
+    local source_text = row.bullet_source_text or (source_indent .. marker .. " " .. body)
+    return {
+      kind = "task", -- draw inserts it as a real buffer line + managed row
+      tree_kind = "bullet",
+      text = text,
+      src_path = row.src_path,
+      src_line = row.src_line,
+      src_hash = src_hash(text),
+      -- ORIGINAL source leading whitespace + marker for write-back (see
+      -- render/edit.lua bullet branch).  source_indent presence is what flags a
+      -- managed row as a tree row in flush; bullet_marker distinguishes the
+      -- bullet (raw) write path from the task (serialize) write path.
+      source_indent = source_indent,
+      bullet_marker = marker,
+      source_text = source_text,
+      depth = row.depth,
+      fold_group = row.fold_group,
+      matched = false,
+      parent_line = row.parent_line,
+      -- A connector-ancestor bullet (a checkbox nested under a `-` bullet) renders
+      -- dimmed via the linger highlight, like a dim task ancestor.
+      dim = row.dim or nil,
+      indent = "",
+    }
+  end
+
+  --- Build a render record for a tree BLANK row (an interspersed empty line in
+  --- the subtree).  Renders as an empty buffer line; READ-ONLY like bullets.
+  --- @param row table
+  --- @return table
+  function build_tree_blank_line(row)
+    return {
+      kind = "task",
+      tree_kind = "blank",
+      read_only = true,
+      text = "",
+      src_path = row.src_path,
+      src_line = row.src_line,
+      src_hash = src_hash(""),
+      depth = nil,
+      fold_group = row.fold_group,
+      matched = false,
+      indent = "",
+    }
+  end
+
+  -- ── Build per-group LIVE UNITS (shared by FLAT and TREE) ───────────────────
+  -- A "unit" is one index slot in a group body: it emits its row(s) at the given
+  -- (group_name, group_index) and carries a (path,line) key for linger dedup.
+  -- FLAT: one live task → one unit (one row).  TREE: one matched ROOT → one unit
+  -- (root + its drag rows).  Both converge on emit_group_body so linger
+  -- interleaving / dedup / positioning are identical.  Connector-ancestor (dim)
+  -- rows in the tree path are NOT units — they are emitted in place ahead of the
+  -- lit root they precede (fold_group 0, always-visible breadcrumb), and never
+  -- consume an index slot, so prior_index splicing matches the flat path.
+  --
+  -- ordered_live_groups: { { name=string, units={unit,…} }, … } in live order.
+  local ordered_live_groups = {}
+
+  if query_result.tree_rows then
+    -- Group tree rows by group name (caller/source order), then partition each
+    -- group's rows into UNITS keyed by group_index (the root's position).  A
+    -- DIM connector-ancestor row (dim=true) is NOT part of any lit unit; emit it
+    -- ahead of the first unit it precedes so the breadcrumb renders before its
+    -- matched descendant.
+    local group_order = {}
+    local seen = {}
+    local rows_by_group = {}
+    for _, row in ipairs(query_result.tree_rows) do
+      local gn = row.group_name or ""
+      if not seen[gn] then
+        seen[gn] = true
+        group_order[#group_order + 1] = gn
+        rows_by_group[gn] = {}
+      end
+      table.insert(rows_by_group[gn], row)
+    end
+
+    for _, gn in ipairs(group_order) do
+      local units = {}
+      -- pending_dim: dim ANCESTOR breadcrumb rows (fold_group 0) seen since the
+      -- last lit root; flushed (emitted in place) at the head of the next lit
+      -- unit's output.  A breadcrumb can precede a LATER root (after the current
+      -- unit's descendants), which is why it must be buffered rather than ride
+      -- along.  A dim DESCENDANT (fold_group > 0) is NOT a breadcrumb — it stays
+      -- in place inside its lit root's subtree (see the cur_unit branch below).
+      local pending_dim = {}
+      local cur_unit = nil
+      for _, row in ipairs(rows_by_group[gn]) do
+        -- Only a dim ANCESTOR is a breadcrumb.  assemble tags ancestor rows with
+        -- fold_group 0 and descendant rows with fold_group > 0; without this
+        -- split a dim descendant (e.g. a non-matching child bullet between two
+        -- lit siblings) was buffered as a breadcrumb and dumped at the END of the
+        -- group instead of rendering in source order.
+        local is_breadcrumb = row.dim and (row.fold_group == 0 or row.fold_group == nil)
+        if is_breadcrumb then
+          pending_dim[#pending_dim + 1] = row
+        elseif row.matched then
+          -- A new lit ROOT starts a new unit; capture the dim breadcrumbs that
+          -- precede it so the unit emits them first.
+          local breadcrumbs = pending_dim
+          pending_dim = {}
+          local rows_for_unit = { row }
+          cur_unit = {
+            key = (row.src_path or "") .. ":" .. tostring(row.src_line or 0),
+            breadcrumbs = breadcrumbs,
+            rows = rows_for_unit,
+          }
+          units[#units + 1] = cur_unit
+        elseif cur_unit then
+          -- A LIT descendant OR a DIM descendant (fold_group > 0) rides along in
+          -- the current unit's drag, in source order — only ancestor breadcrumbs
+          -- are deferred.
+          cur_unit.rows[#cur_unit.rows + 1] = row
+        else
+          -- Defensive: a non-matched, non-dim row with no current unit (should
+          -- not occur given assemble's ordering) — treat as its own unit so it
+          -- is never dropped.
+          cur_unit = {
+            key = (row.src_path or "") .. ":" .. tostring(row.src_line or 0),
+            breadcrumbs = pending_dim,
+            rows = { row },
+          }
+          pending_dim = {}
+          units[#units + 1] = cur_unit
+        end
+      end
+      -- Trailing dim breadcrumbs with no following lit root (degenerate): emit
+      -- them as a standalone always-visible unit so they are not lost.
+      if #pending_dim > 0 then
+        units[#units + 1] = { key = "\0dim", breadcrumbs = pending_dim, rows = {} }
+      end
+
+      -- Wrap each unit's rows into an emit closure.  The closure stamps the
+      -- group_index emit_group_body assigns (which reflects any linger that
+      -- bumped this unit) onto the lit root + descendant rows, exactly like the
+      -- flat path passes output_idx into build_live_line — so a later toggle of a
+      -- bumped tree root recovers the SAME prior_index_within_group flat would.
+      -- Breadcrumb (dim ancestor) rows are not index slots and keep their own
+      -- group metadata.
+      local function emit_tree_row(trow)
+        if trow.kind == "task" then
+          lines[#lines + 1] = build_tree_task_line(trow)
+        elseif trow.kind == "bullet" then
+          lines[#lines + 1] = build_tree_bullet_line(trow)
+        else
+          lines[#lines + 1] = build_tree_blank_line(trow)
+        end
+      end
+      for _, u in ipairs(units) do
+        local breadcrumbs = u.breadcrumbs
+        local rows_for_unit = u.rows
+        u.emit = function(group_name, group_index)
+          for _, brow in ipairs(breadcrumbs) do
+            emit_tree_row(brow)
+          end
+          for _, trow in ipairs(rows_for_unit) do
+            trow.group_name = group_name
+            trow.group_index = group_index
+            emit_tree_row(trow)
+          end
+        end
+      end
+
+      ordered_live_groups[#ordered_live_groups + 1] = { name = gn, units = units }
+    end
+  else
+    -- FLAT: one live task → one unit (one row via build_live_line).
+    for _, group in ipairs(live_groups) do
+      local gname = group.name or ""
+      local units = {}
+      for _, task in ipairs(group.tasks or {}) do
+        local t = task
+        units[#units + 1] = {
+          key = (t._src_path or "") .. ":" .. tostring(t._src_line or 0),
+          emit = function(group_name, group_index)
+            lines[#lines + 1] = build_live_line(t, group_name, group_index)
+          end,
+        }
+      end
+      ordered_live_groups[#ordered_live_groups + 1] = { name = gname, units = units }
+    end
+  end
+
+  -- ── Unified group emission (headers + bodies + ghost groups) ───────────────
+  -- ONE loop drives BOTH modes: the header rule (named always; unnamed only in a
+  -- multi-group context) and the body emission (emit_group_body: live units +
+  -- linger splice + dedup) are identical, so a tree-mode regression in any of
+  -- these surfaces in the parametrized flat-vs-tree harness.
+  --
+  -- The tree path's multi_group flag is recomputed from its own group names
+  -- (live_groups is empty-of-headers in tree mode — run.lua fills tree_rows), but
+  -- the RULE is the same: header iff named, or unnamed-with-more-than-one-group.
+  --
+  -- Tree-mode ghost detection must derive from ordered_live_groups (the names that
+  -- actually rendered LIVE BODIES), NOT from query_result.groups: a group can be
+  -- PRESENT in query_result.groups yet produce zero tree_rows (a named group with
+  -- no matching tasks).  The flat-path ghost_names puts that name in live_set, so
+  -- a linger bucketed under it would be neither spliced (no ordered_live_group of
+  -- that name) nor ghosted (excluded by live_set) — it would silently vanish.
+  -- Recomputing from the rendered live names lets such a linger surface as a
+  -- ghost group.  Flat mode keeps the original ghost_names byte-for-byte.
+  if query_result.tree_rows then
+    local live_set = {}
+    for _, g in ipairs(ordered_live_groups) do
+      live_set[g.name or ""] = true
+    end
+    ghost_names = {}
+    for name in pairs(lingers_by_group) do
+      if not live_set[name] then
+        ghost_names[#ghost_names + 1] = name
+      end
+    end
+    table.sort(ghost_names, function(a, b)
+      return vim.stricmp(a, b) < 0
+    end)
+  end
+
+  local emit_multi_group
+  if query_result.tree_rows then
+    local distinct = #ordered_live_groups
+    local first_name = ordered_live_groups[1] and ordered_live_groups[1].name or nil
+    -- Ghost groups also count toward multi_group in tree mode.
+    emit_multi_group = (distinct + #ghost_names) > 1 or (first_name ~= nil and first_name ~= "")
+  else
+    emit_multi_group = multi_group
+  end
+
+  local function emit_group_header(name)
+    if name ~= "" then
       lines[#lines + 1] = {
         kind = "group_header",
-        text = "## " .. group_name,
+        text = "## " .. name,
         src_path = nil,
         src_line = nil,
         src_hash = nil,
         indent = "",
       }
-    elseif multi_group then
-      -- Unnamed group in a multi-group context still gets a header.
+    elseif emit_multi_group then
       lines[#lines + 1] = {
         kind = "group_header",
         text = "## (no group)",
@@ -462,36 +866,19 @@ function M.layout(query_result, opts)
         indent = "",
       }
     end
-
-    -- Interleaved emission: live tasks partitioned by completion, lingers
-    -- spliced at prior_index_within_group, dedup of live tasks that match
-    -- active lingers in this group.
-    emit_group_body(group_name, partition_completed(group.tasks or {}), lingers_by_group[group_name])
   end
 
-  -- Ghost groups: emit a header and the linger rows for each name that had no
-  -- corresponding live group in the current result set.
+  for _, g in ipairs(ordered_live_groups) do
+    emit_group_header(g.name)
+    emit_group_body(g.name, g.units, lingers_by_group[g.name])
+  end
+
+  -- Ghost groups: a header + linger rows for each linger group-name with no live
+  -- group in the current result set.  Identical for flat and tree (a tree linger
+  -- carries linger_subtree, so emit_linger renders the whole dimmed block).
   for _, name in ipairs(ghost_names) do
     if not consumed_linger_groups[name] then
-      if name ~= "" then
-        lines[#lines + 1] = {
-          kind = "group_header",
-          text = "## " .. name,
-          src_path = nil,
-          src_line = nil,
-          src_hash = nil,
-          indent = "",
-        }
-      elseif multi_group then
-        lines[#lines + 1] = {
-          kind = "group_header",
-          text = "## (no group)",
-          src_path = nil,
-          src_line = nil,
-          src_hash = nil,
-          indent = "",
-        }
-      end
+      emit_group_header(name)
       emit_group_body(name, {}, lingers_by_group[name])
     end
   end

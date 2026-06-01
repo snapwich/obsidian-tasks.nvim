@@ -189,6 +189,25 @@ local function classify_and_commit(bufnr)
       local cur_lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
       local current = cur_lines[1]
       local meta = meta_by_row[row]
+      -- Read-only tree rows (BLANK only, Phase 5a) are managed but never written
+      -- to source.  Skip commit entirely; the rerender restores them to
+      -- canonical, so a user edit is simply reverted.  Tree BULLET rows are NOT
+      -- read-only — their MUTATE/DELETE commit through the edit.lua flush path
+      -- (this classify_and_commit pass only handles status flips, which bullets,
+      -- lacking a checkbox, never match → they fall through to flush as before).
+      if meta ~= nil and meta.read_only then
+        meta = nil
+      end
+      -- Defense-in-depth (Phase 6 dispatch-by-kind firewall): a bullet/blank is
+      -- not a task and must never be status-flipped by a direct buffer edit, even
+      -- a pathological bullet whose body renders like a canonical checkbox line
+      -- (e.g. a '-' bullet whose text is literally "[ ] foo").  Skip the
+      -- status-flip commit for these kinds here so the kind firewall is enforced
+      -- explicitly, not just incidentally by checkbox-absence.  (BULLET MUTATE/
+      -- DELETE edits still flow through the edit.lua flush path unchanged.)
+      if meta ~= nil and (meta.tree_kind == "bullet" or meta.tree_kind == "blank") then
+        meta = nil
+      end
       if current ~= nil and meta ~= nil and meta.rendered_text ~= nil then
         -- Route every row through the per-row classifier so that status flips,
         -- description edits, deletes, etc. all follow a single classification
@@ -253,6 +272,41 @@ local function classify_and_commit(bufnr)
       end
     end
   end
+end
+
+--- Does *bufnr* have any pending change that the revert pass must reconcile?
+---
+--- True when, within the managed-region snapshot, a managed row differs from its
+--- canonical rendered_text (a status/field edit or a delete), an unmanaged
+--- non-blank row sits inside a region (a typed/pasted INSERT awaiting reconcile),
+--- or pending deletes were recorded.  False means every managed row is already
+--- canonical and the only edits live OUTSIDE managed rows — there is nothing to
+--- revert, and do_revert must NOT run (it would poison native undo; see caller).
+---
+--- @param bufnr integer
+--- @return boolean
+local function needs_revert(bufnr)
+  if _pending_deletes[bufnr] and #_pending_deletes[bufnr] > 0 then
+    return true
+  end
+  local snap = _region_snapshot[bufnr] or {}
+  local meta = _meta_snapshot[bufnr] or {}
+  for _, region in ipairs(snap) do
+    for row = region[1], region[2] do
+      local cur = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1]
+      local m = meta[row]
+      if m then
+        -- Managed row: dirty when it no longer matches canonical, or vanished.
+        if cur == nil or cur ~= m.rendered_text then
+          return true
+        end
+      elseif cur ~= nil and not cur:match("^%s*$") then
+        -- Unmanaged non-blank row inside a managed region → a pending INSERT.
+        return true
+      end
+    end
+  end
+  return false
 end
 
 do_revert = function(bufnr)
@@ -676,7 +730,15 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
     -- _pending_deletes still holds the deleted rows that need block-aware
     -- source delete + P7 gate evaluation.  Schedule flush directly so flush
     -- can drain pending_deletes (e.g. ggdG that wipes the whole dashboard).
-    if _pending_deletes[bufnr] and #_pending_deletes[bufnr] > 0 then
+    --
+    -- Likewise a pure INSERT of brand-new rows (delta > 0) into a managed region
+    -- has NO meta for the new rows, so the loop above scheduled no flush — yet
+    -- those rows need flush's INSERT detection to reconcile them to source.  This
+    -- is the normal-mode paste (`p`) path: it never fires InsertLeave, so without
+    -- this the new rows are silently cleared by the do_revert below.  Schedule a
+    -- flush; flush self-gates on insert/replace mode, so when this fires mid-`o`
+    -- typing it's a harmless no-op until InsertLeave drives the real flush.
+    if (delta > 0) or (_pending_deletes[bufnr] and #_pending_deletes[bufnr] > 0) then
       edit_m.flush_queue[bufnr] = edit_m.flush_queue[bufnr] or { rows = {}, scheduled = false }
       if not edit_m.flush_queue[bufnr].scheduled then
         edit_m.flush_queue[bufnr].scheduled = true
@@ -780,6 +842,17 @@ end
 ---
 --- @param bufnr integer
 function M.force_revert(bufnr)
+  -- InsertLeave catch-all.  When the just-finished insert touched NOTHING managed
+  -- (prose around the fence, a query tweak), there is nothing to revert — and
+  -- do_revert's `undojoin` + undolevels=-1 rerender would join a non-undoable
+  -- rerender onto the user's edit, DESTROYING its native undo entry (pressing `u`
+  -- would then do nothing).  Skip so native undo keeps working for non-managed
+  -- edits.  (The on_lines-scheduled do_revert path is unaffected: it only fires
+  -- when on_lines already decided a revert is needed — e.g. an EOF sentinel
+  -- delete — so sentinel restoration still works.)
+  if not needs_revert(bufnr) then
+    return
+  end
   do_revert(bufnr)
 end
 
@@ -879,6 +952,21 @@ end
 --- @return table  { [row] = { source_file, source_row, task_text, rendered_text } }
 function M.meta_snapshot(bufnr)
   return _meta_snapshot[bufnr] or {}
+end
+
+--- Test seam: overwrite the region + meta snapshots for *bufnr*.
+---
+--- Lets a test drive render/edit.flush with a synthetic managed-row layout
+--- without booting a full render — used to exercise flush branches (e.g. the
+--- Phase 5b no_anchor revert) that a live `show tree` render cannot construct
+--- because a rendered subtree always roots its matched task at depth 0.
+---
+--- @param bufnr    integer
+--- @param regions  table[]  array of { first_row, last_row } (0-indexed inclusive)
+--- @param meta     table    { [row] = meta }
+function M._set_snapshots_for_test(bufnr, regions, meta)
+  _region_snapshot[bufnr] = regions or {}
+  _meta_snapshot[bufnr] = meta or {}
 end
 
 --- Return internal state snapshot for tests.

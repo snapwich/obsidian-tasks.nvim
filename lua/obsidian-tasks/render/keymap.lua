@@ -74,6 +74,17 @@ local function resolve_at_cursor(bufnr)
   local managed = require("obsidian-tasks.render.managed")
   local meta = managed.task_meta_for_row(bufnr, lnum)
   if meta then
+    -- Per-node-kind dispatch (Phase 6, requirements §11).  A description BULLET
+    -- and a tree BLANK are managed but are NOT tasks; task-mutation keymaps
+    -- (<leader>tt/td/tp/tT/te/…) must refuse with a "not a task" notice and NO
+    -- pass-through.  This mirrors cmd.resolve_task_at's guard so the keymap
+    -- handlers that read resolved.task directly (due/tags/edit) bail with the
+    -- same notice instead of silently doing nothing.  Real TASK rows fall
+    -- through unchanged.
+    if meta.tree_kind == "bullet" or meta.tree_kind == "blank" then
+      log.info("obsidian-tasks: not a task — this row has no task to change")
+      return nil
+    end
     -- Render-mode: drift-check.
     local current = read_source_line(meta.source_file, meta.source_row)
     if current ~= nil and current ~= meta.task_text then
@@ -394,17 +405,40 @@ local DASHBOARD_LEADER_LHS = {
 -- ring is empty.
 local UNDO_LHS = { "u", "<C-r>" }
 
---- Build the u handler closed over *bufnr*.  Tries the plugin undo ring;
---- when empty, falls back to native :undo so prose-edit undo still works.
+--- Run native `undo`/`redo` on the current buffer; return whether it changed
+--- anything (changedtick advances only when the command actually moved state).
+--- @param verb string  "undo" | "redo"
+--- @return boolean changed
+local function native_history(verb)
+  local before = vim.b.changedtick
+  pcall(vim.cmd, verb)
+  return vim.b.changedtick ~= before
+end
+
+--- Build the u handler closed over *bufnr*.
+---
+--- Recency-ordered arbitration: a plugin task edit writes to a SOURCE file and
+--- re-renders with undolevels = -1, so it never advances the dashboard buffer's
+--- native undo sequence.  Each ring entry is stamped with the native seq at push
+--- time; `u` undoes whichever history is MORE RECENT — native (a prose / query
+--- edit) when the live seq is past the ring top, otherwise the plugin ring.  A
+--- no-op of the chosen path falls back to the other so `u` is never inert.
 --- @param bufnr integer
 --- @return fun()
 local function make_undo_handler(bufnr)
   return function()
     local cmd = require("obsidian-tasks.cmd")
-    if cmd.dashboard_undo(bufnr) then
-      return
+    if cmd.prefer_native_undo(bufnr) then
+      if native_history("undo") then
+        return
+      end
+      cmd.dashboard_undo(bufnr) -- nothing native to undo → try the ring
+    else
+      if cmd.dashboard_undo(bufnr) then
+        return
+      end
+      native_history("undo") -- ring drift/empty → native
     end
-    vim.cmd("undo")
   end
 end
 
@@ -414,10 +448,17 @@ end
 local function make_redo_handler(bufnr)
   return function()
     local cmd = require("obsidian-tasks.cmd")
-    if cmd.dashboard_redo(bufnr) then
-      return
+    if cmd.prefer_native_redo(bufnr) then
+      if native_history("redo") then
+        return
+      end
+      cmd.dashboard_redo(bufnr)
+    else
+      if cmd.dashboard_redo(bufnr) then
+        return
+      end
+      native_history("redo")
     end
-    vim.cmd("redo")
   end
 end
 

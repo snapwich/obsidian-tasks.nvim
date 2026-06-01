@@ -235,6 +235,27 @@ function M.run(ast, index, workspace_root)
   -- 8. Header summary.
   local summary = header_summary(ast)
 
+  -- 9. Tree assembly (Phase 4 wiring).
+  --
+  -- The tree branch is INTENTIONALLY unmistakable: it fires ONLY when
+  -- `ast.tree` is true (set by `show tree`).  When false, `tree_rows` is left
+  -- nil and render/layout.lua takes the EXACT flat path it always has — the
+  -- groups walk is byte-identical and never routes through tree.assemble.
+  --
+  -- When ON: route the matched `groups` (the left-most matched tasks, already
+  -- filtered/sorted/grouped/limited above) through tree.assemble together with
+  -- the index's per-file node accessor (index.nodes_for).  assemble() drags in
+  -- each matched task's descendant subtree (child tasks + bullets + interspersed
+  -- blanks), dedups per group, and returns ordered ROWS that layout renders as
+  -- nested, foldable buffer lines.
+  local tree_rows = nil
+  if ast.tree then
+    local tree_mod = require("obsidian-tasks.query.tree")
+    tree_rows = tree_mod.assemble(groups, function(p)
+      return index.nodes_for(p)
+    end, { tree = true })
+  end
+
   return {
     groups = groups,
     total = total,
@@ -248,6 +269,10 @@ function M.run(ast, index, workspace_root)
     -- human-readable summary of the parsed query above the result list.
     -- The summary text is already in header_summary.
     explain = ast.explain or false,
+    -- Phase 4: when `show tree` is on, the assembled subtree rows.  nil in the
+    -- flat (default) case — layout.lua branches on its presence, so a nil here
+    -- keeps the flat render path byte-identical.
+    tree_rows = tree_rows,
   }
 end
 

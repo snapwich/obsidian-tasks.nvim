@@ -30,6 +30,34 @@ function M.build_command(root, pattern)
   }
 end
 
+--- Build the ripgrep argv for DISCOVERY: list the note files that contain at
+--- least one line matching *pattern*, without emitting the matching lines.
+---
+--- `--files-with-matches` (`-l`) prints one absolute path per matching file.
+--- The indexer then full-reads each discovered file with the unified node
+--- parser, so per-line content from rg is unnecessary.  Flags otherwise mirror
+--- `build_command` (note-type restriction + rg's default hidden/gitignore skip)
+--- so `.obsidian/` and gitignored files stay excluded exactly as before.
+---
+--- @param root    string  absolute vault root
+--- @param pattern string  ripgrep regex
+--- @return string[]
+function M.build_files_command(root, pattern)
+  return {
+    "rg",
+    "--no-config",
+    "--type-add",
+    "md:*.qmd",
+    "--type-add",
+    "md:*.base",
+    "--type=md",
+    "--files-with-matches",
+    "-e",
+    pattern,
+    root,
+  }
+end
+
 --- Decode a single line of `rg --json` NDJSON into the MatchData shape that
 --- index/scan.lua consumes, or nil for any non-`match` event / malformed line.
 ---

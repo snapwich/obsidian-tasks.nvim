@@ -721,6 +721,8 @@ T["render_buffer: skips apply_folds when default_folded = false"] = function()
     capture_fold_state = function(_bufnr, _fence_lnum)
       return "open"
     end,
+    set_foldinfo = function(_bufnr, _info) end,
+    clear_foldinfo = function(_bufnr) end,
     open_fold = function(_bufnr, _lnum_1) end,
   }
 
@@ -753,6 +755,8 @@ T["render_buffer: calls apply_folds when default_folded = true (default)"] = fun
     capture_fold_state = function(_bufnr, _fence_lnum)
       return "open"
     end,
+    set_foldinfo = function(_bufnr, _info) end,
+    clear_foldinfo = function(_bufnr) end,
     open_fold = function(_bufnr, _lnum_1) end,
   }
 
@@ -782,6 +786,8 @@ T["rerender_buffer: calls clear_buffer then render_buffer"] = function()
     capture_fold_state = function()
       return "open"
     end,
+    set_foldinfo = function() end,
+    clear_foldinfo = function() end,
     open_fold = function() end,
   }
 

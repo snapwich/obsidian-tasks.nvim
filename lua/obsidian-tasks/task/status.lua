@@ -159,8 +159,8 @@ function M.is_pending(entry)
 end
 
 --- Return true when *symbol* maps to a terminal "completed" status
---- (DONE or CANCELLED).  Used by the layout pipeline to dim-and-sink
---- completed tasks to the bottom of each group.
+--- (DONE or CANCELLED).  Used by the layout pipeline to dim completed
+--- tasks in place (they keep their sort-by position).
 ---
 --- @param symbol string  single character
 --- @return boolean

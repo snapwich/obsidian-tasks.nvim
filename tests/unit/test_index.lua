@@ -138,29 +138,58 @@ end
 T["ignore"] = ignore_tests
 
 -- ── index/scan.lua ────────────────────────────────────────────────────────
+-- rg is DISCOVERY-ONLY now: the adapter's `discover_files_async` yields paths,
+-- and scan full-reads each path with the unified node parser.  These tests stub
+-- discovery to yield temp-file paths whose real on-disk content is parsed.
 
 local scan_tests = MiniTest.new_set()
 
---- Build fake search matches from a list of { path, line, line_number }.
-local function make_matches(rows)
-  local out = {}
-  for _, r in ipairs(rows) do
-    out[#out + 1] = { path = { text = r[1] }, lines = { text = r[2] }, line_number = r[3] }
-  end
-  return out
+--- Write `content` to a fresh temp .md file and return its path.
+local function write_tmp(content)
+  local path = vim.fn.tempname() .. ".md"
+  local f = assert(io.open(path, "w"))
+  f:write(content)
+  f:close()
+  return path
+end
+
+-- Real frontmatter slicer, used so the single-read scan path can derive the
+-- ignore decision from the same lines it parses for nodes.
+local real_parse_frontmatter_lines = require("obsidian-tasks.util.obsidian").parse_frontmatter_lines
+
+--- Stub discover_files_async to yield each path in `paths`, then on_exit(code).
+--- Provides the real `parse_frontmatter_lines` so scan's single-read ignore
+--- check (ignore.is_ignored_fm(parse_frontmatter_lines(lines))) works.
+local function stub_discovery(paths, code)
+  return stub_module("obsidian-tasks.util.obsidian", {
+    parse_frontmatter_lines = real_parse_frontmatter_lines,
+    discover_files_async = function(_, _, on_path, on_exit)
+      for _, p in ipairs(paths) do
+        on_path(p)
+      end
+      on_exit(code or 0)
+    end,
+  })
+end
+
+--- Collect (task, path) tuples from a scan.walk over `paths`.
+--- The make_on_task hook (global_filter / DateFallback) is passed through.
+local function walk_tasks(paths, make_on_task)
+  local scan = fresh("obsidian-tasks.index.scan")
+  local tasks = {}
+  scan.walk({ root = VAULT }, function(task, path, line_num)
+    tasks[#tasks + 1] = { task = task, path = path, line_num = line_num }
+  end, function() end, make_on_task)
+  return tasks
 end
 
 scan_tests["walk: calls on_exit with ripgrep exit code"] = function()
   set_obsidian_stub()
   reset_opts()
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      on_exit(0)
-    end,
-  })
+  local cleanup_obs = stub_discovery({}, 0)
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
@@ -176,276 +205,225 @@ scan_tests["walk: calls on_exit with ripgrep exit code"] = function()
   MiniTest.expect.equality(got_code, 0)
 end
 
-scan_tests["walk: yields parsed tasks for valid task lines"] = function()
+scan_tests["walk: yields parsed tasks for valid task lines (full-read)"] = function()
   set_obsidian_stub()
   reset_opts()
 
-  local rows = make_matches({
-    { "/vault/note.md", "- [ ] Task one #task", 1 },
-    { "/vault/note.md", "- [x] Task two #task ✅ 2024-01-01", 2 },
-    { "/vault/note.md", "Not a task line", 3 },
-  })
+  local path = write_tmp("- [ ] Task one #task\n- [x] Task two #task ✅ 2024-01-01\nNot a task line\n")
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, m in ipairs(rows) do
-        on_match(m)
-      end
-      on_exit(0)
-    end,
-  })
+  local cleanup_obs = stub_discovery({ path })
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
 
-  -- Make vim.uv.fs_stat always succeed with a small size
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(_)
-    return { size = 100, mtime = { sec = 1000 } }
-  end
+  local tasks = walk_tasks({ path })
 
-  local scan = fresh("obsidian-tasks.index.scan")
-  local tasks = {}
-  scan.walk({ root = VAULT }, function(task, path, _line_num)
-    tasks[#tasks + 1] = { task = task, path = path }
-  end, function() end)
-
-  vim.uv.fs_stat = orig_stat
+  os.remove(path)
   cleanup_obs()
   cleanup_ign()
 
-  -- "Not a task line" should not produce a task
+  -- "Not a task line" should not produce a task.
   MiniTest.expect.equality(#tasks, 2)
   MiniTest.expect.equality(tasks[1].task.description, "Task one #task")
   MiniTest.expect.equality(tasks[2].task.description, "Task two #task")
+  MiniTest.expect.equality(tasks[1].line_num, 1)
+  MiniTest.expect.equality(tasks[2].line_num, 2)
 end
 
 scan_tests["walk: global_filter excludes tasks without filter string"] = function()
   set_obsidian_stub()
   reset_opts({ global_filter = "#task" })
 
-  local rows = make_matches({
-    { "/vault/note.md", "- [ ] Has tag #task", 1 },
-    { "/vault/note.md", "- [ ] No tag here", 2 },
-    { "/vault/note.md", "- [ ] Also has #task here", 3 },
-  })
+  local path = write_tmp("- [ ] Has tag #task\n- [ ] No tag here\n- [ ] Also has #task here\n")
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, m in ipairs(rows) do
-        on_match(m)
-      end
-      on_exit(0)
-    end,
-  })
+  local cleanup_obs = stub_discovery({ path })
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
 
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(_)
-    return { size = 100, mtime = { sec = 1000 } }
+  -- The global_filter hook lives in index/init.lua; reproduce it here so the
+  -- scan test exercises the same on_task vetoing contract.
+  local function make_on_task(_)
+    return function(task)
+      return task.description:find("#task", 1, true) ~= nil
+    end
   end
 
-  local scan = fresh("obsidian-tasks.index.scan")
-  local tasks = {}
-  scan.walk({ root = VAULT }, function(task, _, _)
-    tasks[#tasks + 1] = task
-  end, function() end)
+  local tasks = walk_tasks({ path }, make_on_task)
 
-  vim.uv.fs_stat = orig_stat
+  os.remove(path)
   cleanup_obs()
   cleanup_ign()
 
-  -- Only tasks containing "#task" in description should survive
   MiniTest.expect.equality(#tasks, 2)
-  MiniTest.expect.equality(tasks[1].description, "Has tag #task")
-  MiniTest.expect.equality(tasks[2].description, "Also has #task here")
+  MiniTest.expect.equality(tasks[1].task.description, "Has tag #task")
+  MiniTest.expect.equality(tasks[2].task.description, "Also has #task here")
 end
 
 scan_tests["walk: ignored files are skipped"] = function()
   set_obsidian_stub()
   reset_opts()
 
-  local rows = make_matches({
-    { "/vault/normal.md", "- [ ] Normal task", 1 },
-    { "/vault/ignored.md", "- [ ] Ignored task", 2 },
-  })
+  local normal = write_tmp("- [ ] Normal task\n")
+  -- The ignore decision now comes from the single-read frontmatter, so the
+  -- ignored file carries a real `tasks-plugin.ignore: true` and the REAL ignore
+  -- module (is_ignored_fm) is exercised — no path-based stub.
+  local ignored = write_tmp("---\ntasks-plugin:\n  ignore: true\n---\n- [ ] Ignored task\n")
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, m in ipairs(rows) do
-        on_match(m)
-      end
-      on_exit(0)
-    end,
-  })
-  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(path)
-      return path == "/vault/ignored.md"
-    end,
-  })
-
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(_)
-    return { size = 100, mtime = { sec = 1000 } }
+  local cleanup_obs = stub_discovery({ normal, ignored })
+  package.loaded["obsidian-tasks.index.ignore"] = nil
+  local cleanup_ign = function()
+    package.loaded["obsidian-tasks.index.ignore"] = nil
   end
 
-  local scan = fresh("obsidian-tasks.index.scan")
-  local tasks = {}
-  scan.walk({ root = VAULT }, function(task, _, _)
-    tasks[#tasks + 1] = task
-  end, function() end)
+  local tasks = walk_tasks({ normal, ignored })
 
-  vim.uv.fs_stat = orig_stat
+  os.remove(normal)
+  os.remove(ignored)
   cleanup_obs()
   cleanup_ign()
 
   MiniTest.expect.equality(#tasks, 1)
-  MiniTest.expect.equality(tasks[1].description, "Normal task")
+  MiniTest.expect.equality(tasks[1].task.description, "Normal task")
 end
 
 scan_tests["walk: files exceeding max_file_bytes are skipped"] = function()
   set_obsidian_stub()
-  reset_opts({ max_file_bytes = 100 })
+  reset_opts({ max_file_bytes = 20 })
 
-  local rows = make_matches({
-    { "/vault/small.md", "- [ ] Small task", 1 },
-    { "/vault/large.md", "- [ ] Large task", 2 },
-  })
+  -- Small file (< 20 bytes) and a large one (> 20 bytes).
+  local small = write_tmp("- [ ] S\n")
+  local large = write_tmp("- [ ] Large task that exceeds the byte budget for sure\n")
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, m in ipairs(rows) do
-        on_match(m)
-      end
-      on_exit(0)
-    end,
-  })
+  local cleanup_obs = stub_discovery({ small, large })
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
 
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(path)
-    if path == "/vault/large.md" then
-      return { size = 200, mtime = { sec = 1000 } }
-    end
-    return { size = 50, mtime = { sec = 1000 } }
-  end
+  local tasks = walk_tasks({ small, large })
 
-  local scan = fresh("obsidian-tasks.index.scan")
-  local tasks = {}
-  scan.walk({ root = VAULT }, function(task, _, _)
-    tasks[#tasks + 1] = task
-  end, function() end)
-
-  vim.uv.fs_stat = orig_stat
+  os.remove(small)
+  os.remove(large)
   cleanup_obs()
   cleanup_ign()
 
   MiniTest.expect.equality(#tasks, 1)
-  MiniTest.expect.equality(tasks[1].description, "Small task")
+  MiniTest.expect.equality(tasks[1].task.description, "S")
 end
 
 scan_tests["walk: task.heading tracks the nearest preceding ATX heading"] = function()
   set_obsidian_stub()
   reset_opts()
 
-  -- Headings and tasks interleaved in line order, as ripgrep emits a file.
-  local rows = make_matches({
-    { "/vault/note.md", "# Top", 1 },
-    { "/vault/note.md", "- [ ] Under top", 3 },
-    { "/vault/note.md", "## Section A", 5 },
-    { "/vault/note.md", "- [ ] Under A one", 6 },
-    { "/vault/note.md", "- [ ] Under A two", 7 },
-    { "/vault/note.md", "### Section B ###", 9 },
-    { "/vault/note.md", "- [ ] Under B", 10 },
-  })
+  local path = write_tmp(table.concat({
+    "# Top",
+    "",
+    "- [ ] Under top",
+    "",
+    "## Section A",
+    "- [ ] Under A one",
+    "- [ ] Under A two",
+    "",
+    "### Section B ###",
+    "- [ ] Under B",
+    "",
+  }, "\n"))
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, m in ipairs(rows) do
-        on_match(m)
-      end
-      on_exit(0)
-    end,
-  })
+  local cleanup_obs = stub_discovery({ path })
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
 
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(_)
-    return { size = 100, mtime = { sec = 1000 } }
-  end
+  local tasks = walk_tasks({ path })
 
-  local scan = fresh("obsidian-tasks.index.scan")
-  local tasks = {}
-  scan.walk({ root = VAULT }, function(task, _, _)
-    tasks[#tasks + 1] = task
-  end, function() end)
-
-  vim.uv.fs_stat = orig_stat
+  os.remove(path)
   cleanup_obs()
   cleanup_ign()
 
-  -- Heading lines are consumed internally, not yielded as tasks.
+  -- Heading lines are not yielded as tasks; each task carries its heading.
   MiniTest.expect.equality(#tasks, 4)
-  MiniTest.expect.equality(tasks[1].heading, "Top")
-  MiniTest.expect.equality(tasks[2].heading, "Section A")
-  MiniTest.expect.equality(tasks[3].heading, "Section A")
-  MiniTest.expect.equality(tasks[4].heading, "Section B") -- closing ### stripped
+  MiniTest.expect.equality(tasks[1].task.heading, "Top")
+  MiniTest.expect.equality(tasks[2].task.heading, "Section A")
+  MiniTest.expect.equality(tasks[3].task.heading, "Section A")
+  MiniTest.expect.equality(tasks[4].task.heading, "Section B") -- closing ### stripped
 end
 
 scan_tests["walk: a task above any heading has nil heading"] = function()
   set_obsidian_stub()
   reset_opts()
 
-  local rows = make_matches({
-    { "/vault/note.md", "- [ ] Orphan task", 1 },
-    { "/vault/note.md", "# Later heading", 2 },
-  })
+  local path = write_tmp("- [ ] Orphan task\n# Later heading\n")
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, m in ipairs(rows) do
-        on_match(m)
-      end
-      on_exit(0)
-    end,
-  })
+  local cleanup_obs = stub_discovery({ path })
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
 
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(_)
-    return { size = 100, mtime = { sec = 1000 } }
-  end
+  local tasks = walk_tasks({ path })
 
-  local scan = fresh("obsidian-tasks.index.scan")
-  local tasks = {}
-  scan.walk({ root = VAULT }, function(task, _, _)
-    tasks[#tasks + 1] = task
-  end, function() end)
-
-  vim.uv.fs_stat = orig_stat
+  os.remove(path)
   cleanup_obs()
   cleanup_ign()
 
   MiniTest.expect.equality(#tasks, 1)
-  MiniTest.expect.equality(tasks[1].heading, nil)
+  MiniTest.expect.equality(tasks[1].task.heading, nil)
+end
+
+-- Real-rg discovery: the relaxed DISCOVERY_PATTERN must match a file whose only
+-- task line has NO space after `]` (parser/discovery prefix alignment, MINOR-4).
+scan_tests["discovery (real rg): finds a file whose only task is `- [ ]nospace`"] = function()
+  if vim.fn.executable("rg") == 0 then
+    MiniTest.skip("rg not on PATH")
+    return
+  end
+  set_obsidian_stub()
+  reset_opts()
+
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local nospace = dir .. "/nospace.md"
+  local f = assert(io.open(nospace, "w"))
+  f:write("- [ ]nospace\n")
+  f:close()
+
+  -- Use the REAL adapter + the real DISCOVERY_PATTERN via scan.walk_files.
+  package.loaded["obsidian-tasks.util.obsidian"] = nil
+  package.loaded["obsidian-tasks.index.ignore"] = nil
+  local scan = fresh("obsidian-tasks.index.scan")
+
+  local discovered = {}
+  local done = false
+  scan.walk_files({ root = dir }, function(abs_path, _nodes)
+    discovered[#discovered + 1] = abs_path
+  end, function()
+    done = true
+  end)
+  -- discover_files_async schedule-wraps callbacks; drain the loop.
+  vim.wait(2000, function()
+    return done
+  end)
+
+  os.remove(nospace)
+  vim.fn.delete(dir, "rf")
+
+  MiniTest.expect.equality(done, true)
+  local found = false
+  for _, p in ipairs(discovered) do
+    if p:find("nospace.md", 1, true) then
+      found = true
+    end
+  end
+  MiniTest.expect.equality(found, true)
 end
 
 T["scan"] = scan_tests
@@ -808,6 +786,47 @@ init_tests["tasks_in: path_filter limits results"] = function()
   MiniTest.expect.equality(count_a, expected_a)
 end
 
+init_tests["nodes_for: returns the per-file node list for an indexed path"] = function()
+  set_obsidian_stub()
+  reset_opts()
+
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local path = vim.fn.tempname() .. ".md"
+  local f = assert(io.open(path, "w"))
+  f:write("- [ ] root\n  - [ ] child\n  - desc bullet\n")
+  f:close()
+  index.refresh_file(path)
+
+  local ns = index.nodes_for(path)
+  cleanup_ign()
+  os.remove(path)
+
+  MiniTest.expect.equality(type(ns), "table")
+  -- Same node list stored on the entry (task / task / bullet).
+  MiniTest.expect.equality(#ns, 3)
+  MiniTest.expect.equality(ns[1].kind, "task")
+  MiniTest.expect.equality(ns[2].kind, "task")
+  MiniTest.expect.equality(ns[2].parent_line, 1)
+  MiniTest.expect.equality(ns[3].kind, "bullet")
+  MiniTest.expect.equality(ns[3].parent_line, 1)
+end
+
+init_tests["nodes_for: unknown path returns an empty list"] = function()
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+  local ns = index.nodes_for("/no/such/path.md")
+  MiniTest.expect.equality(type(ns), "table")
+  MiniTest.expect.equality(#ns, 0)
+end
+
 init_tests["reverse_index: unknown path returns empty list"] = function()
   local index = fresh("obsidian-tasks.index")
   index._reset()
@@ -949,87 +968,85 @@ T["index"] = init_tests
 
 local integration_tests = MiniTest.new_set()
 
-integration_tests["fixture scan: 3 files, one ignored, global_filter=#task → correct count"] = function()
-  set_obsidian_stub()
-  reset_opts({ global_filter = "#task" })
+-- Hand-parse the `tasks-plugin.ignore` frontmatter for a fixture file, the way
+-- the real adapter's parse_frontmatter would return it to index/ignore.
+local function fixture_frontmatter(path)
+  local f = io.open(path, "r")
+  if not f then
+    return nil, { "cannot open " .. path }
+  end
+  local lines = {}
+  for line in f:lines() do
+    lines[#lines + 1] = line
+  end
+  f:close()
+  if lines[1] ~= "---" then
+    return {}, {}
+  end
+  local fm = {}
+  local in_tasks_plugin = false
+  for i = 2, #lines do
+    local line = lines[i]
+    if line == "---" then
+      break
+    end
+    if line:match("^tasks%-plugin:") then
+      in_tasks_plugin = true
+      fm["tasks-plugin"] = fm["tasks-plugin"] or {}
+    elseif in_tasks_plugin and line:match("^%s+ignore:%s+true") then
+      fm["tasks-plugin"].ignore = true
+    elseif not line:match("^%s") then
+      in_tasks_plugin = false
+    end
+  end
+  return fm, {}
+end
 
-  -- Use real parse_frontmatter via the adapter but stub the obsidian module
-  -- so frontmatter.parse works for our fixture files.
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    parse_frontmatter = function(path)
-      -- Read the file and hand-parse the frontmatter block for our fixtures.
-      local f = io.open(path, "r")
-      if not f then
-        return nil, { "cannot open " .. path }
-      end
-      local lines = {}
-      for line in f:lines() do
-        lines[#lines + 1] = line
-      end
-      f:close()
-
-      -- Simple YAML frontmatter scanner for test fixtures.
-      if lines[1] ~= "---" then
-        return {}, {}
-      end
-      local fm = {}
-      local in_tasks_plugin = false
-      for i = 2, #lines do
-        local line = lines[i]
-        if line == "---" then
-          break
-        end
-        -- Detect `tasks-plugin:` section
-        if line:match("^tasks%-plugin:") then
-          in_tasks_plugin = true
-          fm["tasks-plugin"] = fm["tasks-plugin"] or {}
-        elseif in_tasks_plugin and line:match("^%s+ignore:%s+true") then
-          fm["tasks-plugin"].ignore = true
-        elseif not line:match("^%s") then
-          in_tasks_plugin = false
-        end
-      end
-      return fm, {}
-    end,
-
-    search_async = function(ws, _, on_match, on_exit)
-      -- Synchronous simulation: walk the fixture vault ourselves.
-      local root = ws.root
-      local files = vim.fn.globpath(root, "*.md", false, true)
+-- Adapter stub: real parse_frontmatter_lines (the single-read ignore path uses
+-- it) + discovery that yields every fixture .md path with a checkbox task.  rg
+-- is discovery-only, so scan full-reads each yielded path from disk.
+-- `parse_frontmatter` is kept for any path that still reads it directly.
+local function fixture_adapter_stub()
+  return stub_module("obsidian-tasks.util.obsidian", {
+    parse_frontmatter = fixture_frontmatter,
+    parse_frontmatter_lines = real_parse_frontmatter_lines,
+    discover_files_async = function(ws, _, on_path, on_exit)
+      local files = vim.fn.globpath(ws.root, "*.md", false, true)
       for _, fpath in ipairs(files) do
+        -- Only yield task-bearing files (discovery semantics).
         local f = io.open(fpath, "r")
         if f then
-          local lineno = 0
+          local has_task = false
           for line in f:lines() do
-            lineno = lineno + 1
-            -- ripgrep pattern: task line with checkbox
             if line:match("^%s*[-*+] %[.%] ") then
-              on_match({
-                path = { text = fpath },
-                lines = { text = line },
-                line_number = lineno,
-              })
+              has_task = true
+              break
             end
           end
           f:close()
+          if has_task then
+            on_path(fpath)
+          end
         end
       end
       on_exit(0)
     end,
   })
+end
 
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(path)
-    local f = io.open(path, "r")
-    if not f then
-      return nil
+integration_tests["fixture scan: 3 files, one ignored, global_filter=#task → correct count"] = function()
+  set_obsidian_stub()
+  reset_opts({ global_filter = "#task" })
+
+  local cleanup_obs = fixture_adapter_stub()
+
+  -- The global_filter hook lives in index/init.lua; reproduce it here.
+  local function make_on_task(_)
+    return function(task)
+      return task.description:find("#task", 1, true) ~= nil
     end
-    local content = f:read("*a")
-    f:close()
-    return { size = #content, mtime = { sec = os.time() } }
   end
 
-  -- Clear module cache to pick up stubs
   package.loaded["obsidian-tasks.index.ignore"] = nil
   package.loaded["obsidian-tasks.index.scan"] = nil
   local scan = fresh("obsidian-tasks.index.scan")
@@ -1040,9 +1057,8 @@ integration_tests["fixture scan: 3 files, one ignored, global_filter=#task → c
     tasks[#tasks + 1] = { task = task, path = abs_path }
   end, function(_)
     done = true
-  end)
+  end, make_on_task)
 
-  vim.uv.fs_stat = orig_stat
   cleanup_obs()
 
   MiniTest.expect.equality(done, true)
@@ -1073,73 +1089,7 @@ integration_tests["fixture scan: no global_filter → includes all non-ignored t
   set_obsidian_stub()
   reset_opts({ global_filter = nil })
 
-  local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    parse_frontmatter = function(path)
-      local f = io.open(path, "r")
-      if not f then
-        return nil, { "cannot open " .. path }
-      end
-      local lines = {}
-      for line in f:lines() do
-        lines[#lines + 1] = line
-      end
-      f:close()
-      if lines[1] ~= "---" then
-        return {}, {}
-      end
-      local fm = {}
-      local in_tasks_plugin = false
-      for i = 2, #lines do
-        local line = lines[i]
-        if line == "---" then
-          break
-        end
-        if line:match("^tasks%-plugin:") then
-          in_tasks_plugin = true
-          fm["tasks-plugin"] = fm["tasks-plugin"] or {}
-        elseif in_tasks_plugin and line:match("^%s+ignore:%s+true") then
-          fm["tasks-plugin"].ignore = true
-        elseif not line:match("^%s") then
-          in_tasks_plugin = false
-        end
-      end
-      return fm, {}
-    end,
-
-    search_async = function(ws, _, on_match, on_exit)
-      local root = ws.root
-      local files = vim.fn.globpath(root, "*.md", false, true)
-      for _, fpath in ipairs(files) do
-        local f = io.open(fpath, "r")
-        if f then
-          local lineno = 0
-          for line in f:lines() do
-            lineno = lineno + 1
-            if line:match("^%s*[-*+] %[.%] ") or line:match("^%s*[-*+] %[x%] ") then
-              on_match({
-                path = { text = fpath },
-                lines = { text = line },
-                line_number = lineno,
-              })
-            end
-          end
-          f:close()
-        end
-      end
-      on_exit(0)
-    end,
-  })
-
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(path)
-    local f = io.open(path, "r")
-    if not f then
-      return nil
-    end
-    local content = f:read("*a")
-    f:close()
-    return { size = #content, mtime = { sec = os.time() } }
-  end
+  local cleanup_obs = fixture_adapter_stub()
 
   package.loaded["obsidian-tasks.index.ignore"] = nil
   package.loaded["obsidian-tasks.index.scan"] = nil
@@ -1150,7 +1100,6 @@ integration_tests["fixture scan: no global_filter → includes all non-ignored t
     tasks[#tasks + 1] = { task = task, path = abs_path }
   end, function() end)
 
-  vim.uv.fs_stat = orig_stat
   cleanup_obs()
 
   -- ignored_note.md must NOT appear
@@ -1168,7 +1117,7 @@ end
 
 T["integration"] = integration_tests
 
--- ── index refresh_all (async, stubbed) ───────────────────────────────────
+-- ── index refresh_all (async, stubbed discovery + real temp files) ────────
 
 local refresh_all_tests = MiniTest.new_set()
 
@@ -1176,30 +1125,31 @@ refresh_all_tests["refresh_all: populates index after walk completes"] = functio
   set_obsidian_stub()
   reset_opts()
 
-  local fake_tasks = {
-    { path = "/vault/a.md", line = "- [ ] Task alpha" },
-    { path = "/vault/a.md", line = "- [ ] Task beta" },
-    { path = "/vault/b.md", line = "- [ ] Task gamma" },
-  }
+  -- Real temp files so the full-read parser has something to read.
+  local path_a = vim.fn.tempname() .. ".md"
+  local path_b = vim.fn.tempname() .. ".md"
+  do
+    local f = assert(io.open(path_a, "w"))
+    f:write("- [ ] Task alpha\n- [ ] Task beta\n")
+    f:close()
+    f = assert(io.open(path_b, "w"))
+    f:write("- [ ] Task gamma\n")
+    f:close()
+  end
 
   local cleanup_obs = stub_module("obsidian-tasks.util.obsidian", {
-    search_async = function(_, _, on_match, on_exit)
-      for _, row in ipairs(fake_tasks) do
-        on_match({ path = { text = row.path }, lines = { text = row.line }, line_number = 1 })
-      end
+    parse_frontmatter_lines = real_parse_frontmatter_lines,
+    discover_files_async = function(_, _, on_path, on_exit)
+      on_path(path_a)
+      on_path(path_b)
       on_exit(0)
     end,
   })
   local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
-    is_ignored = function(_)
+    is_ignored_fm = function(_)
       return false
     end,
   })
-
-  local orig_stat = vim.uv.fs_stat
-  vim.uv.fs_stat = function(_)
-    return { size = 100, mtime = { sec = 9999 } }
-  end
 
   package.loaded["obsidian-tasks.index.scan"] = nil
   local index = fresh("obsidian-tasks.index")
@@ -1210,17 +1160,20 @@ refresh_all_tests["refresh_all: populates index after walk completes"] = functio
     done_called = true
   end)
 
-  vim.uv.fs_stat = orig_stat
   cleanup_obs()
   cleanup_ign()
+  os.remove(path_a)
+  os.remove(path_b)
 
   MiniTest.expect.equality(done_called, true)
 
   local raw = index._raw()
-  MiniTest.expect.equality(type(raw["/vault/a.md"]), "table")
-  MiniTest.expect.equality(#raw["/vault/a.md"].tasks, 2)
-  MiniTest.expect.equality(type(raw["/vault/b.md"]), "table")
-  MiniTest.expect.equality(#raw["/vault/b.md"].tasks, 1)
+  MiniTest.expect.equality(type(raw[path_a]), "table")
+  MiniTest.expect.equality(#raw[path_a].tasks, 2)
+  -- The node list carries the full structure (here: 2 task nodes).
+  MiniTest.expect.equality(#raw[path_a].nodes, 2)
+  MiniTest.expect.equality(type(raw[path_b]), "table")
+  MiniTest.expect.equality(#raw[path_b].tasks, 1)
 end
 
 T["refresh_all"] = refresh_all_tests

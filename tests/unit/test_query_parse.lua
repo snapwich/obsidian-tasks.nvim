@@ -498,7 +498,6 @@ local all_hide_keys = {
   "depends on",
   "backlinks",
   "task count",
-  "tree",
   "edit button",
   "postpone button",
 }
@@ -521,6 +520,83 @@ end
 
 T["hide: unknown subkey → parse_error"] = function()
   err1("hide unknown-field", "parse_error")
+end
+
+-- ── show / hide tree (Phase 2: opt-in tree, default flat) ──────────────────
+-- `show tree` is the OPT-IN; default is FLAT.  `hide tree` is the explicit
+-- default-off (upstream parity).  Both drive the SAME boolean (ast.tree).  Only
+-- `tree` is a valid show key — unknown show keys error like unknown hide keys.
+
+T["tree: default is flat (ast.tree == false)"] = function()
+  local ast = parse("not done")
+  eq(ast.tree, false)
+end
+
+T["tree: empty query → ast.tree == false"] = function()
+  local ast = parse("")
+  eq(ast.tree, false)
+end
+
+T["tree: `show tree` enables the tree (ast.tree == true)"] = function()
+  local ast = parse("show tree")
+  eq(ast.tree, true)
+  eq(#ast.errors, 0)
+  -- `show tree` is NOT a filter / hide directive.
+  eq(#ast.filters, 0)
+  eq(#ast.hide, 0)
+end
+
+T["tree: `hide tree` disables the tree (ast.tree == false), no error"] = function()
+  local ast = parse("hide tree")
+  eq(ast.tree, false)
+  eq(#ast.errors, 0)
+  -- `hide tree` is the tree toggle, NOT a generic hide subkey: it must NOT
+  -- accumulate into ast.hide (it would map to a `tree` hide flag otherwise).
+  eq(#ast.hide, 0)
+end
+
+T["tree: `show tree` then `hide tree` → last wins (off)"] = function()
+  local ast = parse("show tree\nhide tree")
+  eq(ast.tree, false)
+end
+
+T["tree: `hide tree` then `show tree` → last wins (on)"] = function()
+  local ast = parse("hide tree\nshow tree")
+  eq(ast.tree, true)
+end
+
+T["tree: unknown show key → parse_error (consistent with unknown hide)"] = function()
+  err1("show urgency", "parse_error")
+end
+
+T["tree: another unknown show key → parse_error"] = function()
+  err1("show nonsense", "parse_error")
+end
+
+T["tree: `show tree` combines with filters / sort / group / limit"] = function()
+  local query = table.concat({
+    "not done",
+    "show tree",
+    "sort by due",
+    "group by status",
+    "limit 5",
+  }, "\n")
+  local ast = parse(query)
+  eq(ast.tree, true)
+  eq(#ast.errors, 0)
+  eq(#ast.filters, 1)
+  eq(ast.filters[1].filter.type, "not_done")
+  eq(ast.sort_by[1], { key = "due", reverse = false })
+  eq(ast.group_by[1], { key = "status", reverse = false })
+  eq(ast.limit, 5)
+end
+
+T["tree: tolerant of trailing `reverse` sort/group syntax alongside show tree"] = function()
+  local ast = parse("show tree\nsort by due reverse\ngroup by status reverse")
+  eq(ast.tree, true)
+  eq(ast.sort_by[1], { key = "due", reverse = true })
+  eq(ast.group_by[1], { key = "status", reverse = true })
+  eq(#ast.errors, 0)
 end
 
 -- ── limit ─────────────────────────────────────────────────────────────────

@@ -25,6 +25,8 @@ local revert = require("obsidian-tasks.render.revert")
 local edit_mod = require("obsidian-tasks.render.edit")
 local cmd = require("obsidian-tasks.cmd")
 local managed = require("obsidian-tasks.render.managed")
+local nodes_mod = require("obsidian-tasks.index.nodes")
+local task_parse = require("obsidian-tasks.task.parse")
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -134,6 +136,71 @@ end
 -- row 3 = first task).
 local TASK_ROW = 3
 
+--- Tree-dashboard scaffolding backed by a REAL tempfile so flush()'s
+--- apply_source_edit reads/writes genuine disk content (needed to exercise the
+--- locate_miss path).  The index is stubbed: tasks_in returns the matched root,
+--- nodes_for parses the LIVE source file so the post-locate_miss full rerender
+--- rebuilds from the (possibly drifted) source.  Returns: bufnr, src_path,
+--- cleanup.
+local function setup_tree_dashboard(src_lines)
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile(src_lines)
+
+  local index_mod = require("obsidian-tasks.index")
+  local saved = {
+    tasks_in = index_mod.tasks_in,
+    nodes_for = index_mod.nodes_for,
+    set = index_mod.set_render_paths,
+    clear = index_mod.clear_render_paths,
+    refresh_all = index_mod.refresh_all,
+  }
+  index_mod.set_render_paths = function() end
+  index_mod.clear_render_paths = function() end
+  index_mod.refresh_all = function(_, on_done)
+    if on_done then
+      on_done()
+    end
+  end
+  index_mod.nodes_for = function(p)
+    if p == src_path then
+      local ok, lines = pcall(vim.fn.readfile, src_path)
+      return nodes_mod.parse_lines(ok and lines or src_lines)
+    end
+    return {}
+  end
+  index_mod.tasks_in = function(_)
+    local i = 0
+    return function()
+      i = i + 1
+      if i == 1 then
+        local ok, lines = pcall(vim.fn.readfile, src_path)
+        local t = task_parse.parse((ok and lines[1]) or src_lines[1])
+        return t, src_path, 1
+      end
+    end
+  end
+
+  local bufnr = make_buf({ "```tasks", "show tree", "```" })
+  render.render_buffer(bufnr, nil)
+
+  local cleanup = function()
+    render.clear_buffer(bufnr)
+    index_mod.tasks_in = saved.tasks_in
+    index_mod.nodes_for = saved.nodes_for
+    index_mod.set_render_paths = saved.set
+    index_mod.clear_render_paths = saved.clear
+    index_mod.refresh_all = saved.refresh_all
+    revert._cleanup(bufnr)
+    local sb = vim.fn.bufnr(src_path, false)
+    if sb ~= -1 then
+      vim.api.nvim_buf_delete(sb, { force = true })
+    end
+    vim.api.nvim_buf_delete(bufnr, { force = true })
+    vim.fn.delete(src_path)
+  end
+  return bufnr, src_path, cleanup
+end
+
 -- ── Q1: Normal-mode edit propagates at end-of-tick ───────────────────────────
 
 T["edit flush: normal-mode description edit propagates to source"] = function()
@@ -153,6 +220,53 @@ T["edit flush: normal-mode description edit propagates to source"] = function()
   eq(src_line, "- [ ] Buy oat milk #task", "source must have updated description after flush")
 
   cleanup()
+end
+
+-- ── Bug 1: flat query renders a matched CHILD flush-left, write-back keeps indent
+--
+-- Without `show tree`, every matched task is its own flat row.  A matched CHILD
+-- must render FLUSH-LEFT (upstream parity) — NOT at its source indent, which
+-- looked like an unrequested tree.  Editing the flush row must still write back
+-- to source WITH the original on-disk indent (source nesting preserved).
+
+T["flat (Bug 1): matched child renders flush-left; edit writes back keeping source indent"] = function()
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile({
+    "- [ ] Parent task #task",
+    "  - [ ] Child task #task",
+  })
+  local restore_stub = install_file_task_stub(src_path)
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr, nil)
+
+  -- Flat: both match, source order preserved. Parent row 3, child row 4.
+  local parent_line = get_line(bufnr, 3)
+  local child_line = get_line(bufnr, 4)
+  eq(parent_line:match("^%s"), nil, "parent renders flush-left")
+  eq(child_line:match("^%s"), nil, "matched CHILD renders FLUSH-LEFT, not indented: [" .. tostring(child_line) .. "]")
+  eq(child_line:match("^%- %[ %] Child task"), "- [ ] Child task", "child body intact at col 0")
+
+  -- Edit the flush child row; flush; source must keep its 2-space indent.
+  set_line(bufnr, 4, (child_line:gsub("Child task", "Child renamed")))
+  edit_mod.flush(bufnr)
+
+  local src = read_file(src_path)
+  eq(src[1], "- [ ] Parent task #task", "parent source untouched")
+  eq(
+    src[2],
+    "  - [ ] Child renamed #task",
+    "child write-back KEEPS the 2-space source indent: [" .. tostring(src[2]) .. "]"
+  )
+
+  render.clear_buffer(bufnr)
+  restore_stub()
+  revert._cleanup(bufnr)
+  local sb = vim.fn.bufnr(src_path, false)
+  if sb ~= -1 then
+    vim.api.nvim_buf_delete(sb, { force = true })
+  end
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
 end
 
 -- ── Real on_lines path: normal-mode edit schedules flush via on_lines_hook ─────
@@ -439,6 +553,225 @@ T["edit flush: per-file write failure reverts that file's rows, other files comm
   vim.api.nvim_buf_delete(dash_bufnr, { force = true })
   vim.fn.delete(src_ok)
   vim.fn.delete(src_fail)
+end
+
+-- ── MAJOR-2: locate_miss in the batch path is NOT silent data loss ───────────
+-- A successful batch write (ok==true) can still contain an entry that hit
+-- locate_miss (genuine concurrent external drift the ±10 window can't recover).
+-- The flush MUST treat that as a recoverable drift: trigger a FULL canonical
+-- re-render (the same <leader>tr / do_revert path) AND warn — never write the
+-- typed edit.  Before the fix the ok-branch ignored locate_miss entries, so the
+-- typed edit silently vanished on the next rerender with NO recovery and NO
+-- warning.  The recovery is a full rerender (not per-row set_lines surgery)
+-- because that is the only DELETE-safe option (see the DELETE-miss test below).
+
+T["edit flush: locate_miss recovers via full rerender AND warns"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Locate miss task #task")
+
+  local canonical = get_line(bufnr, TASK_ROW)
+  local edited = canonical:gsub("Locate miss task", "Locate miss task edited")
+  set_line(bufnr, TASK_ROW, edited)
+
+  -- Mutate the source OUT OF BAND so the render-time task_text no longer appears
+  -- anywhere within ±10 rows → M.locate returns nil → locate_miss.
+  vim.fn.writefile({ "- [ ] Something completely different #task" }, src_path)
+
+  -- Capture warn notifications fired during the flush.
+  local warned_drift = false
+  local orig_notify = vim.notify
+  vim.notify = function(msg, ...)
+    if msg and msg:find("drift") then
+      warned_drift = true
+    end
+    return orig_notify(msg, ...)
+  end
+
+  edit_mod.flush(bufnr)
+
+  vim.notify = orig_notify
+
+  -- (1) The typed edit must NOT survive: the full rerender rebuilds the view
+  -- from the (drifted) source, so the dangling typed edit is gone.
+  local row_after = get_line(bufnr, TASK_ROW)
+  eq(
+    row_after:find("Locate miss task edited") == nil,
+    true,
+    "locate_miss must drop the typed edit, not leave it dangling: [" .. tostring(row_after) .. "]"
+  )
+  -- The rerendered row reflects the current (out-of-band) source content.
+  eq(
+    row_after:find("Something completely different") ~= nil,
+    true,
+    "locate_miss full rerender must show the current source content: [" .. tostring(row_after) .. "]"
+  )
+
+  -- (2) A drift warning must have fired (not silently swallowed).
+  eq(warned_drift, true, "locate_miss must emit a drift warning")
+
+  -- (3) The out-of-band source line is untouched (the edit never landed).
+  eq(
+    read_src_line(src_path, 0),
+    "- [ ] Something completely different #task",
+    "locate_miss must NOT write the dropped edit to source"
+  )
+
+  cleanup()
+end
+
+-- ── MINOR-B(a): tree BULLET MUTATE locate_miss → depth-rendered canonical + warn
+-- A description-bullet row edited in place whose source line has drifted out of
+-- band (locate_miss) must NOT leave the typed edit dangling: the full canonical
+-- rerender rebuilds the bullet at its DEPTH-relative indent from the current
+-- source, and the drift warn fires.  The typed body never reaches disk.
+
+T["edit flush: tree bullet MUTATE locate_miss reverts to depth canonical AND warns"] = function()
+  -- Root task (depth 0) + a description bullet (2-space source indent, depth 1).
+  local bufnr, src_path, cleanup = setup_tree_dashboard({
+    "- [ ] Root task #task",
+    "  - a description bullet",
+  })
+
+  -- Dashboard: TASK_ROW = root, TASK_ROW+1 = the bullet rendered at depth indent.
+  local BULLET_ROW = TASK_ROW + 1
+  local canonical_bullet = get_line(bufnr, BULLET_ROW)
+  -- The bullet renders at the dashboard's 2-space depth indent with its marker.
+  eq(
+    canonical_bullet:sub(1, #"  - a description"),
+    "  - a description",
+    "precondition: bullet must render at depth indent with its marker: [" .. tostring(canonical_bullet) .. "]"
+  )
+
+  -- Edit only the bullet body (a MUTATE on the bullet row).
+  local edited = canonical_bullet:gsub("description", "EDITED")
+  set_line(bufnr, BULLET_ROW, edited)
+
+  -- Drift the bullet's source line OUT OF BAND so its expected_text (the verbatim
+  -- source line) no longer matches anywhere in the locate window → locate_miss.
+  vim.fn.writefile({
+    "- [ ] Root task #task",
+    "  - a drifted bullet",
+  }, src_path)
+
+  local warned_drift = false
+  local orig_notify = vim.notify
+  vim.notify = function(msg, ...)
+    if msg and msg:find("drift") then
+      warned_drift = true
+    end
+    return orig_notify(msg, ...)
+  end
+
+  edit_mod.flush(bufnr)
+
+  vim.notify = orig_notify
+
+  -- (1) The typed body must NOT survive — the full rerender rebuilt the bullet.
+  local bullet_after = get_line(bufnr, BULLET_ROW)
+  eq(
+    bullet_after ~= nil and bullet_after:find("EDITED") == nil,
+    true,
+    "bullet MUTATE locate_miss must drop the typed edit: [" .. tostring(bullet_after) .. "]"
+  )
+  -- (2) The rerendered bullet sits at its DEPTH-relative indent (2 spaces), not
+  -- the source indent — proving canonical depth re-render, not a raw splice.
+  eq(
+    bullet_after:sub(1, #"  - a drifted"),
+    "  - a drifted",
+    "bullet must re-render at depth indent from current source: [" .. tostring(bullet_after) .. "]"
+  )
+  -- (3) Drift warning fired.
+  eq(warned_drift, true, "bullet MUTATE locate_miss must emit a drift warning")
+  -- (4) Source untouched by the dropped edit (still the out-of-band content).
+  eq(read_src_line(src_path, 1), "  - a drifted bullet", "bullet edit must NOT reach source on locate_miss")
+
+  cleanup()
+end
+
+-- ── MINOR-B(b): DELETE locate_miss must NOT clobber/vanish a neighbour row ────
+-- Reproduction of the regression the second hardening pass fixes: a 2-task
+-- dashboard, delete row 1, then drift the deleted row's source line out of band
+-- so the DELETE batch entry hits locate_miss.  The OLD per-row nvim_buf_set_lines
+-- recovery overwrote de.dash_row — which, after the delete, holds the SHIFTED-UP
+-- NEIGHBOUR (task 2) — with task 1's canonical text, making task 2 VANISH from
+-- the view.  The full-rerender recovery rebuilds from source with zero row-shift
+-- hazard, so the neighbour survives intact.  REQUIRED INVARIANT: no managed row
+-- vanishes, the neighbour is not clobbered, the source is untouched, warn fires.
+-- This test FAILS against the per-row-set_lines code and PASSES after the fix.
+
+T["edit flush: DELETE locate_miss does NOT clobber or vanish the neighbour row"] = function()
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile({
+    "- [ ] First task #task", -- row 0 → dashboard TASK_ROW (the one we delete)
+    "- [ ] Second task #task", -- row 1 → dashboard TASK_ROW+1 (the neighbour)
+  })
+  local restore_stub = install_file_task_stub(src_path)
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  render.render_buffer(bufnr, nil)
+
+  -- Precondition: two managed rows, First then Second.
+  local first_canonical = get_line(bufnr, TASK_ROW)
+  local second_canonical = get_line(bufnr, TASK_ROW + 1)
+  eq(first_canonical:find("First task") ~= nil, true, "precondition: row 1 is First task")
+  eq(second_canonical:find("Second task") ~= nil, true, "precondition: row 2 is Second task")
+
+  -- Simulate `dd` on the FIRST task row: the buffer shrinks and Second task
+  -- shifts up into TASK_ROW.
+  vim.api.nvim_buf_set_lines(bufnr, TASK_ROW, TASK_ROW + 1, false, {})
+
+  -- Drift the deleted row's source line OUT OF BAND so the DELETE batch entry's
+  -- expected_text ("- [ ] First task #task") is no longer found in the locate
+  -- window → locate_miss.  Keep the Second task line present.
+  vim.fn.writefile({
+    "- [ ] First task DRIFTED #task",
+    "- [ ] Second task #task",
+  }, src_path)
+
+  local warned_drift = false
+  local orig_notify = vim.notify
+  vim.notify = function(msg, ...)
+    if msg and msg:find("drift") then
+      warned_drift = true
+    end
+    return orig_notify(msg, ...)
+  end
+
+  edit_mod.flush(bufnr)
+
+  vim.notify = orig_notify
+
+  -- (1) The neighbour (Second task) must STILL be present somewhere in the
+  -- dashboard — it must not have been clobbered or vanished.
+  local dash_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local second_present = false
+  for _, l in ipairs(dash_lines) do
+    if l:find("Second task") ~= nil then
+      second_present = true
+    end
+  end
+  eq(second_present, true, "DELETE locate_miss must NOT vanish/clobber the neighbour row: " .. vim.inspect(dash_lines))
+
+  -- (2) The deleted row's content must NOT have been written over the neighbour
+  -- (the bug overwrote the neighbour with "First task"'s canonical text).  After
+  -- a clean full rerender, "First task" appears at most via the drifted source
+  -- line, never as a duplicate clobbering the Second-task row.
+  -- (3) Source is untouched — the DELETE never landed (both lines remain).
+  local src_after = read_file(src_path)
+  eq(#src_after, 2, "DELETE locate_miss must NOT remove the source line: " .. vim.inspect(src_after))
+  eq(src_after[1], "- [ ] First task DRIFTED #task", "out-of-band first line must be untouched")
+  eq(src_after[2], "- [ ] Second task #task", "neighbour source line must be untouched")
+
+  -- (4) Drift warning fired.
+  eq(warned_drift, true, "DELETE locate_miss must emit a drift warning")
+
+  render.clear_buffer(bufnr)
+  restore_stub()
+  revert._cleanup(bufnr)
+  local sb = vim.fn.bufnr(src_path, false)
+  if sb ~= -1 then
+    vim.api.nvim_buf_delete(sb, { force = true })
+  end
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
 end
 
 -- ── Regression guard: status flip via keymap still works ─────────────────────

@@ -278,6 +278,7 @@ function M.draw(bufnr, fence_range, layout_lines)
       -- nvim_buf_set_extmark.  The wikilink suffix was appended after the
       -- ranges were captured, so existing ranges remain valid; we just need
       -- to clamp to current line length defensively.
+      -- (Read-only tree bullet/blank rows never carry invalid_ranges.)
       if ll.invalid_ranges then
         local line_len = #ll.text
         local invalid_hl = field_invalid_hl_group()
@@ -322,13 +323,63 @@ function M.draw(bufnr, fence_range, layout_lines)
       -- wikilink_target is the inner [[...]] text layout appended ('basename'
       -- or 'basename|alias', nil when no suffix) — render/edit.lua reads it to
       -- strip and re-apply the suffix faithfully during edit-flush.
+      -- read_only marks tree BLANK rows (Phase 5a): they are registered as
+      -- MANAGED rows so revert/flush know them (no spurious INSERT, no
+      -- stripping), but flush must NOT propagate edits to source — an edit is
+      -- simply reverted on the next tick.  Tree BULLET rows are NO LONGER
+      -- read-only (Phase 5a): they are editable in-place and carry source_indent
+      -- + bullet_marker for raw write-back.  Phase 5b adds the single-line
+      -- free-form INSERT classifier (render/insert_classify + render/edit's tree
+      -- INSERT branch).  TODO(Phase 5c-d): multi-line block reconcile /
+      -- delete-promote-orphans.
+      --
+      -- tree_kind / fold_group are threaded so the orchestrator (render/init)
+      -- can build one native manual fold per subtree.  For blank rows src_line
+      -- may be nil — guard the source_row conversion.
       managed.add_task(bufnr, task_lnum, {
         source_file = ll.src_path,
-        source_row = (ll.src_line or 1) - 1, -- convert 1-indexed → 0-indexed
+        source_row = ll.src_line and (ll.src_line - 1) or nil, -- 1-indexed → 0-indexed
         task_text = ll.source_text or strip_wikilink(ll.text, ll.wikilink_target),
         rendered_text = ll.text,
         wikilink_target = ll.wikilink_target,
         linger = ll.linger or nil,
+        read_only = ll.read_only or nil,
+        tree_kind = ll.tree_kind or nil,
+        fold_group = ll.fold_group or nil,
+        -- ORIGINAL source leading whitespace for tree task rows AND tree bullet
+        -- rows (nil for flat rows).  render/edit.lua re-applies it on write-back
+        -- so the rendered depth-relative 2-space indent never overwrites the
+        -- on-disk indent.
+        source_indent = ll.source_indent or nil,
+        -- FLAT (non-tree) row's original on-disk indent, stripped from the
+        -- flush display.  render/edit.lua re-applies it on write-back so a
+        -- matched CHILD task keeps its source nesting (Bug 1).  Distinct from
+        -- source_indent (a tree marker) so flat rows are NOT misclassified as
+        -- tree rows; nil/"" for a top-level flat task.
+        flat_source_indent = (ll.flat_source_indent and ll.flat_source_indent ~= "") and ll.flat_source_indent or nil,
+        -- The literal list marker for a tree BULLET row ("-"/"*"/"+"); nil for
+        -- task rows.  Its presence routes flush to the RAW bullet write-back path
+        -- (no `- [ ]` repair); render/edit.lua reconstructs the source line as
+        -- source_indent .. bullet_marker .. " " .. body.
+        bullet_marker = ll.bullet_marker or nil,
+        -- Tree depth (0 = top-level matched task) for the Phase 5b INSERT
+        -- classifier: the free-form insert path reads the depth+kind of the
+        -- managed rows above a typed line to clamp/auto-attach it.  nil for flat
+        -- rows (no tree depth), which keeps the flat INSERT path byte-identical.
+        depth = ll.depth or nil,
+        -- Phase 2 group-attr injection gate: matched == true on a LIT matched
+        -- root row, false/nil on DIM ancestor and dragged-descendant rows.  The
+        -- tree INSERT path walks the resolved parent chain among rows_above and
+        -- injects the group's defining attribute IFF no MATCHED ancestor is found
+        -- (i.e. the new row would not already be dragged into the group).
+        -- group_name is carried alongside so the gate is scoped per group.
+        matched = ll.matched or nil,
+        group_name = ll.group_name or nil,
+        -- TRUE structural parent source line (nil at top level) for tree rows.
+        -- render/edit.lua's group-attr gate walks the parent_line chain among
+        -- rows_above rather than re-deriving the parent by nearest-row-at-depth-1,
+        -- which mis-decides across sibling subtrees sharing breadcrumb depths.
+        parent_line = ll.parent_line or nil,
       })
 
       last_task_lnum = task_lnum
@@ -566,6 +617,76 @@ function M.demote_sentinel(bufnr, fence_first)
       block.inserted_range = nil
     end
   end
+end
+
+--- Release user-inserted trailing BLANK rows from each block's sentinel region.
+---
+--- The EOF sentinel is a single empty managed row that sits BELOW the virtual
+--- footer — outside the dashboard.  Pressing <CR> on it (or `o`-ing an empty line
+--- past the last task) inserts BLANK rows the on_lines INSERT scan ignores (only
+--- non-blank rows become task inserts), so they were silently absorbed into the
+--- managed region and stripped on the next render — losing the newline the user
+--- explicitly added to the END of the file.
+---
+--- For each block, walk UP from the region end over rows that are blank AND carry
+--- no task meta.  The steady state has exactly ONE such row (the sentinel); MORE
+--- than one means the user added real newline(s).  In that case release every
+--- trailing blank row from management:
+---   • a results dashboard shrinks its region to the last task-meta row;
+---   • a zero-result dashboard drops the region entirely.
+--- The sentinel extmark is deleted too — a real EOF line now does its job
+--- (separating our footer from obsidian.nvim's), so no fresh sentinel is needed.
+--- The caller re-renders so the footer re-anchors above the released content.
+---
+--- @param bufnr integer
+--- @return boolean  true when at least one block released rows
+function M.release_sentinel_growth(bufnr)
+  local blocks = _state[bufnr]
+  if not blocks then
+    return false
+  end
+  local any = false
+  for _, block in pairs(blocks) do
+    if block.sentinel_extmark_id and block.managed_region_id then
+      local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, block.sentinel_extmark_id, {})
+      local srow = pos and pos[1] or nil
+      local region = srow and managed.region_for_row(bufnr, srow) or nil
+      if region then
+        local r_start, r_end = region.range[1], region.range[2]
+        -- Walk up over blank, NON-task-meta rows (tree blanks carry meta → stop).
+        local last_blank = r_end + 1
+        local row = r_end
+        while row >= r_start do
+          if managed.task_meta_for_row(bufnr, row) then
+            break
+          end
+          local cur = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1]
+          if cur == nil or cur:match("%S") then
+            break
+          end
+          last_blank = row
+          row = row - 1
+        end
+        local blank_count = r_end - last_blank + 1
+        if last_blank <= r_end and blank_count > 1 then
+          -- The user added real newline(s): release the trailing blanks.
+          pcall(vim.api.nvim_buf_del_extmark, bufnr, NS, block.sentinel_extmark_id)
+          block.sentinel_extmark_id = nil
+          local new_end = last_blank - 1
+          if new_end >= r_start then
+            managed.resize_region(bufnr, region.mark_id, r_start, new_end)
+            block.inserted_range = { r_start, new_end }
+          else
+            managed.cleanup_region(bufnr, region.mark_id)
+            block.managed_region_id = nil
+            block.inserted_range = nil
+          end
+          any = true
+        end
+      end
+    end
+  end
+  return any
 end
 
 --- Demote every block sentinel that the user typed into during an edit.

@@ -99,6 +99,31 @@ T["setup_window: idempotent — 'insert' not duplicated in foldopen"] = function
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end
 
+T["setup_window: tree → flat transition resets foldcolumn + foldtext to prior"] = function()
+  local bufnr = make_buf({ "line 1", "line 2" })
+  local winid = open_in_win(bufnr)
+
+  -- Capture the window's pristine (never-tree) fold options.
+  local default_fc = vim.wo[winid].foldcolumn
+  local default_ft = vim.wo[winid].foldtext
+
+  -- Render as a tree: foldcolumn advertised, custom foldtext installed.
+  folds_mod.setup_window(winid, true)
+  eq(vim.wo[winid].foldcolumn, "1")
+  eq(vim.wo[winid].foldtext:find("obsidian%-tasks") ~= nil, true)
+
+  -- Re-render the SAME window as flat (user removed `show tree`): the tree-only
+  -- foldcolumn / foldtext must be reset so the window is indistinguishable from a
+  -- never-tree flat dashboard.
+  folds_mod.setup_window(winid, false)
+  eq(vim.wo[winid].foldcolumn, default_fc, "foldcolumn must reset to its pre-tree default")
+  eq(vim.wo[winid].foldtext, default_ft, "foldtext must reset to its pre-tree default")
+  eq(vim.wo[winid].foldtext:find("obsidian%-tasks"), nil, "custom tree foldtext must not linger after a flat re-render")
+
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
 -- ── folds.apply_folds ─────────────────────────────────────────────────────────
 
 T["apply_folds: folds fence lines only, leaves rendered tasks visible"] = function()
@@ -121,6 +146,60 @@ T["apply_folds: folds fence lines only, leaves rendered tasks visible"] = functi
   eq(fence_fc, 1)
   -- Rendered task line is NOT in any closed fold (AC1).
   eq(task_fc, -1)
+
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+T["apply_folds: children-only fold keeps a group-header virt line on the root visible"] = function()
+  -- Regression: group headers are rendered as virt_lines_above on the group's
+  -- FIRST task row.  When that row was the first line of a CLOSED subtree fold,
+  -- Neovim hid the header (it does not draw virt_lines_above of a fold's first
+  -- line), so the header vanished and the collapsed subtree slid under the
+  -- previous group.  Children-only folds keep the root (and its header) OUTSIDE
+  -- the fold.
+  --   0 "```tasks"   ← fence_first
+  --   1 "show tree"
+  --   2 "```"        ← fence_last
+  --   3 "- [ ] root" ← group's first task / subtree root  (header above it)
+  --   4 "  - child 1"
+  --   5 "  - child 2"
+  local bufnr = make_buf({ "```tasks", "show tree", "```", "- [ ] root", "  - child 1", "  - child 2" })
+  local hns = vim.api.nvim_create_namespace("ot_test_group_header")
+  vim.api.nvim_buf_set_extmark(bufnr, hns, 3, 0, {
+    virt_lines = { { { "## My Group", "Title" } } },
+    virt_lines_above = true,
+  })
+  local winid = open_in_win(bufnr)
+
+  -- subtree { root=3, last=5 } → children-only fold over rows 4..5 (1-indexed 5..6).
+  folds_mod.apply_folds(bufnr, { { fence_first = 0, fence_last = 2, subtree_folds = { { 3, 5 } } } }, false)
+
+  local root_fc, child_fc, header_visible
+  vim.api.nvim_win_call(winid, function()
+    vim.cmd("normal! zR") -- expand everything first
+    vim.cmd("5foldclose") -- close the children fold (first child, 1-indexed 5)
+    root_fc = vim.fn.foldclosed(4) -- root row (1-indexed 4)
+    child_fc = vim.fn.foldclosed(5) -- first child row
+    -- Scan the rendered screen for the header text — proves it is actually drawn.
+    vim.o.lines = 20
+    vim.o.columns = 60
+    vim.cmd("redraw")
+    header_visible = false
+    for row = 1, 12 do
+      local s = ""
+      for col = 1, 56 do
+        s = s .. (vim.fn.screenstring(row, col) or "")
+      end
+      if s:find("## My Group", 1, true) then
+        header_visible = true
+        break
+      end
+    end
+  end)
+  eq(root_fc, -1, "root row (with the group header) must stay OUTSIDE the closed fold")
+  eq(child_fc, 5, "the children fold must be closed at its first child row")
+  eq(header_visible, true, "the group header virt line must remain visible when the subtree is folded")
 
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
@@ -284,6 +363,67 @@ T["render_buffer: applies fold after rendering tasks block"] = function()
   index_mod.tasks_in = saved_tasks_in
   index_mod.set_render_paths = saved_set
   index_mod.clear_render_paths = saved_clear
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  render.configure(saved_opts)
+end
+
+T["render_buffer: a flat (non-tree) dashboard leaves foldcolumn/foldtext untouched"] = function()
+  -- A flat dashboard still folds its fence when default_folded=true, so
+  -- apply_folds → setup_window runs.  It must NOT advertise the fold gutter or
+  -- swap in the custom foldtext (those are tree-only): the window keeps its
+  -- prior foldcolumn / foldtext so the flat render stays byte-identical.
+  local saved_opts = render._opts
+  render.configure({ default_folded = true })
+
+  local index_mod = require("obsidian-tasks.index")
+  local task_parse = require("obsidian-tasks.task.parse")
+  local saved = {
+    tasks_in = index_mod.tasks_in,
+    set = index_mod.set_render_paths,
+    clear = index_mod.clear_render_paths,
+  }
+  local task_obj = task_parse.parse("- [ ] Buy milk")
+  assert(task_obj, "task_parse.parse returned nil — test setup error")
+  index_mod.tasks_in = function(_)
+    local returned = false
+    return function()
+      if not returned then
+        returned = true
+        return task_obj, "/vault/tasks.md", 1
+      end
+      return nil
+    end
+  end
+  index_mod.set_render_paths = function() end
+  index_mod.clear_render_paths = function() end
+
+  local bufnr = make_buf({ "```tasks", "not done", "```" })
+  local winid = open_in_win(bufnr)
+
+  -- Capture the window's prior fold-display options (Neovim defaults).
+  local prior_fc = vim.wo[winid].foldcolumn
+  local prior_ft = vim.wo[winid].foldtext
+
+  render.render_buffer(bufnr, nil)
+
+  -- The fence fold was applied (proves apply_folds ran)…
+  local fc
+  vim.api.nvim_win_call(winid, function()
+    fc = vim.fn.foldclosed(1)
+  end)
+  eq(fc, 1)
+
+  -- …yet foldcolumn / foldtext are unchanged (tree-only window options).
+  eq(vim.wo[winid].foldcolumn, prior_fc)
+  eq(vim.wo[winid].foldtext, prior_ft)
+  -- Specifically, the custom foldtext was NOT installed.
+  eq(vim.wo[winid].foldtext:find("obsidian%-tasks") == nil, true)
+
+  render.clear_buffer(bufnr)
+  index_mod.tasks_in = saved.tasks_in
+  index_mod.set_render_paths = saved.set
+  index_mod.clear_render_paths = saved.clear
   close_win(winid)
   vim.api.nvim_buf_delete(bufnr, { force = true })
   render.configure(saved_opts)

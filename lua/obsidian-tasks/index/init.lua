@@ -2,7 +2,16 @@
 -- In-memory task index.
 --
 -- Internal map shape:
---   _index[abs_path] = { mtime = <number>, tasks = { Task, ... } }
+--   _index[abs_path] = {
+--     mtime = <number>,
+--     nodes = { <node>, ... },         -- full per-file node list (index/nodes)
+--     tasks = { { task, line_num }, ... }, -- DERIVED flat task view (kind==task)
+--   }
+--
+-- `nodes` is the first-class structure (tasks + description bullets + blanks,
+-- with depth / parent_line).  `tasks` is a derived projection kept for the
+-- existing flat task consumers (tasks_in, render source-diagnostics) so the
+-- node restructure stays behavior-preserving at the task level.
 --
 -- All public functions are safe to call from normal Neovim context.
 -- Async walks (refresh_all) fire callbacks after the walk completes.
@@ -50,58 +59,59 @@ local function date_from_basename(abs_path)
   return string.format("%s-%s-%s", y, mo, d)
 end
 
---- Read and parse all task lines from *abs_path* synchronously.
---- Returns a list of { task = Task, line_num = integer } entries (may be empty).
+--- Build the per-task post-processing hook applied during node parsing.
+--- Encapsulates the two task-level concerns that were previously inline:
+---   * global_filter — drop tasks whose description lacks the filter string.
+---   * DateFallback  — inherit the filename's date as `scheduled` when absent.
 --- @param abs_path string
---- @return table[]
-local function parse_file(abs_path)
-  local parse = require("obsidian-tasks.task.parse")
-  local heading = require("obsidian-tasks.index.heading")
+--- @return fun(task: table): boolean|nil  return false to drop the task
+local function make_on_task(abs_path)
   local opts = require("obsidian-tasks").opts
   local global_filter = opts and opts.global_filter
   local use_filename_date = opts and opts.use_filename_as_scheduled_date
   local filename_date = use_filename_date and date_from_basename(abs_path) or nil
 
+  return function(task)
+    if global_filter and global_filter ~= "" then
+      if not task.description:find(global_filter, 1, true) then
+        return false
+      end
+    end
+    if filename_date and (task.fields.scheduled == nil or task.fields.scheduled == "") then
+      task.fields.scheduled = filename_date
+    end
+    return true
+  end
+end
+
+--- Full-read *abs_path* and parse it into the unified node list.
+--- @param abs_path string
+--- @return table[]  node list (may be empty)
+local function parse_file(abs_path)
+  local nodes = require("obsidian-tasks.index.nodes")
+  return nodes.parse_file(abs_path, { on_task = make_on_task(abs_path) })
+end
+
+--- Project a node list to the flat task view consumed by tasks_in and render's
+--- source diagnostics: a list of { task = Task, line_num = integer }.
+--- @param nodes table[]
+--- @return table[]
+local function tasks_from_nodes(nodes)
   local tasks = {}
-  local ok = pcall(function()
-    local f = io.open(abs_path, "r")
-    if not f then
-      return
+  for _, n in ipairs(nodes) do
+    if n.kind == "task" then
+      tasks[#tasks + 1] = { task = n.task, line_num = n.line_num }
     end
-    local line_num = 0
-    -- Running ATX heading: each task inherits the nearest heading above it.
-    local current_heading = nil
-    for line in f:lines() do
-      line_num = line_num + 1
-      local h = heading.parse(line)
-      if h ~= nil then
-        current_heading = h
-      end
-      local task = (h == nil) and parse.parse(line) or nil
-      if task then
-        task.heading = current_heading
-        -- global_filter: post-parse exclusion
-        if global_filter and global_filter ~= "" then
-          if not task.description:find(global_filter, 1, true) then
-            task = nil
-          end
-        end
-        if task then
-          -- DateFallback: inherit the filename's date as scheduled when the
-          -- task does not have its own scheduled date.
-          if filename_date and (task.fields.scheduled == nil or task.fields.scheduled == "") then
-            task.fields.scheduled = filename_date
-          end
-          tasks[#tasks + 1] = { task = task, line_num = line_num }
-        end
-      end
-    end
-    f:close()
-  end)
-  if not ok then
-    return {}
   end
   return tasks
+end
+
+--- Build a complete index entry for *abs_path* from a node list.
+--- @param mtime number
+--- @param nodes table[]
+--- @return table  { mtime, nodes, tasks }
+local function make_entry(mtime, nodes)
+  return { mtime = mtime, nodes = nodes, tasks = tasks_from_nodes(nodes) }
 end
 
 -- ── public API ────────────────────────────────────────────────────────────────
@@ -136,9 +146,8 @@ function M.refresh_file(abs_path)
     return
   end
 
-  -- tasks is a list of { task, line_num } entries.
-  local tasks = parse_file(abs_path)
-  _index[abs_path] = { mtime = mtime, tasks = tasks }
+  local nodes = parse_file(abs_path)
+  _index[abs_path] = make_entry(mtime, nodes)
 end
 
 --- Re-parse every currently-indexed file synchronously, bypassing the
@@ -186,31 +195,25 @@ end
 --- @param on_done    fun()?  optional callback when walk is complete
 function M.refresh_all(workspace, on_done)
   local scan = require("obsidian-tasks.index.scan")
-  local ignore = require("obsidian-tasks.index.ignore")
 
-  -- Accumulate tasks per path during the walk.
-  local pending = {} -- abs_path → { mtime, tasks = {} }
+  -- Accumulate per-path entries during the walk; merge once it completes so a
+  -- partial walk never leaves the index half-updated.
+  local pending = {} -- abs_path → { mtime, nodes, tasks }
 
-  scan.walk(workspace, function(task, abs_path, line_num)
-    if not pending[abs_path] then
-      local mtime = get_mtime(abs_path)
-      pending[abs_path] = { mtime = mtime, tasks = {} }
-    end
-    pending[abs_path].tasks[#pending[abs_path].tasks + 1] = { task = task, line_num = line_num }
+  scan.walk_files(workspace, function(abs_path, nodes)
+    local mtime = get_mtime(abs_path)
+    pending[abs_path] = make_entry(mtime, nodes)
   end, function(_code)
-    -- Merge pending into _index.
-    -- Files that were previously indexed but returned no tasks in the new walk
-    -- are removed only if they were visited (i.e., they appeared in search results
-    -- for *this* workspace root). Files outside this workspace are untouched.
+    -- Files outside this workspace root never appear in the discovery results,
+    -- so they are untouched; discovered files replace their prior entry.
+    -- (scan.walk_files already drops ignored files before emitting.)
     for abs_path, entry in pairs(pending) do
-      if not ignore.is_ignored(abs_path) then
-        _index[abs_path] = entry
-      end
+      _index[abs_path] = entry
     end
     if on_done then
       on_done()
     end
-  end)
+  end, make_on_task)
 end
 
 --- Iterate Task objects in the index, optionally filtered by a path predicate.
@@ -222,7 +225,9 @@ end
 ---   iterator returning (task, abs_path, line_num)
 function M.tasks_in(path_filter)
   -- Collect all matching entries first, then return an iterator.
-  -- Each entry in the index is { task = Task, line_num = integer }.
+  -- entry.tasks is the DERIVED flat task view ({ task, line_num }) projected
+  -- from the kind=="task" nodes; this iterator's shape is unchanged by the
+  -- node restructure (the blast-radius firewall for query/sort/group/render).
   local result = {}
   for abs_path, entry in pairs(_index) do
     if path_filter == nil or path_filter(abs_path) then
@@ -239,6 +244,21 @@ function M.tasks_in(path_filter)
       return item.task, item.path, item.line_num
     end
   end
+end
+
+--- Return the full per-file NODE list for *abs_path* (the first-class node
+--- model: tasks + description bullets + blanks, with depth / parent_line).
+---
+--- This is the structured accessor query/tree.lua uses to slice a matched
+--- task's descendant subtree.  Unlike tasks_in (the flat task-view firewall),
+--- it exposes the complete hierarchy.  Returns an empty list when the path is
+--- not indexed (never nil), so callers can iterate unconditionally.
+---
+--- @param abs_path string  absolute path
+--- @return table[]  node list (the entry's own table; do NOT mutate)
+function M.nodes_for(abs_path)
+  local entry = _index[abs_path]
+  return (entry and entry.nodes) or {}
 end
 
 --- Drop the index entry for *abs_path*.

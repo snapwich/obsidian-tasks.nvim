@@ -59,9 +59,13 @@ function M.run(args, range)
   local bufnr = vim.api.nvim_get_current_buf()
   local explicit_value = args and args[1] or nil
 
-  local resolved_list = cmd.bulk_range(bufnr, range)
+  local resolved_list, explained = cmd.bulk_range(bufnr, range)
   if #resolved_list == 0 then
-    log.warn("ObsidianTask id: no task found in the specified range")
+    -- A known non-task row already emitted the specific "not a task" notice;
+    -- skip the redundant generic warning (§11).
+    if not explained then
+      log.warn("ObsidianTask id: no task found in the specified range")
+    end
     return
   end
 

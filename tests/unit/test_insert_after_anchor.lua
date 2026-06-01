@@ -180,6 +180,38 @@ T["insert_after_anchor: indented anchor — new task adopts anchor's indent"] = 
   vim.fn.delete(path)
 end
 
+-- ── Child of anchor (deeper) — inserts as FIRST child, before existing ────────
+--
+-- Bug 2: a new line indented MORE than the anchor is a CHILD of the anchor, so
+-- it must land immediately after the anchor row (becoming the FIRST child) —
+-- NOT after the anchor's existing subtree (which made it the LAST child).
+-- The first-child case is the only one where the row above the insert in the
+-- dashboard is the PARENT itself; every later child has a sibling above it.
+
+T["insert_after_anchor: deeper child — inserts as FIRST child before existing children"] = function()
+  local path = make_tmpfile({
+    "- [ ] Parent task", -- row 0, indent 0
+    "  - [ ] Existing child one", -- row 1, indent 2
+    "  - [ ] Existing child two", -- row 2, indent 2
+    "- [ ] Sibling task", -- row 3, indent 0
+  })
+
+  -- New line is indented DEEPER (2) than the anchor (0): a child insert.
+  local ok = cmd.insert_after_anchor(path, 0, 0, "  - [ ] New first child")
+
+  eq(ok, true, "insert_after_anchor child insert should succeed")
+
+  local lines = read_file(path)
+  eq(lines[1], "- [ ] Parent task", "parent unchanged at row 0")
+  eq(lines[2], "  - [ ] New first child", "new child inserted immediately after parent (first child)")
+  eq(lines[3], "  - [ ] Existing child one", "existing child one pushed down")
+  eq(lines[4], "  - [ ] Existing child two", "existing child two pushed down")
+  eq(lines[5], "- [ ] Sibling task", "sibling unchanged at end")
+  eq(#lines, 5, "file should have 5 lines")
+
+  vim.fn.delete(path)
+end
+
 -- ── Inserting at end of file (anchor is last row) ─────────────────────────────
 --
 -- RED: FAILS — stub raises error('insert_after_anchor not implemented').

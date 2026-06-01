@@ -221,6 +221,88 @@ T["status edit: identical symbol is a no-op (no source mutation)"] = function()
   cleanup()
 end
 
+-- ── FIX 2 (Phase 6 defense-in-depth): a BULLET rendering a task-looking line ──
+-- must NOT be status-flipped by a direct buffer edit ─────────────────────────
+--
+-- A pathological tree BULLET whose body renders like a canonical checkbox
+-- (e.g. a '-' marker bullet whose trimmed body is literally "[ ] foo") would,
+-- without the tree_kind guard in classify_and_commit, be recognized as a status
+-- edit and flipped through to source — violating the dispatch-by-kind firewall.
+--
+-- We drive classify_and_commit directly via the snapshot seam: register a meta
+-- with tree_kind="bullet" whose rendered_text is a full `- [ ] …` line, flip the
+-- checkbox in the buffer, run the revert, and assert the source file is UNTOUCHED.
+-- A control case with the same shape but tree_kind="task" must still flip, proving
+-- the test would fail if the guard were removed.
+
+T["status edit: a BULLET rendering a task-looking line is NOT flipped (FIX 2)"] = function()
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile({ "- [ ] looks like a task" })
+
+  -- A managed dashboard buffer whose single managed row is the pathological
+  -- bullet line.  We bypass the live render and inject the snapshot directly.
+  local bufnr = make_buf({ "- [ ] looks like a task" })
+  vim.b[bufnr].obsidian_tasks_dashboard = true
+  local row0 = 0
+  local rendered = "- [ ] looks like a task"
+
+  -- Attach with a no-op rerender_fn so do_revert's rerender pass is inert
+  -- (we only care about the classify_and_commit source-write here).
+  revert.attach(bufnr, nil, function() end)
+  revert._set_snapshots_for_test(bufnr, { { row0, row0 } }, {
+    [row0] = {
+      source_file = src_path,
+      source_row = 0,
+      task_text = "- [ ] looks like a task",
+      rendered_text = rendered,
+      tree_kind = "bullet",
+    },
+  })
+
+  -- Flip the checkbox in the buffer ([ ] → [x]) and run the revert.
+  set_line(bufnr, row0, (rendered:gsub("%[ %]", "[x]", 1)))
+  revert.force_revert(bufnr)
+
+  -- The bullet guard must have skipped the status-flip commit: source untouched.
+  eq(read_src_line(src_path, 0), "- [ ] looks like a task", "a bullet must NOT be status-flipped to source")
+
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+end
+
+T["status edit: control — same shape with tree_kind='task' DOES flip (FIX 2 guard proof)"] = function()
+  render.configure({ default_folded = false })
+  local src_path = make_tmpfile({ "- [ ] looks like a task" })
+
+  local bufnr = make_buf({ "- [ ] looks like a task" })
+  vim.b[bufnr].obsidian_tasks_dashboard = true
+  local row0 = 0
+  local rendered = "- [ ] looks like a task"
+
+  revert.attach(bufnr, nil, function() end)
+  revert._set_snapshots_for_test(bufnr, { { row0, row0 } }, {
+    [row0] = {
+      source_file = src_path,
+      source_row = 0,
+      task_text = "- [ ] looks like a task",
+      rendered_text = rendered,
+      tree_kind = "task",
+    },
+  })
+
+  set_line(bufnr, row0, (rendered:gsub("%[ %]", "[x]", 1)))
+  revert.force_revert(bufnr)
+
+  -- A real task row with the identical edit MUST commit, proving the guard (not
+  -- some unrelated condition) is what blocks the bullet case above.
+  eq(read_src_line(src_path, 0), "- [x] looks like a task", "a task row must still flip to source")
+
+  revert._cleanup(bufnr)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  vim.fn.delete(src_path)
+end
+
 -- ── custom statuses opt: typing `>` commits when in config ──────────────────
 
 T["status edit: custom status from opts.statuses commits"] = function()

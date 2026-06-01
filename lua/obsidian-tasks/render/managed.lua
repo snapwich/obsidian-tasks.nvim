@@ -324,6 +324,80 @@ function M.task_meta_for_row(bufnr, row)
   return nil
 end
 
+--- Return the LIVE 0-indexed buffer row of the per-task extmark whose meta
+--- matches *source_file* + *source_row* (0-indexed source row), or nil.
+---
+--- Used by rerender_buffer's subtree-fold-state capture to re-derive a fold
+--- root's CURRENT rendered row from its stable (src_path, src_line) key — the
+--- stored 0-indexed row from the prior render goes stale the moment a source
+--- edit above the block shifts the live rendered rows, so reading the fold
+--- state at the stale row would mis-capture a closed subtree as open.
+---
+--- @param bufnr       integer
+--- @param source_file string
+--- @param source_row  integer  0-indexed source row (meta.source_row)
+--- @return integer|nil  live 0-indexed buffer row, or nil if no match
+function M.live_row_for_source(bufnr, source_file, source_row)
+  if not _task_meta[bufnr] then
+    return nil
+  end
+  local ns = M.namespace()
+  for mark_id, meta in pairs(_task_meta[bufnr]) do
+    if meta.source_file == source_file and meta.source_row == source_row then
+      local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, mark_id, {})
+      if pos and pos[1] ~= nil then
+        return pos[1]
+      end
+    end
+  end
+  return nil
+end
+
+--- Live 0-indexed buffer row of the LIT, fold-OWNING instance of a source task.
+---
+--- Under D2 dimming a single (source_file, source_row) task can render MULTIPLE
+--- times in a grouped tree: a LIT instance (fold_group ~= 0, which owns the
+--- children fold) plus DIM breadcrumb copies (fold_group == 0, which own no
+--- fold).  live_row_for_source returns whichever extmark pairs() yields first —
+--- possibly a dim copy whose `row + 1` is NOT the fold's first child, so a
+--- subtree-fold capture/restore probing there would miss the user's closed fold.
+---
+--- This variant prefers the instance with a non-zero fold_group (the fold owner),
+--- and among several fold-owning copies picks the one nearest `prefer_row` (the
+--- prior-render root row of THIS fold) so the right group's instance is chosen.
+--- Falls back to any matching instance, then nil.
+---
+--- @param bufnr       integer
+--- @param source_file string
+--- @param source_row  integer  0-indexed source row (meta.source_row)
+--- @param prefer_row  integer? prior-render 0-indexed row to disambiguate copies
+--- @return integer|nil  live 0-indexed buffer row of the fold-owning instance
+function M.live_fold_root_row_for_source(bufnr, source_file, source_row, prefer_row)
+  if not _task_meta[bufnr] then
+    return nil
+  end
+  local ns = M.namespace()
+  local best_row, best_dist
+  local any_row
+  for mark_id, meta in pairs(_task_meta[bufnr]) do
+    if meta.source_file == source_file and meta.source_row == source_row then
+      local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns, mark_id, {})
+      if pos and pos[1] ~= nil then
+        any_row = pos[1]
+        -- fold_group nil or 0 ⇒ dim breadcrumb copy (owns no children fold).
+        if meta.fold_group ~= nil and meta.fold_group ~= 0 then
+          local dist = prefer_row and math.abs(pos[1] - prefer_row) or 0
+          if best_dist == nil or dist < best_dist then
+            best_dist = dist
+            best_row = pos[1]
+          end
+        end
+      end
+    end
+  end
+  return best_row or any_row
+end
+
 -- ── Region enumeration ────────────────────────────────────────────────────────
 
 --- Return a sorted list of { start_row, end_row } for all live region extmarks.

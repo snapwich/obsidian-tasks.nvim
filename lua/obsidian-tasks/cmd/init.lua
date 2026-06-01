@@ -71,10 +71,34 @@ local UNDO_RING_CAP = 50
 M._undo_ring = {} -- dashboard_bufnr → list of entries (push at end)
 M._redo_ring = {} -- dashboard_bufnr → list of entries (push at end)
 
+--- Native undo-sequence number (undotree().seq_cur) of *bufnr*.
+---
+--- Plugin task edits write to SOURCE files and re-render the dashboard with
+--- undolevels = -1, so they never advance the dashboard buffer's own native undo
+--- sequence — only genuine in-buffer user edits (prose / query tweaks) do.  By
+--- stamping each ring entry with this value at push time, `u` can compare the
+--- live sequence against the ring top to decide which history is MORE RECENT
+--- and undo that one (see M.prefer_native_undo / make_undo_handler).
+---
+--- @param bufnr integer
+--- @return integer  seq_cur, or 0 when unavailable
+M.native_undo_seq = function(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return 0
+  end
+  local ok, seq = pcall(vim.api.nvim_buf_call, bufnr, function()
+    return vim.fn.undotree().seq_cur
+  end)
+  return (ok and type(seq) == "number") and seq or 0
+end
+
 local function record_undo_edit(dashboard_bufnr, entry)
   if not dashboard_bufnr or dashboard_bufnr <= 0 then
     return
   end
+  -- Stamp the dashboard's current native undo position so recency arbitration
+  -- can order this plugin edit against native buffer edits.
+  entry._native_seq = M.native_undo_seq(dashboard_bufnr)
   M._undo_ring[dashboard_bufnr] = M._undo_ring[dashboard_bufnr] or {}
   local r = M._undo_ring[dashboard_bufnr]
   r[#r + 1] = entry
@@ -83,6 +107,32 @@ local function record_undo_edit(dashboard_bufnr, entry)
   end
   -- A new forward edit invalidates the redo history for this dashboard.
   M._redo_ring[dashboard_bufnr] = nil
+end
+
+--- True when plain `u` should run NATIVE undo rather than the plugin ring:
+--- the ring is empty, OR a native buffer edit landed AFTER the most recent
+--- ring entry (live seq > the ring top's stamped seq).  See make_undo_handler.
+--- @param dashboard_bufnr integer
+--- @return boolean
+function M.prefer_native_undo(dashboard_bufnr)
+  local r = M._undo_ring[dashboard_bufnr]
+  if not r or #r == 0 then
+    return true
+  end
+  return M.native_undo_seq(dashboard_bufnr) > (r[#r]._native_seq or 0)
+end
+
+--- Mirror of prefer_native_undo for redo: prefer NATIVE redo while the live
+--- sequence is still BELOW the redo top's stamped seq (native redos must climb
+--- back up to the point where the ring entry was undone before it replays).
+--- @param dashboard_bufnr integer
+--- @return boolean
+function M.prefer_native_redo(dashboard_bufnr)
+  local r = M._redo_ring[dashboard_bufnr]
+  if not r or #r == 0 then
+    return true
+  end
+  return M.native_undo_seq(dashboard_bufnr) < (r[#r]._native_seq or 0)
 end
 
 -- ── Resolver helpers ─────────────────────────────────────────────────────────
@@ -750,6 +800,11 @@ local function replay(dashboard_bufnr, dir)
 
   dir.to_ring[dashboard_bufnr] = dir.to_ring[dashboard_bufnr] or {}
   local to = dir.to_ring[dashboard_bufnr]
+  -- Re-stamp the native position at the moment of this replay so the OPPOSITE
+  -- direction (redo after undo, or undo after redo) orders correctly against any
+  -- native edits the user made in between.  The replay's re-render uses
+  -- undolevels = -1, so this seq is the live native position, unchanged by it.
+  entry._native_seq = M.native_undo_seq(dashboard_bufnr)
   to[#to + 1] = entry
 
   -- Rerender the dashboard so the visual state reconciles with the new source.
@@ -876,16 +931,41 @@ end
 ---
 --- For source-buffer lines: parses the raw buffer line as a task.
 ---
+--- The second return value, *explained*, is true ONLY when the row was a known
+--- managed non-task (a description BULLET or tree BLANK) that already emitted the
+--- specific "not a task" notice.  Callers (and bulk_range) use it to suppress the
+--- redundant generic "no task found in the specified range" warning so the user
+--- sees a single message.  It is nil/false for every other nil-result case (e.g.
+--- drift, unreadable source, a genuinely non-task source-buffer line) so those
+--- still surface the generic warning.
+---
 --- @param bufnr integer  buffer number (render or source)
 --- @param lnum  integer  0-indexed buffer line number
---- @return table|nil
+--- @return table|nil resolved
 ---   Render task:  { kind='render', bufnr=src_bufnr|nil, lnum=src_row, task, src_path, src_line }
 ---   Source task:  { kind='source', bufnr, lnum, task }
+--- @return boolean|nil explained  true when a known non-task already emitted a notice
 function M.resolve_task_at(bufnr, lnum)
   -- Check managed task-meta first (render lines).
   local managed = require("obsidian-tasks.render.managed")
   local meta = managed.task_meta_for_row(bufnr, lnum)
   if meta then
+    -- Per-node-kind dispatch (Phase 6, requirements §11).  A description BULLET
+    -- and a tree BLANK are MANAGED rows but are NOT tasks: they have no own
+    -- `- [ ]` source line to mutate.  Task-mutation subcommands must be DISABLED
+    -- here with a brief "not a task" notice and NO pass-through to any parent
+    -- task — returning nil refuses the mutation at the single shared
+    -- target-resolution choke point (every task-mutation subcommand resolves
+    -- through here, directly or via bulk_range).  Real TASK rows (top-level
+    -- matched OR nested children) carry tree_kind=="task" (or nil for flat
+    -- dashboard rows / source buffers) and fall through unchanged.
+    if meta.tree_kind == "bullet" or meta.tree_kind == "blank" then
+      log.info("obsidian-tasks: not a task — this row has no task to change")
+      -- Signal "already explained" so callers skip the redundant generic
+      -- "no task found in the specified range" warning (single-notice rule, §11).
+      return nil, true
+    end
+
     -- Drift check: compare current source line against the recorded task_text.
     local current_line = read_source_line(meta.source_file, meta.source_row)
     if current_line == nil then
@@ -933,19 +1013,30 @@ end
 --- Walk a line range and return all resolved tasks.
 --- Non-task lines are silently skipped.
 ---
+--- The second return value, *explained*, is true when the result list is empty
+--- AND at least one row in the range was a known managed non-task (bullet/blank)
+--- that already emitted the specific "not a task" notice via resolve_task_at.
+--- Subcommands use it to suppress their redundant generic "no task found in the
+--- specified range" warning, while a genuinely empty/non-managed range (explained
+--- = false) still surfaces that generic warning.
+---
 --- @param bufnr integer   buffer number
 --- @param range table     { line1: integer, line2: integer }  1-indexed (from opts)
 --- @return table[]        list of resolve_task_at results
+--- @return boolean        explained  true when an empty result was a known non-task
 function M.bulk_range(bufnr, range)
   local results = {}
+  local explained = false
   -- line1/line2 are 1-indexed; resolve_task_at expects 0-indexed.
   for lnum = range.line1 - 1, range.line2 - 1 do
-    local resolved = M.resolve_task_at(bufnr, lnum)
+    local resolved, row_explained = M.resolve_task_at(bufnr, lnum)
     if resolved then
       results[#results + 1] = resolved
+    elseif row_explained then
+      explained = true
     end
   end
-  return results
+  return results, explained
 end
 
 -- ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -1063,10 +1154,15 @@ end
 --- New task adopts anchor_indent — callers must pass new_task_line with the
 --- correct leading spaces already applied.
 ---
+--- *new_task_line* may be a single string (single-line insert, P5b) OR an array
+--- of strings (multi-line block insert, P5c).  An array is written as a CONTIGUOUS
+--- ordered block at the computed insertion position (one apply_source_edit /
+--- count=0 / one undo entry), preserving the array's order.
+---
 --- @param src_path      string   path to the source file
 --- @param anchor_row    integer  0-indexed row of the anchor task in the source
 --- @param anchor_indent integer  indent level (number of leading spaces) of the anchor
---- @param new_task_line string   verbatim new task line to insert
+--- @param new_task_line string|string[]  verbatim new line(s) to insert
 --- @param opts          table?   optional: { dashboard_bufnr: integer } for undo ring keying
 --- @return boolean ok
 function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_line, opts)
@@ -1082,7 +1178,18 @@ function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_lin
   -- lines array is 1-indexed: lines[i+1] is the 0-indexed row i.
   local i = anchor_row + 1 -- first 0-indexed row to test (one after anchor)
 
-  while i < n do
+  -- FIRST-CHILD insert (Bug 2): when the new line is indented DEEPER than the
+  -- anchor, it is a CHILD of the anchor and must land immediately after the
+  -- anchor row — becoming the FIRST child, BEFORE the anchor's existing subtree.
+  -- A sibling insert (new line at/shallower than the anchor) instead belongs
+  -- AFTER the whole subtree, so it still runs the continuation walk below.
+  -- The first-child case is the only one where the dashboard row above the
+  -- insert is the PARENT itself; any later child has a sibling above it at equal
+  -- depth (which anchors to that sibling, not the parent).
+  local first_new = type(new_task_line) == "table" and new_task_line[1] or new_task_line
+  local is_child_insert = first_new ~= nil and indent_of(first_new) > anchor_indent
+
+  while not is_child_insert and i < n do
     local line = lines[i + 1] -- 1-indexed access into readfile result
 
     if is_blank(line) then
@@ -1109,14 +1216,17 @@ function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_lin
     end
   end
 
-  -- Insert new_task_line at 0-indexed position i with count=0 (pure insert).
+  -- Insert new_task_line(s) at 0-indexed position i with count=0 (pure insert).
+  -- A string is wrapped into a 1-element array; an array is inserted as a
+  -- contiguous ordered block (P5c multi-line block insert).
   -- Forward opts.dashboard_bufnr so the undo ring entry is keyed to the correct
   -- dashboard buffer (required for multi-file undo merge in render/edit.flush).
+  local new_lines = type(new_task_line) == "table" and new_task_line or { new_task_line }
   local ase_opts = { count = 0 }
   if opts and opts.dashboard_bufnr then
     ase_opts.dashboard_bufnr = opts.dashboard_bufnr
   end
-  return M.apply_source_edit(src_path, i, { new_task_line }, ase_opts)
+  return M.apply_source_edit(src_path, i, new_lines, ase_opts)
 end
 
 --- Delete a task and its continuation block from *src_path*.

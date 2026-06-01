@@ -23,7 +23,9 @@ local HIDE_KEY_MAP = {
   ["depends on"] = "depends_on",
   ["backlinks"] = "backlinks",
   ["task count"] = "task_count",
-  ["tree"] = "tree",
+  -- NOTE: `tree` is NOT a hide flag.  `show tree` / `hide tree` are parsed in
+  -- query/parse.lua into ast.tree (a boolean toggle), driving query/tree.lua
+  -- assembly — not the field-hiding layout path that consumes these flags.
   ["edit button"] = "edit_button",
   ["postpone button"] = "postpone_button",
 }

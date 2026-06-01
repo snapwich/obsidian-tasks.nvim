@@ -145,8 +145,8 @@ linger_hl_group                                        string  ("ObsidianTasksLi
     default.
 
 dim_completed_tasks                                    boolean  (true)
-    Sink live Done/Cancelled tasks to the bottom of each group and dim
-    them. User sort order is preserved within each tier.
+    Dim live Done/Cancelled tasks in place. They keep their sort-by
+    position and are only visually deprioritized (not moved).
 
 blink_cmp.enabled                                      boolean  (true)
     Enable the blink.cmp source. See |obsidian-tasks-cmp|.
@@ -410,6 +410,38 @@ Recognised subkeys: priority, due date, scheduled date, start date,
 done date, created date, cancelled date, recurrence rule, on completion,
 tags, id, depends on, backlinks, task count, tree, edit button,
 postpone button.
+
+                                                    *obsidian-tasks-query-tree*
+show tree ~
+
+    show tree
+
+Opt-in. By default results render flat (one line per matched task). With
+`show tree`, each matched task renders with its full descendant subtree —
+child tasks and `-`/`*`/`+` description bullets — at its real indentation,
+and the real ancestors above it render as DIMMED breadcrumb rows so the
+nesting is never ambiguous. Each matched subtree is a native manual fold
+(|fold-manual|), expanded by default.
+
+Dimmed ancestor rows are still fully editable: edit, toggle, or delete them
+like any task (deleting one promotes its orphaned children up a level). They
+are context, so they are not counted in the result total.
+
+When `group by` separates a child from its parent (the child carries a tag
+the parent lacks), the child still appears under its dimmed ancestor in that
+group rather than floating bare at the top level.
+
+A freshly typed item nests by its literal indentation (`o` inherits the row
+above via autoindent; outdent to column 0 for a top-level task). An item
+typed where it has no matched ancestor inherits the group's defining
+attribute (e.g. its tag) so it stays in view.
+
+Completed (Done/Cancelled) tasks dim in place and are never reordered, in
+both flat and tree mode (see |obsidian-tasks-config| `dim_completed_tasks`).
+
+`hide tree` is the explicit opposite (flat). This is a superset of upstream
+Obsidian Tasks `show tree`: it only ever writes the same Markdown back, so
+files stay compatible with the desktop app.
 
                                                  *obsidian-tasks-query-explain*
 explain ~

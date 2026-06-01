@@ -171,6 +171,21 @@ function M.on_write_cmd(args)
   local ranges = M.compute_managed_ranges(bufnr)
   local kept = filter_out_managed(lines, ranges)
 
+  -- Honor 'bomb': Vim's native writer re-emits a UTF-8 BOM at the start of the
+  -- file when 'bomb' is set; this BufWriteCmd replaces that writer, so without
+  -- this the BOM is silently dropped on every :w (data-fidelity loss for files
+  -- that carry one).  Only meaningful for utf-8 content — for an explicit
+  -- non-utf-8 'fileencoding' we leave the bytes as the buffer holds them rather
+  -- than guess an encoding conversion.  ('fileformat'/non-utf-8 'fileencoding'
+  -- conversion are still deferred to a follow-up; no fixture exercises them.)
+  if vim.bo[bufnr].bomb then
+    local fenc = vim.bo[bufnr].fileencoding
+    if fenc == "" or fenc == "utf-8" or fenc == "utf8" then
+      kept = vim.deepcopy(kept)
+      kept[1] = "\239\187\191" .. (kept[1] or "")
+    end
+  end
+
   local ok, result = pcall(vim.fn.writefile, kept, filepath)
   if not ok or (type(result) == "number" and result ~= 0) then
     local errmsg = ok and (vim.v.errmsg ~= "" and vim.v.errmsg or "write failed") or tostring(result)

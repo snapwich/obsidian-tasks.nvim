@@ -196,9 +196,17 @@ local HIDE_KEYS = {
   ["depends on"] = true,
   ["backlinks"] = true,
   ["task count"] = true,
-  ["tree"] = true,
   ["edit button"] = true,
   ["postpone button"] = true,
+}
+
+--- `show <key>` / `hide <key>` toggle keys.  Both `show tree` and `hide tree`
+--- drive the SAME boolean (ast.tree); `tree` is intentionally NOT in HIDE_KEYS
+--- so `hide tree` is handled as a tree toggle (not a generic hide subkey that
+--- would leak a `tree` hide flag).  Only `tree` is recognised for now —
+--- `show urgency` and other toggles are deferred and error like unknown keys.
+local SHOW_KEYS = {
+  ["tree"] = true,
 }
 
 --- Text field keyword → canonical field name.
@@ -674,6 +682,37 @@ local function parse_line(ast, line, line_num)
     end
   end
 
+  -- ── show <key> / hide <key> toggles (tree) ───────────────────────────
+  -- `show tree` opts INTO the tree (default flat); `hide tree` is the explicit
+  -- default-off (upstream parity).  Both drive ast.tree — last directive wins.
+  -- Handled BEFORE the generic `hide <subkey>` so `hide tree` is the toggle,
+  -- not a hide-list entry.  Unknown show/hide keys fall through to the generic
+  -- hide handler (for hide) or the unknown-directive error (for show).
+  do
+    local show_key = lower:match("^show (.+)$")
+    if show_key then
+      if SHOW_KEYS[show_key] then
+        if show_key == "tree" then
+          ast.tree = true
+        end
+        return
+      end
+      -- Unknown show key (e.g. `show urgency`): deferred → structured error,
+      -- consistent with an unknown `hide <key>`.
+      ast.errors[#ast.errors + 1] = {
+        kind = "parse_error",
+        msg = "Unknown query directive: " .. line,
+        line = line_num,
+      }
+      return
+    end
+    local hide_toggle = lower:match("^hide (.+)$")
+    if hide_toggle == "tree" then
+      ast.tree = false
+      return
+    end
+  end
+
   -- ── hide <subkey> ────────────────────────────────────────────────────
   do
     local subkey = lower:match("^hide (.+)$")
@@ -731,6 +770,9 @@ function M.parse(query_text)
     hide = {},
     errors = {},
     explain = false,
+    -- Tree membership (Phase 2): `show tree` opts IN, default FLAT.  `hide
+    -- tree` re-disables (upstream parity).  Drives query/tree.lua assembly.
+    tree = false,
   }
 
   if not query_text or query_text == "" then

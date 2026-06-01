@@ -803,7 +803,6 @@ hide_tests["all known hide keys map to flags"] = function()
     "depends on",
     "backlinks",
     "task count",
-    "tree",
     "edit button",
     "postpone button",
   }

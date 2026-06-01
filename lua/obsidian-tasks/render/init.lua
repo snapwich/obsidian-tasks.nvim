@@ -336,6 +336,7 @@ function M.render_buffer(bufnr, workspace)
   local query_run = require("obsidian-tasks.query.run")
   local index = require("obsidian-tasks.index")
   local folds_mod = require("obsidian-tasks.render.folds")
+  local status_mod = require("obsidian-tasks.task.status")
   local revert = require("obsidian-tasks.render.revert")
   local hygiene = require("obsidian-tasks.render.hygiene")
 
@@ -372,10 +373,13 @@ function M.render_buffer(bufnr, workspace)
       -- (only files the user had opened) and skip the full walk, producing
       -- results that depended on which buffers were opened first.
       --
-      -- refresh_all is idempotent over an already-populated index (each
-      -- refresh_file is mtime-gated), so the only cost of always firing it
-      -- is the ripgrep walk itself — which the user already pays on the
-      -- first dashboard render of a session.
+      -- refresh_all runs a full vault walk via scan.walk_files: it discovers
+      -- task-bearing files with ripgrep and full-reads each (one disk read per
+      -- file feeding both the ignore check and the node parse).  It does NOT
+      -- route through the mtime-gated refresh_file, so an already-indexed file
+      -- IS re-read on every refresh_all — the cost of always firing it is the
+      -- ripgrep walk plus a re-read of each discovered file.  We gate on
+      -- _lazy_init_started so this only happens once per workspace per session.
       do
         local ws_key = workspace and tostring(workspace.root)
         if ws_key and not _lazy_init_started[ws_key] then
@@ -472,6 +476,9 @@ function M.render_buffer(bufnr, workspace)
             table.insert(pre_clear_map[key][i], {
               group_name = meta.group_name,
               group_index = meta.group_index,
+              -- Was this row a LIT MATCHED root?  Tree-linger promotion is gated
+              -- on it (only a matched root lingers as a subtree block).
+              matched = meta.matched or false,
             })
           end
         end
@@ -504,12 +511,56 @@ function M.render_buffer(bufnr, workspace)
             if block_map then
               for i, appearances in pairs(block_map) do
                 if i <= #per_block then
+                  -- For a `show tree` block, the lingered root must linger AS A
+                  -- WHOLE SUBTREE BLOCK: the task left the FILTER, not the FILE,
+                  -- so its descendant subtree still lives in the index.  Rebuild
+                  -- it from index.nodes_for + tree.subtree_rows (the SAME slice
+                  -- assemble uses) and attach the rows to each linger copy;
+                  -- layout renders them dimmed as one fold unit.  Flat blocks
+                  -- leave linger_subtree nil and render a single dimmed row.
+                  local block_is_tree = per_block[i].ast and per_block[i].ast.tree
                   for _, appearance in ipairs(appearances) do
-                    local copy = vim.deepcopy(ent)
-                    copy.block_idx = i
-                    copy.prior_group_name = appearance.group_name
-                    copy.prior_index_within_group = appearance.group_index
-                    new_lingers[#new_lingers + 1] = copy
+                    -- TREE gate: only a LIT MATCHED root lingers (as a subtree
+                    -- block).  A dragged DESCENDANT (matched=false) never left
+                    -- the FILTER — it was pulled in by subtree-drag — so it must
+                    -- NOT linger.  Skip its promotion entirely.  Flat rows have
+                    -- no matched flag and always linger (unchanged behavior).
+                    if not (block_is_tree and not appearance.matched) then
+                      local copy = vim.deepcopy(ent)
+                      copy.block_idx = i
+                      copy.prior_group_name = appearance.group_name
+                      copy.prior_index_within_group = appearance.group_index
+                      if block_is_tree then
+                        local tree_mod = require("obsidian-tasks.query.tree")
+                        local nodes = index.nodes_for(ent.src_path) or {}
+                        local sub = tree_mod.subtree_rows(nodes, ent.src_path, ent.src_line, {
+                          matched = true,
+                          dim = false,
+                          fold_group = 1,
+                          group_name = appearance.group_name or "",
+                          group_index = appearance.group_index or 0,
+                        })
+                        -- Stale-snapshot guard.  subtree_rows resolves the block
+                        -- by ent.src_line against the CURRENT node model.  If the
+                        -- file was re-indexed (lines shifted) while this root keeps
+                        -- lingering, pos[old_root_line] could resolve to a DIFFERENT
+                        -- node — emitting a wrong subtree under the lingered root.
+                        -- Verify the resolved root's task body matches the captured
+                        -- linger task (description is checkbox-state-independent, so
+                        -- it survives the Done toggle that created this linger).  On
+                        -- mismatch / nil, fall back to a single dimmed root row
+                        -- (linger_subtree = nil) rather than a wrong block.
+                        local root_row = sub[1]
+                        local resolved_desc = root_row and root_row.task and root_row.task.description
+                        local captured_desc = ent.task and ent.task.description
+                        if #sub > 0 and resolved_desc ~= nil and resolved_desc == captured_desc then
+                          copy.linger_subtree = sub
+                        else
+                          copy.linger_subtree = nil
+                        end
+                      end
+                      new_lingers[#new_lingers + 1] = copy
+                    end
                   end
                 end
               end
@@ -541,6 +592,13 @@ function M.render_buffer(bufnr, workspace)
       -- Accumulate fold descriptors { fence_first, fence_last } for post-render fold pass.
       -- Folds cover ONLY the fence lines; rendered task lines stay visible below.
       local fold_blocks = {}
+      -- Per-buffer subtree fold-text info, keyed by the 1-indexed first-child row
+      -- (child_fold_range start == v:foldstart for a closed subtree fold).  Each
+      -- value { items, tasks_total, tasks_done, indent } is computed below over a
+      -- subtree's HIDDEN descendant rows and handed to folds.apply_folds so
+      -- folds.foldtext can render "{indent}▸ T items · N/M done" without parsing
+      -- line text.  Rebuilt every render (folds.set_foldinfo replaces it wholesale).
+      local fold_info = {}
       -- Aggregate diagnostic entries from every block; flushed via
       -- vim.diagnostic.set once after the loop so users see one coherent
       -- diagnostic set per render (no per-block flicker).
@@ -622,6 +680,12 @@ function M.render_buffer(bufnr, workspace)
         -- `rendered_text` is the canonical buffer line we just wrote; the
         -- revert/commit path compares it against the live row to detect status
         -- edits and reject any other modification.
+        -- Per-subtree fold ranges (0-indexed buffer rows), built from the
+        -- tree rows' fold_group tags.  Contiguous task records sharing one
+        -- fold_group form one native manual fold nested inside the fence fold
+        -- (Phase 4).  Empty in the flat (non-tree) path — no fold_group set.
+        local subtree_fold_ranges = {}
+        local fold_range_by_group = {} -- fold_group → { first, last } (0-indexed)
         if block_draw_state and block_draw_state.inserted_range then
           local insert_start = block_draw_state.inserted_range[1]
           local task_idx = 0
@@ -633,13 +697,39 @@ function M.render_buffer(bufnr, workspace)
                 src_line = ll.src_line,
                 src_hash = ll.src_hash,
                 rendered_text = ll.text,
+                -- Status symbol (tree task rows) so the subtree fold-text count
+                -- pass can classify a row as Done/Cancelled without parsing text.
+                status_symbol = ll.status_symbol,
                 linger = ll.linger or nil,
                 dim = ll.dim or nil,
                 -- Captured at layout time so promotion can recover the prior
                 -- group/position when this task is later lingered.
                 group_name = ll.group_name,
                 group_index = ll.group_index,
+                -- Tree metadata (nil in the flat path).
+                fold_group = ll.fold_group,
+                tree_kind = ll.tree_kind,
+                read_only = ll.read_only or nil,
+                -- Whether this row was a LIT MATCHED root (tree mode).  Used by
+                -- the linger promotion gate: in a `show tree` block, only a
+                -- matched ROOT lingers as a subtree block when it leaves the
+                -- filter — a dragged DESCENDANT (matched=false) never left the
+                -- FILTER (it was pulled in by subtree-drag), so it must NOT
+                -- linger.  nil/false on flat rows and tree descendants.
+                matched = ll.matched or nil,
               }
+              -- fold_group 0 is the DIM connector-ancestor sentinel ("always
+              -- visible, not foldable"): it must NOT join any subtree fold, so
+              -- folding a matched subtree never hides the breadcrumb above it.
+              if ll.fold_group ~= nil and ll.fold_group ~= 0 then
+                local fr = fold_range_by_group[ll.fold_group]
+                if not fr then
+                  fold_range_by_group[ll.fold_group] = { lnum, lnum, order = #subtree_fold_ranges + 1 }
+                  subtree_fold_ranges[#subtree_fold_ranges + 1] = fold_range_by_group[ll.fold_group]
+                else
+                  fr[2] = lnum
+                end
+              end
               task_idx = task_idx + 1
             end
           end
@@ -654,8 +744,59 @@ function M.render_buffer(bufnr, workspace)
         end
 
         -- Fold range covers only the fence lines so rendered tasks remain visible
-        -- below the collapsed query (AC1).
-        fold_blocks[#fold_blocks + 1] = { fence_first = fence_first, fence_last = fence_last }
+        -- below the collapsed query (AC1).  For a TREE block we additionally pass
+        -- the per-subtree fold ranges so folds.apply_folds nests one manual fold
+        -- per fold_group inside this block (default EXPANDED — see folds.lua).
+        -- Normalize order-keyed range tables to plain {first,last} pairs.
+        local clean_subtree_folds = {}
+        for _, fr in ipairs(subtree_fold_ranges) do
+          clean_subtree_folds[#clean_subtree_folds + 1] = { fr[1], fr[2] }
+        end
+
+        -- Compute per-subtree fold-text counts over each fold's HIDDEN DESCENDANT
+        -- rows (root+1 .. last).  Only subtrees with >=2 descendant rows actually
+        -- fold (child_fold_range returns nil otherwise), so skip the rest.  Counts
+        -- are stashed in `fold_info` keyed by the 1-indexed first-child row
+        -- (child_fold_range's start), which equals v:foldstart for the closed fold.
+        --   items (T)       = every non-blank hidden row (lit, dim, context,
+        --                     bullet, connector sentinel) — pure rows-collapsed.
+        --   tasks_total (M) = hidden LIT task rows (tree_kind=="task", not dim);
+        --                     bullets / dim-context tasks excluded.
+        --   tasks_done (N)  = those M whose status is Done or Cancelled.
+        --   indent          = leading whitespace of the first child row.
+        for _, fr in ipairs(subtree_fold_ranges) do
+          local root0, last0 = fr[1], fr[2]
+          local fold_start_1 = folds_mod.child_fold_range(root0, last0)
+          if fold_start_1 then
+            local items, tasks_total, tasks_done = 0, 0, 0
+            for lnum = root0 + 1, last0 do
+              local meta = line_map[lnum]
+              if meta and meta.tree_kind ~= "blank" then
+                items = items + 1
+                if meta.tree_kind == "task" and not meta.dim then
+                  tasks_total = tasks_total + 1
+                  if status_mod.is_completed(meta.status_symbol) then
+                    tasks_done = tasks_done + 1
+                  end
+                end
+              end
+            end
+            -- Leading whitespace of the first child row (visual nesting).
+            local first_child = line_map[root0 + 1]
+            local indent = ((first_child and first_child.rendered_text) or ""):match("^%s*") or ""
+            fold_info[fold_start_1] = {
+              items = items,
+              tasks_total = tasks_total,
+              tasks_done = tasks_done,
+              indent = indent,
+            }
+          end
+        end
+        fold_blocks[#fold_blocks + 1] = {
+          fence_first = fence_first,
+          fence_last = fence_last,
+          subtree_folds = clean_subtree_folds,
+        }
 
         new_buf_state[#new_buf_state + 1] = {
           block_range = { block.fence_start, block.fence_end },
@@ -668,6 +809,9 @@ function M.render_buffer(bufnr, workspace)
           line_map = line_map,
           group_by = (pb.ast and pb.ast.group_by) or {},
           sort_by = (pb.ast and pb.ast.sort_by) or {},
+          -- Phase 4: per-subtree fold ranges (0-indexed buffer rows) for fold
+          -- state capture/restore across re-render.  Empty for flat blocks.
+          subtree_folds = clean_subtree_folds,
         }
 
         offset = offset + n_tasks
@@ -682,12 +826,32 @@ function M.render_buffer(bufnr, workspace)
       pcall(vim.diagnostic.set, M._diag_ns, bufnr, all_diagnostics)
 
       -- ── 6. Apply manual folds for all rendered blocks ──────────────────────────
-      -- Each block is folded across its fence lines only; rendered tasks stay
-      -- visible underneath the collapsed fold.  setup_window() is called inside
+      -- Each block's FENCE is folded (its query line collapses) while rendered
+      -- tasks stay visible underneath (AC1).  For `show tree` blocks, one manual
+      -- fold per subtree fold_group is also created, defaulting EXPANDED.
+      -- setup_window() (foldmethod + foldcolumn + foldtext) is called inside
       -- apply_folds for each window.
-      -- Skip folding when default_folded = false: render but leave folds open.
+      --
+      -- When default_folded = false we still build the subtree folds (so the
+      -- fold structure exists and za/zc work) but leave the fence fold OPEN.
+      -- Detect whether any block carries subtree folds so a flat dashboard with
+      -- default_folded=false keeps its old behavior (no apply_folds call).
+      local has_subtree_folds = false
+      for _, fb in ipairs(fold_blocks) do
+        if fb.subtree_folds and #fb.subtree_folds > 0 then
+          has_subtree_folds = true
+          break
+        end
+      end
       if M._opts.default_folded ~= false then
-        folds_mod.apply_folds(bufnr, fold_blocks)
+        folds_mod.apply_folds(bufnr, fold_blocks, true, fold_info)
+      elseif has_subtree_folds then
+        folds_mod.apply_folds(bufnr, fold_blocks, false, fold_info)
+      else
+        -- No apply_folds call this render (flat dashboard, default_folded=false):
+        -- still replace any stale subtree fold-text info so foldtext can't read a
+        -- previous tree render's counts.
+        folds_mod.set_foldinfo(bufnr, nil)
       end
 
       -- ── 7. Update reverse index ────────────────────────────────────────────────
@@ -846,12 +1010,90 @@ function M.rerender_buffer(bufnr, workspace)
     end
   end
 
+  -- ── 1b. Snapshot CLOSED subtree folds keyed by their matched root ──────────
+  -- Subtree folds default open; to preserve a user-closed subtree across a
+  -- re-render, capture the set of closed-subtree root keys (src_path:src_line)
+  -- before clearing.  After render we re-close any subtree whose root row maps
+  -- to a captured key.  Keying on the source line (not buffer row) keeps the
+  -- match stable across the clear+reinsert and across source edits above.
+  --
+  -- CRITICAL: capture the fold state at the LIVE root row, not the stored
+  -- sf[1].  sf[1] is the 0-indexed root row at the PRIOR render; on a
+  -- BufWritePost / FocusGained / deferred-sync re-render a source insert/delete
+  -- above the block shifts the live rendered rows, so capture_fold_state(sf[1])
+  -- would read the wrong line and a user-CLOSED subtree would be mis-captured
+  -- as open and re-open.  We use line_map[sf[1]] (prior-render-consistent with
+  -- sf[1]) only to identify WHICH task is the root, then re-derive that task's
+  -- CURRENT rendered row from its stable (src_path, src_line) via the live
+  -- per-task extmark — mirroring how the fence capture above uses managed
+  -- extmark positions.
+  local closed_subtree_roots = {}
+  if old_buf_state then
+    local managed_mod_1b = require("obsidian-tasks.render.managed")
+    for _, block_state in ipairs(old_buf_state) do
+      for _, sf in ipairs(block_state.subtree_folds or {}) do
+        local meta = block_state.line_map and block_state.line_map[sf[1]]
+        if meta and meta.src_path and meta.src_line then
+          -- Live 0-indexed row of the root task (auto-tracked by Neovim),
+          -- falling back to the stale sf[1] when no live extmark is found
+          -- (e.g. unit tests with a mock draw module / no real extmarks).
+          --
+          -- D2: a matched root can render multiple times (LIT fold-owner in the
+          -- groups it matches; DIM breadcrumb copies where only a relative
+          -- matched).  The children fold is owned by the LIT instance, so resolve
+          -- to the fold-owning (fold_group ~= 0) copy nearest this fold's prior
+          -- root row sf[1] — NOT just any (src_path, src_line) match, which could
+          -- land on a dim breadcrumb whose row+1 is not the fold's first child.
+          local live_root_row = managed_mod_1b.live_fold_root_row_for_source(
+            bufnr,
+            meta.src_path,
+            meta.src_line - 1,
+            sf[1]
+          ) or sf[1]
+          -- Subtree folds are CHILDREN-ONLY ([root+1..last]); the root row itself
+          -- is never folded.  Probe the first child row (live_root_row + 1) to read
+          -- whether the user collapsed this subtree.
+          local state = folds_mod.capture_fold_state(bufnr, live_root_row + 1)
+          if state == "closed" then
+            closed_subtree_roots[meta.src_path .. ":" .. tostring(meta.src_line)] = true
+          end
+        end
+      end
+    end
+  end
+
   -- ── 2. Re-render ───────────────────────────────────────────────────────────
   -- render_buffer does its own internal clear_buffer and applies folds for ALL
   -- blocks if default_folded=true, or leaves them open if default_folded=false.
   -- Calling clear_buffer here too would wipe M._buffer_state[bufnr] before
   -- render_buffer can capture it as pre_clear_state for linger promotion.
   M.render_buffer(bufnr, workspace)
+
+  -- ── 2b. Re-close preserved subtree folds ───────────────────────────────────
+  -- render_buffer recreated every subtree fold OPEN.  Re-close the ones the user
+  -- had collapsed before, matched by their root's (src_path, src_line).
+  if next(closed_subtree_roots) ~= nil then
+    local new_buf_state = M._buffer_state[bufnr]
+    if new_buf_state then
+      for _, block_state in ipairs(new_buf_state) do
+        for _, sf in ipairs(block_state.subtree_folds or {}) do
+          local root_row = sf[1]
+          local meta = block_state.line_map and block_state.line_map[root_row]
+          if meta and meta.src_path and meta.src_line then
+            local key = meta.src_path .. ":" .. tostring(meta.src_line)
+            if closed_subtree_roots[key] then
+              -- Re-close the CHILDREN-ONLY range ([root+1..last]); skip subtrees
+              -- too small to fold (child_fold_range returns nil).
+              local s1, e1 = folds_mod.child_fold_range(sf[1], sf[2])
+              if s1 then
+                folds_mod.close_fold_range(bufnr, s1, e1)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
 
   -- ── 3. Restore "open" fold states when default_folded=true ─────────────────
   -- When default_folded=false, render_buffer leaves folds open — nothing to do.
@@ -903,6 +1145,7 @@ end
 function M.clear_state(bufnr)
   local draw = require("obsidian-tasks.render.draw")
   draw.clear_state(bufnr)
+  require("obsidian-tasks.render.folds").clear_foldinfo(bufnr)
   M._buffer_state[bufnr] = nil
   -- Linger state is bound to the buffer's render lifecycle: a reload from disk
   -- (BufReadPre) or BufDelete invalidates any lingered rows, so drop them too.
@@ -926,6 +1169,7 @@ function M.clear_buffer(bufnr)
 
     local draw = require("obsidian-tasks.render.draw")
     draw.clear(bufnr)
+    require("obsidian-tasks.render.folds").clear_foldinfo(bufnr)
     M._buffer_state[bufnr] = nil
     -- Keep reverse index consistent: bufnr no longer has any active render.
     require("obsidian-tasks.index").clear_render_paths(bufnr)
