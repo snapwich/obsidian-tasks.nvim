@@ -899,8 +899,10 @@ function M._record_linger(active_bufnr, resolved, task)
   end
   local src_path = resolved.src_path
   if not src_path then
-    -- Source kind: derive from buffer name.
-    src_path = vim.api.nvim_buf_get_name(resolved.bufnr)
+    -- Source kind: derive from buffer name.  Normalize so the recorded linger
+    -- key matches index-derived task abs_paths (forward slashes) when dashboards
+    -- replay lingers — buffer names are all-backslash on Windows.
+    src_path = require("obsidian-tasks.util.obsidian").normalize(vim.api.nvim_buf_get_name(resolved.bufnr))
   end
   if not src_path or src_path == "" then
     return

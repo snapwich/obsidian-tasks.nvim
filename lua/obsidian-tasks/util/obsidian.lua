@@ -9,6 +9,29 @@
 
 local M = {}
 
+-- ── path normalization ────────────────────────────────────────────────────────
+
+--- Normalize a filesystem path to Neovim's canonical form (forward slashes).
+---
+--- On Windows ripgrep echoes the search-root prefix verbatim — forward slashes,
+--- since `workspace.root` is vim.fs-normalized — but joins the descendant
+--- components it discovers with the OS-native backslash, yielding MIXED paths
+--- like `C:/vault\sub\note.md`.  Buffer names (`nvim_buf_get_name`) come back
+--- all-backslash.  Index keys, workspace roots, and any buffer-derived path that
+--- is compared or used as a key MUST pass through here so prefix/equality checks
+--- (workspace_path_filter, query.to_relative, linger matching, the draw.lua
+--- same-buffer test) see a single separator style.  No-op on POSIX.
+---
+--- @param path string|nil
+--- @return string|nil  normalized path (input returned unchanged when not a
+---   non-empty string, so callers can pass through nil/"" safely)
+function M.normalize(path)
+  if type(path) ~= "string" or path == "" then
+    return path
+  end
+  return vim.fs.normalize(path)
+end
+
 -- ── workspace helpers ─────────────────────────────────────────────────────────
 
 --- Find the vault that owns the given absolute path by walking ancestors for a
@@ -30,7 +53,7 @@ function M.workspace_for_path(abs_path)
   if not marker then
     return nil
   end
-  local root = vim.fs.dirname(marker)
+  local root = M.normalize(vim.fs.dirname(marker))
   return { root = root, name = vim.fn.fnamemodify(root, ":t") }
 end
 
@@ -80,6 +103,7 @@ function M.search_async(workspace, pattern, on_match, on_exit)
       pending = pending:sub(nl + 1)
       local match = rg.decode_line(line)
       if match then
+        match.path.text = M.normalize(match.path.text)
         emit(match)
       end
     end
@@ -98,6 +122,7 @@ function M.search_async(workspace, pattern, on_match, on_exit)
       local match = rg.decode_line(pending)
       pending = ""
       if match then
+        match.path.text = M.normalize(match.path.text)
         emit(match)
       end
     end
@@ -152,7 +177,7 @@ function M.discover_files_async(workspace, pattern, on_path, on_exit)
       local path = pending:sub(1, nl - 1):gsub("\r$", "")
       pending = pending:sub(nl + 1)
       if path ~= "" then
-        emit(path)
+        emit(M.normalize(path))
       end
     end
   end
@@ -170,7 +195,7 @@ function M.discover_files_async(workspace, pattern, on_path, on_exit)
       local path = pending:gsub("\r?\n$", "")
       pending = ""
       if path ~= "" then
-        emit(path)
+        emit(M.normalize(path))
       end
     end
     if on_exit then
@@ -241,12 +266,12 @@ end
 --- @param workspace_root string|table  workspace.root (Path object or string)
 --- @return fun(abs_path: string): boolean
 function M.workspace_path_filter(workspace_root)
-  local root = tostring(workspace_root)
+  local root = M.normalize(tostring(workspace_root))
   if root:sub(-1) ~= "/" then
     root = root .. "/"
   end
   return function(abs_path)
-    return abs_path:find(root, 1, true) == 1
+    return M.normalize(abs_path):find(root, 1, true) == 1
   end
 end
 

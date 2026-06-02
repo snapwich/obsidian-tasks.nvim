@@ -107,8 +107,8 @@ function M.run(ast, index, workspace_root)
     end
   end
 
-  local path_filter = workspace_root and require("obsidian-tasks.util.obsidian").workspace_path_filter(workspace_root)
-    or nil
+  local obsidian = require("obsidian-tasks.util.obsidian")
+  local path_filter = workspace_root and obsidian.workspace_path_filter(workspace_root) or nil
 
   -- Strip the workspace-root prefix so filter / sort / group see a
   -- vault-relative path matching Obsidian's `task.path`.  Queries like
@@ -119,9 +119,11 @@ function M.run(ast, index, workspace_root)
   -- workspace_root may arrive as an obsidian.nvim Path object (with a
   -- :__tostring metamethod) rather than a plain string; coerce to string
   -- before any string ops.
+  -- Both prefix and abs_path are normalized to forward slashes so the strip
+  -- works on Windows, where rg-derived index keys are mixed-separator.
   local ws_prefix
   if workspace_root and workspace_root ~= "" then
-    local root_str = tostring(workspace_root)
+    local root_str = obsidian.normalize(tostring(workspace_root))
     if root_str ~= "" then
       ws_prefix = root_str
       if ws_prefix:sub(-1) ~= "/" then
@@ -133,8 +135,9 @@ function M.run(ast, index, workspace_root)
     if not ws_prefix then
       return abs_path
     end
-    if abs_path:sub(1, #ws_prefix) == ws_prefix then
-      return abs_path:sub(#ws_prefix + 1)
+    local norm = obsidian.normalize(abs_path)
+    if norm:sub(1, #ws_prefix) == ws_prefix then
+      return norm:sub(#ws_prefix + 1)
     end
     return abs_path
   end

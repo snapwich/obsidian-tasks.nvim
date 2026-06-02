@@ -164,7 +164,9 @@ function M.draw(bufnr, fence_range, layout_lines)
   -- source-row already carries a diagnostic from refresh_source_diagnostics.
   -- Suppress the duplicate rendered-region diagnostic to keep trouble.nvim /
   -- diagnostic pickers from listing the same task twice.
-  local buf_name = vim.api.nvim_buf_get_name(bufnr)
+  -- Normalized to match index-derived `ll.src_path` (forward slashes) on the
+  -- same-buffer-source test below; raw buffer names are all-backslash on Windows.
+  local buf_name = require("obsidian-tasks.util.obsidian").normalize(vim.api.nvim_buf_get_name(bufnr))
 
   -- ── 1. Collect task texts and insert them as real buffer lines ─────────────
 
