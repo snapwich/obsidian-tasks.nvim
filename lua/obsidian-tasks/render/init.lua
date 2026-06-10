@@ -144,6 +144,47 @@ function M.mark_dirty_for_deferred_sync(bufnr)
   })
 end
 
+--- Mark *bufnr* for a deferred rerender on its next InsertLeave.
+---
+--- Called by rerender_buffer's insert-mode gate INSTEAD of clearing+rendering
+--- while the user is typing: a rerender redraws from the index, which doesn't
+--- yet contain the in-flight insert-mode lines (edit.flush drains them to
+--- source only at InsertLeave), so rendering mid-insert would wipe the user's
+--- typing.
+---
+--- The one-shot autocmd is buffer-local and registered AFTER the global
+--- InsertLeave autocmd (created at setup time; autocmds for one event fire in
+--- definition order), so it runs after flush/force_revert have drained the
+--- queued edits — the rerender draws from an index that already includes them.
+---
+--- Idempotent — only one InsertLeave autocmd is registered per buffer even if
+--- several rerender triggers fire during one insert session.
+---
+--- @param bufnr integer
+function M._defer_rerender_to_insert_leave(bufnr)
+  if vim.b[bufnr].obsidian_tasks_insert_rerender then
+    return -- an InsertLeave autocmd is already pending for this buffer
+  end
+  vim.b[bufnr].obsidian_tasks_insert_rerender = true
+  vim.api.nvim_create_autocmd("InsertLeave", {
+    buffer = bufnr,
+    once = true,
+    desc = "obsidian-tasks: deferred rerender after focus/save during insert",
+    callback = function()
+      vim.b[bufnr].obsidian_tasks_insert_rerender = nil
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      local path = vim.api.nvim_buf_get_name(bufnr)
+      local ws
+      pcall(function()
+        ws = require("obsidian-tasks.util.obsidian").workspace_for_path(path)
+      end)
+      M.rerender_buffer(bufnr, ws)
+    end,
+  })
+end
+
 -- ── Per-buffer orchestrator state ─────────────────────────────────────────────
 --
 --   M._buffer_state[bufnr] = {
@@ -939,6 +980,17 @@ end
 --- @param bufnr     integer
 --- @param workspace table?
 function M.rerender_buffer(bufnr, workspace)
+  -- Execution-time insert-mode gate (same pattern as edit.flush / revert.
+  -- do_revert): FocusGained and reverse-index rerenders can fire while the
+  -- user is typing in this buffer (terminal refocus, autosave timers).  A
+  -- clear+render here redraws from the index, which doesn't yet contain the
+  -- in-flight insert-mode lines (flush drains at InsertLeave), so it would
+  -- wipe the user's typing.  Defer to InsertLeave instead.
+  if bufnr == vim.api.nvim_get_current_buf() and vim.fn.mode():match("[iR]") then
+    M._defer_rerender_to_insert_leave(bufnr)
+    return
+  end
+
   local folds_mod = require("obsidian-tasks.render.folds")
   local managed_mod = require("obsidian-tasks.render.managed")
 
