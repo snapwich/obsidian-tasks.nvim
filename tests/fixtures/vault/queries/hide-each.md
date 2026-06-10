@@ -117,8 +117,18 @@ hide task count
 
 ## hide tree
 
+`hide tree` is the default (flat), so it only demonstrates anything next to a
+`show tree` block over the same data. Scoped to `#project/web` because
+`projects/web/web-roadmap.md` is the only vault file with nested tasks.
+
 ```tasks
-not done
-limit 3
+tag includes #project/web
 hide tree
+```
+
+## show tree (contrast for hide tree)
+
+```tasks
+tag includes #project/web
+show tree
 ```
