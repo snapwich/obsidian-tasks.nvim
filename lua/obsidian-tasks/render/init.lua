@@ -555,6 +555,18 @@ function M.render_buffer(bufnr, workspace)
                         local captured_desc = ent.task and ent.task.description
                         if #sub > 0 and resolved_desc ~= nil and resolved_desc == captured_desc then
                           copy.linger_subtree = sub
+                          -- The dim connector-ancestor breadcrumb above the
+                          -- lingered root lingers WITH the block (otherwise the
+                          -- root renders as an orphaned indented row once its
+                          -- ancestors lose their last live descendant).  Built
+                          -- only when the snapshot guard passed — a stale node
+                          -- model would yield wrong ancestors too.  layout's
+                          -- emit_linger dedups these against breadcrumbs a
+                          -- still-live sibling already emits in the same group.
+                          copy.linger_ancestors = tree_mod.ancestor_rows(nodes, ent.src_path, ent.src_line, {
+                            group_name = appearance.group_name or "",
+                            group_index = appearance.group_index or 0,
+                          })
                         else
                           copy.linger_subtree = nil
                         end

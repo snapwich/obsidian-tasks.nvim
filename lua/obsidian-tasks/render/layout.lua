@@ -409,14 +409,46 @@ function M.layout(query_result, opts)
   --- block dimmed — the root via build_linger_line (so it keeps linger=true +
   --- drift meta) and the descendants via the tree builders forced dim.  A flat
   --- linger has no subtree → one dimmed row.
-  --- @param ent         table
-  --- @param group_name  string
-  --- @param group_index integer
-  local function emit_linger(ent, group_name, group_index)
+  ---
+  --- ent.linger_ancestors (tree.ancestor_rows) renders the dim breadcrumb chain
+  --- ABOVE the block so the lingered root keeps its prior visual context.
+  --- crumbs_emitted / live_unit_keys are the per-group-body dedup sets from
+  --- emit_group_body: a breadcrumb already emitted in this group (by a
+  --- still-live sibling's unit or an earlier linger) — or whose line is itself
+  --- a live unit root — must not render twice (one managed row per disk line).
+  --- @param ent            table
+  --- @param group_name     string
+  --- @param group_index    integer
+  --- @param crumbs_emitted table<string,boolean>|nil
+  --- @param live_unit_keys table<string,boolean>|nil
+  local function emit_linger(ent, group_name, group_index, crumbs_emitted, live_unit_keys)
     local sub = ent.linger_subtree
     if not sub or #sub == 0 then
       lines[#lines + 1] = build_linger_line(ent, group_name, group_index)
       return
+    end
+    for _, brow in ipairs(ent.linger_ancestors or {}) do
+      local k = (brow.src_path or "") .. ":" .. tostring(brow.src_line or 0)
+      local dup = (crumbs_emitted and crumbs_emitted[k]) or (live_unit_keys and live_unit_keys[k])
+      if not dup then
+        if crumbs_emitted then
+          crumbs_emitted[k] = true
+        end
+        brow.group_name = group_name
+        brow.group_index = group_index
+        brow.dim = true
+        local rec
+        if brow.kind == "bullet" then
+          rec = build_tree_bullet_line(brow)
+        else
+          rec = build_tree_task_line(brow)
+        end
+        -- Part of the lingered block: clears with it, state-tracked like the
+        -- descendants below.
+        rec.linger = true
+        rec.dim = true
+        lines[#lines + 1] = rec
+      end
     end
     -- Tree linger: the root row reuses build_linger_line (linger=true, the
     -- captured task, drift meta), then gets the depth-relative indent + tree
@@ -498,6 +530,18 @@ function M.layout(query_result, opts)
       end
     end
 
+    -- Per-body breadcrumb dedup.  A dim connector-ancestor line can be owed by
+    -- BOTH a live unit (a still-matching sibling) and a lingered block
+    -- (ent.linger_ancestors) in the same group — whoever emits first claims the
+    -- key, the other skips it.  live_unit_keys additionally suppresses a linger
+    -- ancestor whose line is itself a live unit ROOT (it renders lit, not as a
+    -- dim crumb).
+    local crumbs_emitted = {}
+    local live_unit_keys = {}
+    for _, unit in ipairs(filtered_live) do
+      live_unit_keys[unit.key] = true
+    end
+
     -- Partition linger entries: indexed (have prior_index_within_group) get
     -- spliced at their captured position; unindexed (legacy / no prior render
     -- context) fall back to appending at the end of the group.
@@ -520,24 +564,24 @@ function M.layout(query_result, opts)
     local linger_i = 1
     for _, unit in ipairs(filtered_live) do
       while linger_i <= #indexed and indexed[linger_i].prior_index_within_group <= output_idx do
-        emit_linger(indexed[linger_i], group_name, output_idx)
+        emit_linger(indexed[linger_i], group_name, output_idx, crumbs_emitted, live_unit_keys)
         linger_i = linger_i + 1
         output_idx = output_idx + 1
       end
-      unit.emit(group_name, output_idx)
+      unit.emit(group_name, output_idx, crumbs_emitted)
       output_idx = output_idx + 1
     end
 
     -- Remaining indexed lingers whose prior_index exceeded the live count.
     while linger_i <= #indexed do
-      emit_linger(indexed[linger_i], group_name, output_idx)
+      emit_linger(indexed[linger_i], group_name, output_idx, crumbs_emitted, live_unit_keys)
       linger_i = linger_i + 1
       output_idx = output_idx + 1
     end
 
     -- Unindexed (legacy fallback) lingers appended at end.
     for _, ent in ipairs(unindexed) do
-      emit_linger(ent, group_name, output_idx)
+      emit_linger(ent, group_name, output_idx, crumbs_emitted, live_unit_keys)
       output_idx = output_idx + 1
     end
   end
@@ -770,9 +814,18 @@ function M.layout(query_result, opts)
       for _, u in ipairs(units) do
         local breadcrumbs = u.breadcrumbs
         local rows_for_unit = u.rows
-        u.emit = function(group_name, group_index)
+        u.emit = function(group_name, group_index, crumbs_emitted)
           for _, brow in ipairs(breadcrumbs) do
-            emit_tree_row(brow)
+            -- Claim each breadcrumb in the per-body dedup set: a lingered block
+            -- (emit_linger's linger_ancestors) may owe the same ancestor line in
+            -- this group — first emitter wins, the other skips.
+            local k = (brow.src_path or "") .. ":" .. tostring(brow.src_line or 0)
+            if not (crumbs_emitted and crumbs_emitted[k]) then
+              if crumbs_emitted then
+                crumbs_emitted[k] = true
+              end
+              emit_tree_row(brow)
+            end
           end
           for _, trow in ipairs(rows_for_unit) do
             trow.group_name = group_name

@@ -1140,4 +1140,192 @@ T["tree linger guard: a stale subtree snapshot (line-1 node no longer the captur
   restore()
 end
 
+--- Stub the index over a mutable {lines} source so a test can simulate a
+--- source-file edit between renders: tasks_in parses every task line of the
+--- CURRENT src.lines; nodes_for re-parses the node model.  Returns restore fn.
+--- @param src table  { lines = string[] }  (swap src.lines to simulate the edit)
+local function stub_index_dynamic(src)
+  local index_mod = require("obsidian-tasks.index")
+  local saved = {
+    tasks_in = index_mod.tasks_in,
+    nodes_for = index_mod.nodes_for,
+    set = index_mod.set_render_paths,
+    clear = index_mod.clear_render_paths,
+    refresh_all = index_mod.refresh_all,
+    reverse = index_mod.reverse_index,
+  }
+  index_mod.set_render_paths = function() end
+  index_mod.clear_render_paths = function() end
+  index_mod.reverse_index = function()
+    return {}
+  end
+  index_mod.refresh_all = function(_, on_done)
+    if on_done then
+      on_done()
+    end
+  end
+  index_mod.nodes_for = function(p)
+    return (p == SRC_PATH) and nodes_mod.parse_lines(src.lines) or {}
+  end
+  index_mod.tasks_in = function(_)
+    local entries = {}
+    for ln, text in ipairs(src.lines) do
+      local t = task_parse.parse(text)
+      if t then
+        entries[#entries + 1] = { t, ln }
+      end
+    end
+    local i = 0
+    return function()
+      i = i + 1
+      if entries[i] then
+        return entries[i][1], SRC_PATH, entries[i][2]
+      end
+    end
+  end
+  return function()
+    index_mod.tasks_in = saved.tasks_in
+    index_mod.nodes_for = saved.nodes_for
+    index_mod.set_render_paths = saved.set
+    index_mod.clear_render_paths = saved.clear
+    index_mod.refresh_all = saved.refresh_all
+    index_mod.reverse_index = saved.reverse
+  end
+end
+
+T["tree linger: lingered root keeps its connector-ancestor breadcrumb above it"] = function()
+  -- Repro of the orphaned-linger bug:
+  --   1  - [x] task1          (done — renders only as the dim breadcrumb)
+  --   2    - [ ] task2        (the sole `not done` match, lit root)
+  --   3      - bullet point
+  -- Toggling task2 Done made the breadcrumb (task1) vanish on rerender while
+  -- task2 lingered as a floating indented block with no parent above it.  The
+  -- lingered block must keep its ancestor breadcrumb (dimmed) until the linger
+  -- clears, so the block looks exactly like the pre-toggle render, fully dim.
+  local src = { lines = {
+    "- [x] task1",
+    "  - [ ] task2",
+    "    - bullet point",
+  } }
+  local restore = stub_index_dynamic(src)
+
+  local saved_opts = render._opts
+  render.configure({ default_folded = false, linger_on_filter_exit = true, dim_completed_tasks = true })
+
+  local bufnr = make_buf({ "```tasks", "not done", "show tree", "```" })
+  local winid = open_in_win(bufnr)
+  render.render_buffer(bufnr, nil)
+
+  -- Sanity: live render shows breadcrumb + lit child + bullet.
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  eq(lines[5]:sub(1, #"- [x] task1"), "- [x] task1")
+  eq(lines[6]:sub(1, #"  - [ ] task2"), "  - [ ] task2")
+
+  -- Toggle task2 Done: pending linger + source/index update + rerender.
+  render._record_pending_linger(bufnr, SRC_PATH, 2, nil, task_parse.parse("  - [x] task2"))
+  src.lines = {
+    "- [x] task1",
+    "  - [x] task2",
+    "    - bullet point",
+  }
+  render.rerender_buffer(bufnr, nil)
+
+  eq(#(render._lingers[bufnr] or {}), 1)
+  lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  -- The breadcrumb stays ABOVE the lingered block at its source depth.
+  eq(lines[5]:sub(1, #"- [x] task1"), "- [x] task1", "ancestor breadcrumb must survive the linger window")
+  eq(lines[6]:sub(1, #"  - [x] task2"), "  - [x] task2", "lingered root keeps its depth under the breadcrumb")
+  eq(lines[7]:sub(1, #"    - bullet point"), "    - bullet point")
+
+  -- The breadcrumb row is dimmed and part of the lingered block (clears with it).
+  local state = render._buffer_state[bufnr]
+  local crumb_meta
+  for _, blk in ipairs(state or {}) do
+    for _, meta in pairs(blk.line_map or {}) do
+      if meta.src_line == 1 then
+        crumb_meta = meta
+      end
+    end
+  end
+  eq(crumb_meta ~= nil, true, "breadcrumb must be a managed row")
+  eq(crumb_meta.dim, true, "breadcrumb renders dimmed")
+
+  -- Refresh clears the whole block, breadcrumb included.
+  render.refresh_with_clear_lingers(bufnr, nil)
+  eq(render._lingers[bufnr], nil)
+  lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for _, l in ipairs(lines) do
+    eq(l:find("task1", 1, true) == nil, true, "breadcrumb gone after linger clears")
+    eq(l:find("task2", 1, true) == nil, true, "lingered root gone after linger clears")
+  end
+
+  render._lingers[bufnr] = nil
+  render._pending_lingers[bufnr] = nil
+  render.clear_buffer(bufnr)
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  render.configure(saved_opts)
+  restore()
+end
+
+T["tree linger: ancestor shared with a still-live sibling renders ONCE"] = function()
+  -- task1 (done) has TWO not-done children.  Toggling task2 lingers it; task3
+  -- stays live and still needs the task1 breadcrumb.  The breadcrumb must
+  -- render exactly once (one managed row per disk line — duplicate rows corrupt
+  -- locate/drift).
+  local src = { lines = {
+    "- [x] task1",
+    "  - [ ] task2",
+    "  - [ ] task3",
+  } }
+  local restore = stub_index_dynamic(src)
+
+  local saved_opts = render._opts
+  render.configure({ default_folded = false, linger_on_filter_exit = true, dim_completed_tasks = true })
+
+  local bufnr = make_buf({ "```tasks", "not done", "show tree", "```" })
+  local winid = open_in_win(bufnr)
+  render.render_buffer(bufnr, nil)
+
+  render._record_pending_linger(bufnr, SRC_PATH, 2, nil, task_parse.parse("  - [x] task2"))
+  src.lines = {
+    "- [x] task1",
+    "  - [x] task2",
+    "  - [ ] task3",
+  }
+  render.rerender_buffer(bufnr, nil)
+
+  eq(#(render._lingers[bufnr] or {}), 1)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local task1_count, task3_count = 0, 0
+  for _, l in ipairs(lines) do
+    if l:find("task1", 1, true) then
+      task1_count = task1_count + 1
+    end
+    if l:find("task3", 1, true) then
+      task3_count = task3_count + 1
+    end
+  end
+  eq(task1_count, 1, "shared ancestor breadcrumb must render exactly once")
+  eq(task3_count, 1, "the live sibling still renders")
+
+  -- The live sibling must NOT be marked as lingered.
+  local state = render._buffer_state[bufnr]
+  for _, blk in ipairs(state or {}) do
+    for _, meta in pairs(blk.line_map or {}) do
+      if meta.src_line == 3 then
+        eq(meta.linger or false, false, "live sibling is not part of the lingered block")
+      end
+    end
+  end
+
+  render._lingers[bufnr] = nil
+  render._pending_lingers[bufnr] = nil
+  render.clear_buffer(bufnr)
+  close_win(winid)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  render.configure(saved_opts)
+  restore()
+end
+
 return T

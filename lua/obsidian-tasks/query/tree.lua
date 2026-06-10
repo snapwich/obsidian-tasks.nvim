@@ -220,8 +220,8 @@ end
 --- node in `nodes` (e.g. the line was deleted on disk).
 ---
 --- Connector ancestors are NOT emitted here — the caller decides framing (the
---- linger path renders the subtree as a standalone dimmed block; assemble emits
---- ancestors separately as merged breadcrumbs).
+--- linger path rebuilds them via M.ancestor_rows; assemble emits ancestors
+--- separately as merged breadcrumbs).
 ---
 --- @param nodes      table[]   per-file node list (index.nodes_for(path))
 --- @param path       string    absolute source path
@@ -244,6 +244,32 @@ function M.subtree_rows(nodes, path, root_line, opts)
   out[#out + 1] = make_row(root, path, opts.matched ~= false, opts.dim or false, fg, gname, gi)
   for _, dn in ipairs(collect_descendants(nodes, root_idx)) do
     out[#out + 1] = make_row(dn, path, false, opts.dim or false, fg, gname, gi)
+  end
+  return out
+end
+
+--- Reconstruct ONE root's connector-ancestor breadcrumb rows (top-down), the
+--- linger-path complement to subtree_rows: a lingered root must keep the dim
+--- breadcrumb above it (same rows assemble would emit live) so it doesn't
+--- render as an orphaned indented block while it lingers.  Rows are dim,
+--- matched=false, fold_group 0 (always-visible, not foldable) — identical
+--- shape to assemble's live breadcrumbs.  Empty when `root_line` has no node.
+---
+--- @param nodes     table[]   per-file node list (index.nodes_for(path))
+--- @param path      string    absolute source path
+--- @param root_line integer   1-based source line of the lingered root
+--- @param opts      table     { group_name=string, group_index=int }
+--- @return table[]  ancestor rows, outermost first; empty if root absent
+function M.ancestor_rows(nodes, path, root_line, opts)
+  opts = opts or {}
+  local pos = index_by_line(nodes)
+  local root_idx = pos[root_line]
+  if root_idx == nil then
+    return {}
+  end
+  local out = {}
+  for _, an in ipairs(collect_ancestors(nodes, pos, root_idx)) do
+    out[#out + 1] = make_row(an, path, false, true, 0, opts.group_name or "", opts.group_index or 0)
   end
   return out
 end
