@@ -437,7 +437,12 @@ function M.render_buffer(bufnr, workspace)
           _lazy_init_started[ws_key] = true
           index.refresh_all(workspace, function()
             vim.schedule(function()
-              M.render_buffer(bufnr, workspace)
+              -- rerender_buffer, NOT render_buffer: the walk completes at an
+              -- arbitrary later moment, possibly while the user is typing in
+              -- this buffer.  rerender_buffer's insert-mode gate defers to
+              -- InsertLeave (an ungated render here wiped in-flight typing),
+              -- and it preserves cursor + fold state across the refresh.
+              M.rerender_buffer(bufnr, workspace)
             end)
           end)
         end
