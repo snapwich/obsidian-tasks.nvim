@@ -468,12 +468,16 @@ function M.layout(query_result, opts)
         rec.matched = false
         lines[#lines + 1] = rec
       else
+        -- A descendant flagged lit_live (set by render/init's
+        -- rebuild_tree_linger when the task still INDEPENDENTLY matches the
+        -- block's filter) renders LIT — only the rest of the block dims (D2).
+        local row_dim = not row.lit_live
         local rec
         if row.kind == "task" then
-          row.dim = true
+          row.dim = row_dim
           rec = build_tree_task_line(row)
         elseif row.kind == "bullet" then
-          row.dim = true
+          row.dim = row_dim
           rec = build_tree_bullet_line(row)
         else
           rec = build_tree_blank_line(row)
@@ -481,7 +485,7 @@ function M.layout(query_result, opts)
         -- Mark every descendant row as a linger so render/init's line_map and the
         -- linger-clearing logic treat the whole block as one lingered unit.
         rec.linger = true
-        rec.dim = true
+        rec.dim = row_dim
         lines[#lines + 1] = rec
       end
     end

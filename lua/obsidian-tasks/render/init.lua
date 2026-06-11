@@ -529,12 +529,156 @@ function M.render_buffer(bufnr, workspace)
       local existing = M._lingers[bufnr] or {}
       local new_lingers = {}
 
-      -- Keep existing lingers unless their task re-entered the live filter or
-      -- their associated block no longer exists.
+      -- Per-block LIVE ROW keys: every (path,line) the block will render live
+      -- as a SUBSTANTIVE row — lit matched roots and dragged descendants for
+      -- tree blocks (result.tree_rows with fold_group > 0); matched tasks for
+      -- flat blocks.  A linger for one of these lines would render a SECOND
+      -- managed row for the same disk line (or, via the Q8 linger-wins dedup,
+      -- shadow the live row) — both the keep and the promotion steps below
+      -- drop such lingers, since the line stays visible live, rebuilt fresh
+      -- from the node model.
+      --
+      -- Connector-ancestor BREADCRUMBS (fold_group == 0) are deliberately NOT
+      -- keyed: a toggled-Done root whose still-matching child keeps it visible
+      -- as a breadcrumb must STILL linger as a whole subtree block — the
+      -- breadcrumb carries only the ancestor chain, so dropping the linger
+      -- would instantly vanish the root's OTHER branches (non-matching
+      -- bullets / done descendants) that only the linger keeps on screen.
+      -- The Q8 dedup then suppresses the live child unit (and its breadcrumb)
+      -- in favor of the lingered block, so no line renders twice.
+      local live_rows_by_block = {}
+      for i, pb in ipairs(per_block) do
+        local keys = {}
+        if pb.result and pb.result.tree_rows then
+          for _, row in ipairs(pb.result.tree_rows) do
+            if row.src_line ~= nil and row.fold_group ~= 0 then
+              keys[entry_key(row.src_path, row.src_line)] = true
+            end
+          end
+        elseif pb.result and pb.result.groups then
+          for _, g in ipairs(pb.result.groups) do
+            for _, t in ipairs(g.tasks or {}) do
+              keys[entry_key(t._src_path, t._src_line)] = true
+            end
+          end
+        end
+        live_rows_by_block[i] = keys
+      end
+
+      -- Per-block, per-group MATCHED task keys (same sets tree.assemble dims
+      -- by): block_idx → group_name → { "path\0line" = true }.  Used when
+      -- rebuilding a lingered subtree so a descendant that still INDEPENDENTLY
+      -- matches the block's filter renders LIT inside the lingered block (D2
+      -- invariant) — its own live unit is suppressed in the block by the Q8
+      -- linger-wins dedup, so the lingered copy is the only one on screen.
+      local matched_keys_by_block = {}
+      for i, pb in ipairs(per_block) do
+        local by_group = {}
+        if pb.result and pb.result.groups then
+          for _, g in ipairs(pb.result.groups) do
+            local gname = g.name or ""
+            local set = by_group[gname] or {}
+            for _, t in ipairs(g.tasks or {}) do
+              set[entry_key(t._src_path, t._src_line)] = true
+            end
+            by_group[gname] = set
+          end
+        end
+        matched_keys_by_block[i] = by_group
+      end
+
+      -- Rebuild a TREE linger's subtree block + ancestor breadcrumbs from the
+      -- CURRENT node model.  Used at promotion AND for every kept linger on
+      -- every rerender: the subtree captured at promotion time goes stale the
+      -- moment any line of it is edited (the lingered task left the FILTER,
+      -- not the FILE — its descendants remain editable through the lingered
+      -- block).  Replaying a stale snapshot redraws pre-edit rows whose meta
+      -- then mismatches disk, so every following edit on them false-positives
+      -- the "source drift" check.
+      --
+      -- Stale-line guard (same as the original promotion-time guard): the
+      -- subtree is attached only when ent.src_line still resolves to a task
+      -- whose description matches the captured linger task — description is
+      -- checkbox-state-independent, so it survives the status flip that
+      -- created the linger.  On mismatch/absence the entry falls back to a
+      -- single dimmed root row.  ent.task is NOT touched: the ROOT row renders
+      -- from the capture-time task (refreshed via pending_by_key on in-place
+      -- edits), which stays authoritative even when the node model lags a
+      -- just-applied mutation.
+      local function rebuild_tree_linger(ent, group_name, group_index, matched_keys)
+        local tree_mod = require("obsidian-tasks.query.tree")
+        local nodes = index.nodes_for(ent.src_path) or {}
+        local sub = tree_mod.subtree_rows(nodes, ent.src_path, ent.src_line, {
+          matched = true,
+          dim = false,
+          fold_group = 1,
+          group_name = group_name or "",
+          group_index = group_index or 0,
+        })
+        local root_row = sub[1]
+        local resolved_desc = root_row and root_row.task and root_row.task.description
+        local captured_desc = ent.task and ent.task.description
+        if #sub > 0 and resolved_desc ~= nil and resolved_desc == captured_desc then
+          -- A descendant TASK that still independently matches the block's
+          -- filter renders LIT inside the lingered block (D2: only rows not in
+          -- the group's matched set dim).  layout's emit_linger reads this flag;
+          -- rows without it dim with the block as before.
+          if matched_keys then
+            for j = 2, #sub do
+              local row = sub[j]
+              if row.kind == "task" and row.src_line ~= nil and matched_keys[entry_key(ent.src_path, row.src_line)] then
+                row.lit_live = true
+              end
+            end
+          end
+          ent.linger_subtree = sub
+          -- The dim connector-ancestor breadcrumb above the lingered root
+          -- lingers WITH the block (otherwise the root renders as an orphaned
+          -- indented row once its ancestors lose their last live descendant).
+          -- layout's emit_linger dedups these against breadcrumbs a still-live
+          -- sibling already emits in the same group.
+          ent.linger_ancestors = tree_mod.ancestor_rows(nodes, ent.src_path, ent.src_line, {
+            group_name = group_name or "",
+            group_index = group_index or 0,
+          })
+        else
+          ent.linger_subtree = nil
+          ent.linger_ancestors = nil
+        end
+      end
+
+      -- Pending entries by key: an in-place edit to an already-lingered root
+      -- records a fresh pending entry (post-mutation task) whose own promotion
+      -- is gated off below (linger rows carry matched=false).  Adopt its task
+      -- into the kept entry so the rebuild guard compares against the CURRENT
+      -- description, not the capture-time one.
+      local pending_by_key = {}
+      for _, ent in ipairs(pending) do
+        pending_by_key[entry_key(ent.src_path, ent.src_line)] = ent
+      end
+
+      -- Keep existing lingers unless their task re-entered the live filter,
+      -- their line renders live anyway (dragged descendant / connector
+      -- breadcrumb of a live root), or their associated block no longer
+      -- exists.  Kept TREE lingers are rebuilt from the current node model —
+      -- never replayed from the promotion-time snapshot (see
+      -- rebuild_tree_linger).
       for _, ent in ipairs(existing) do
         local key = entry_key(ent.src_path, ent.src_line)
         local block_present = ent.block_idx == nil or ent.block_idx <= #per_block
-        if not live_set[key] and block_present then
+        local live_in_block = ent.block_idx ~= nil
+          and live_rows_by_block[ent.block_idx] ~= nil
+          and live_rows_by_block[ent.block_idx][key] == true
+        if not live_set[key] and block_present and not live_in_block then
+          local fresher = pending_by_key[key]
+          if fresher and fresher.task then
+            ent.task = vim.deepcopy(fresher.task)
+          end
+          local pb = ent.block_idx ~= nil and per_block[ent.block_idx] or nil
+          if pb and pb.ast and pb.ast.tree then
+            local matched_keys = (matched_keys_by_block[ent.block_idx] or {})[ent.prior_group_name or ""]
+            rebuild_tree_linger(ent, ent.prior_group_name, ent.prior_index_within_group, matched_keys)
+          end
           new_lingers[#new_lingers + 1] = ent
         end
       end
@@ -551,7 +695,12 @@ function M.render_buffer(bufnr, workspace)
             local block_map = pre_clear_map[key]
             if block_map then
               for i, appearances in pairs(block_map) do
-                if i <= #per_block then
+                -- Skip blocks where the line renders live anyway as a lit
+                -- root or dragged descendant of a still-live root — the live
+                -- row is fresher than any snapshot, and two managed rows per
+                -- disk line corrupt locate/drift.  (A line live only as a
+                -- connector BREADCRUMB does not count — see live_rows_by_block.)
+                if i <= #per_block and not live_rows_by_block[i][key] then
                   -- For a `show tree` block, the lingered root must linger AS A
                   -- WHOLE SUBTREE BLOCK: the task left the FILTER, not the FILE,
                   -- so its descendant subtree still lives in the index.  Rebuild
@@ -572,45 +721,8 @@ function M.render_buffer(bufnr, workspace)
                       copy.prior_group_name = appearance.group_name
                       copy.prior_index_within_group = appearance.group_index
                       if block_is_tree then
-                        local tree_mod = require("obsidian-tasks.query.tree")
-                        local nodes = index.nodes_for(ent.src_path) or {}
-                        local sub = tree_mod.subtree_rows(nodes, ent.src_path, ent.src_line, {
-                          matched = true,
-                          dim = false,
-                          fold_group = 1,
-                          group_name = appearance.group_name or "",
-                          group_index = appearance.group_index or 0,
-                        })
-                        -- Stale-snapshot guard.  subtree_rows resolves the block
-                        -- by ent.src_line against the CURRENT node model.  If the
-                        -- file was re-indexed (lines shifted) while this root keeps
-                        -- lingering, pos[old_root_line] could resolve to a DIFFERENT
-                        -- node — emitting a wrong subtree under the lingered root.
-                        -- Verify the resolved root's task body matches the captured
-                        -- linger task (description is checkbox-state-independent, so
-                        -- it survives the Done toggle that created this linger).  On
-                        -- mismatch / nil, fall back to a single dimmed root row
-                        -- (linger_subtree = nil) rather than a wrong block.
-                        local root_row = sub[1]
-                        local resolved_desc = root_row and root_row.task and root_row.task.description
-                        local captured_desc = ent.task and ent.task.description
-                        if #sub > 0 and resolved_desc ~= nil and resolved_desc == captured_desc then
-                          copy.linger_subtree = sub
-                          -- The dim connector-ancestor breadcrumb above the
-                          -- lingered root lingers WITH the block (otherwise the
-                          -- root renders as an orphaned indented row once its
-                          -- ancestors lose their last live descendant).  Built
-                          -- only when the snapshot guard passed — a stale node
-                          -- model would yield wrong ancestors too.  layout's
-                          -- emit_linger dedups these against breadcrumbs a
-                          -- still-live sibling already emits in the same group.
-                          copy.linger_ancestors = tree_mod.ancestor_rows(nodes, ent.src_path, ent.src_line, {
-                            group_name = appearance.group_name or "",
-                            group_index = appearance.group_index or 0,
-                          })
-                        else
-                          copy.linger_subtree = nil
-                        end
+                        local matched_keys = (matched_keys_by_block[i] or {})[appearance.group_name or ""]
+                        rebuild_tree_linger(copy, appearance.group_name, appearance.group_index, matched_keys)
                       end
                       new_lingers[#new_lingers + 1] = copy
                     end
