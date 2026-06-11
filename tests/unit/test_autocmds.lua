@@ -52,6 +52,7 @@ local function make_render_mock(initial_state)
     -- that clear linger state don't hit nil-index errors.
     _lingers = {},
     _pending_lingers = {},
+    _query_cache = {},
     render_calls = {},
     refresh_calls = {},
     rerender_calls = {},

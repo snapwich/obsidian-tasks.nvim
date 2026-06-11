@@ -300,11 +300,13 @@ function M.setup(opts)
       local bufnr = ev.buf
       local render = require("obsidian-tasks.render")
       render.clear_buffer(bufnr)
-      -- clear_buffer intentionally preserves linger state (it's called inside
-      -- render_buffer/rerender_buffer, where lingers must survive); BufDelete
-      -- is a hard buffer-lifecycle boundary, so drop them explicitly.
+      -- clear_buffer intentionally preserves linger state and the query AST
+      -- cache (it's called inside render_buffer/rerender_buffer, where both
+      -- must survive); BufDelete is a hard buffer-lifecycle boundary, so drop
+      -- them explicitly.
       render._lingers[bufnr] = nil
       render._pending_lingers[bufnr] = nil
+      render._query_cache[bufnr] = nil
       -- Drop the per-dashboard undo/redo history too.
       local ok, cmd = pcall(require, "obsidian-tasks.cmd")
       if ok and type(cmd.clear_dashboard_undo) == "function" then

@@ -111,6 +111,19 @@ local function child_buf_has(child, substr)
   return false
 end
 
+--- Poll *fn* every 50ms until truthy or *timeout_ms* (default 5000) elapses.
+--- Replaces fixed post-<Esc> sleeps: the InsertLeave flush → source write →
+--- rerender chain has no fixed latency, so a fixed sleep flakes (~10%).
+local function wait_until(fn, timeout_ms)
+  for _ = 1, math.floor((timeout_ms or 5000) / 50) do
+    if fn() then
+      return true
+    end
+    vim.loop.sleep(50)
+  end
+  return fn()
+end
+
 --- 1-indexed row of the first dashboard line containing *substr*.
 local function child_row_of(child, substr)
   local lines = child.lua_get("vim.api.nvim_buf_get_lines(_G._dash_bufnr, 0, -1, false)")
@@ -144,11 +157,16 @@ T["FocusGained during insert preserves typed task; flush commits it on <Esc>"] =
 
     -- Leave insert: InsertLeave flush propagates the new task to source.
     child.type_keys("<Esc>")
-    vim.loop.sleep(300)
 
-    local src_after = table.concat(child.lua_get("vim.fn.readfile(_G._src_path)"), "\n")
-    eq(src_after:find("Brand new task", 1, true) ~= nil, true, "typed task must reach source after <Esc>")
-    eq(child_buf_has(child, "Brand new task"), true, "typed task must survive the post-flush rerender")
+    local committed = wait_until(function()
+      local src_after = table.concat(child.lua_get("vim.fn.readfile(_G._src_path)"), "\n")
+      return src_after:find("Brand new task", 1, true) ~= nil
+    end)
+    eq(committed, true, "typed task must reach source after <Esc>")
+    local survived = wait_until(function()
+      return child_buf_has(child, "Brand new task")
+    end)
+    eq(survived, true, "typed task must survive the post-flush rerender")
   end)
 
   cleanup(child, src_path, dash_path)
@@ -187,9 +205,11 @@ T["external edit during insert appears after InsertLeave (deferred rerender)"] =
     eq(child_buf_has(child, "Task two"), false, "rerender must be deferred while in insert mode")
 
     child.type_keys("<Esc>")
-    vim.loop.sleep(300)
 
-    eq(child_buf_has(child, "Task two"), true, "deferred rerender must land on InsertLeave")
+    local landed = wait_until(function()
+      return child_buf_has(child, "Task two")
+    end)
+    eq(landed, true, "deferred rerender must land on InsertLeave")
   end)
 
   cleanup(child, src_path, dash_path)

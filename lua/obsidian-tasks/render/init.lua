@@ -57,21 +57,9 @@ function M._record_pending_linger(bufnr, src_path, src_line, source_text_hash, t
   if not src_path or not src_line then
     return
   end
-  -- Deep-copy the task and refresh raw_line to reflect the post-mutation
-  -- state.  task.raw_line was captured by parse.lua at parse time (PRE-
-  -- mutation), so without this the linger entry's source_text would mismatch
-  -- the actual disk content — drift would fire on any subsequent operation
-  -- against the lingered row (e.g. a second <leader>tt to un-toggle).
-  local task_copy = vim.deepcopy(task)
-  local serialize = require("obsidian-tasks.task.serialize")
-  task_copy.raw_line = serialize.serialize(task_copy)
+  local linger_mod = require("obsidian-tasks.render.linger")
   M._pending_lingers[bufnr] = M._pending_lingers[bufnr] or {}
-  table.insert(M._pending_lingers[bufnr], {
-    src_path = src_path,
-    src_line = src_line,
-    source_text_hash = source_text_hash,
-    task = task_copy,
-  })
+  table.insert(M._pending_lingers[bufnr], linger_mod.make_pending_entry(src_path, src_line, source_text_hash, task))
 end
 
 --- Refresh a buffer's renders AND clear all linger state.
@@ -214,19 +202,34 @@ M._buffer_state = {}
 --                           refresh, buffer reload, or task re-entering
 --                           the live filter set.
 --
--- Entry shape:
---   { src_path, src_line, source_text_hash, task,
---     block_idx?, prior_group_name?, prior_index_within_group? }
---
--- block_idx, prior_group_name, prior_index_within_group are set at
--- promotion time (pending → linger).  Lingers are displayed only in their
--- pre-exit block.  When a task was in multiple blocks/groups pre-exit, one
--- entry per (block, group) appearance is created (group-by-tags can yield
--- multiple appearances per block).  prior_index_within_group is the 0-based
--- position within the prior render's group body; layout uses it to splice
--- the linger back at its prior slot (linger holds position).
+-- These tables are the STATE; the decision LOGIC (entry shapes, promotion,
+-- keep/drop, tree-subtree rebuild, lifecycle) lives in render/linger.lua —
+-- see its header for the full entry-shape documentation.  Lingers are
+-- displayed only in their pre-exit block; one entry per (block, group)
+-- appearance.
 M._pending_lingers = {}
 M._lingers = {}
+
+-- ── Per-block query AST cache ─────────────────────────────────────────────────
+-- _query_cache[bufnr][block_index] = { query_text, ast, day }
+--
+-- Rebuilt by every render_buffer pass: a block whose query text is unchanged
+-- since the previous render reuses the cached AST instead of re-running
+-- query_parse.parse (FocusGained / cross-buffer propagation / post-toggle
+-- rerenders all hit this).  query_run.run still executes every render — only
+-- the PARSE is cached.  Correctness is guarded by exact query_text equality,
+-- so block reordering or edits can never serve a stale AST.  `day` is the
+-- os.date('%Y-%m-%d') the AST was parsed on: parse resolves relative dates
+-- ('today', 'tomorrow', ...) to concrete ISO strings, so a day change is a
+-- cache miss — otherwise a dashboard left open across midnight would serve
+-- yesterday's resolution.  A failed parse is never cached (entry only
+-- written when an AST was produced), so fixing broken query text always
+-- reparses.
+--
+-- Deliberately NOT cleared by clear_buffer (which runs inside every render —
+-- clearing there would defeat the cache).  Lifecycle boundaries that drop it:
+-- clear_state (BufReadPre reload) and the BufDelete autocmd in autocmds.lua.
+M._query_cache = {}
 
 -- ── Diagnostic namespace ──────────────────────────────────────────────────────
 -- Every render flushes invalid-field diagnostic entries (built by draw from
@@ -316,9 +319,12 @@ end
 --- Single-pass early-exit scan.
 ---
 --- @param bufnr integer
+--- @param lines string[]?  buffer lines, fetched when omitted (callers that
+---   already hold a full nvim_buf_get_lines snapshot pass it to avoid a
+---   second fetch — see render_buffer)
 --- @return boolean
-function M.has_tasks_block(bufnr)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+function M.has_tasks_block(bufnr, lines)
+  lines = lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for _, line in ipairs(lines) do
     if is_open_fence(line) then
       return true
@@ -333,9 +339,11 @@ end
 --- query_start > query_end.
 ---
 --- @param bufnr integer
+--- @param lines string[]?  buffer lines, fetched when omitted (see
+---   has_tasks_block)
 --- @return table[]
-function M.find_blocks(bufnr)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+function M.find_blocks(bufnr, lines)
+  lines = lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local blocks = {}
   local open_at = nil -- 1-indexed line number of the current opening fence
 
@@ -401,10 +409,10 @@ function M.render_buffer(bufnr, workspace)
     -- guard checks so we only touch the suppress counter when we will actually
     -- mutate the buffer.
     --
-    -- The pcall wrapper below guarantees unsuppress() is called even if an
-    -- unexpected exception escapes the render pipeline (e.g. from draw or folds).
-    revert.suppress(bufnr)
-    local _render_ok, _render_err = pcall(function()
+    -- with_suppressed guarantees unsuppress() even if an unexpected exception
+    -- escapes the render pipeline (e.g. from draw or folds); the outer pcall
+    -- downgrades that exception to a warn below.
+    local _render_ok, _render_err = pcall(revert.with_suppressed, bufnr, function()
       -- ── 2. Lazy index init ─────────────────────────────────────────────────────
       -- Per-workspace: kick off a full vault walk on the first dashboard
       -- render so the index is complete before queries run.
@@ -443,7 +451,14 @@ function M.render_buffer(bufnr, workspace)
       M.clear_buffer(bufnr)
 
       -- ── 4. Find all blocks (positions in now-cleared buffer) ───────────────────
-      local blocks = M.find_blocks(bufnr)
+      -- Single post-clear line fetch: find_blocks AND the per-block query-text
+      -- slicing in pass 1 both read from this snapshot.  Safe because pass 1
+      -- performs no buffer mutations (first mutation is draw.draw in pass 2).
+      -- The has_tasks_block guard above necessarily ran on the PRE-clear
+      -- buffer (it decides whether to clear at all), so its fetch can't be
+      -- reused here — clear_buffer just removed the rendered task lines.
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      local blocks = M.find_blocks(bufnr, lines)
       if #blocks == 0 then
         -- No complete (paired) blocks found (e.g. unclosed fence); bail out.
         -- unsuppress() is called by the pcall wrapper below.
@@ -455,22 +470,44 @@ function M.render_buffer(bufnr, workspace)
       -- decision (5b) can compute the buffer-wide live set.  No buffer
       -- mutations in this pass, so positions don't need offset adjustment.
       local per_block = {}
-      for _, block in ipairs(blocks) do
+      local prev_query_cache = M._query_cache[bufnr] or {}
+      local new_query_cache = {}
+      -- Resolution day for relative-date filters: query_parse.parse resolves
+      -- 'today'/'tomorrow'/'next monday'/... to concrete ISO strings at parse
+      -- time, so a cached AST freezes them.  Stamp entries with the day they
+      -- were parsed and treat a day change as a cache miss — a dashboard left
+      -- open across midnight reparses on the next render instead of serving
+      -- yesterday's resolution.
+      local today = os.date("%Y-%m-%d")
+      for bi, block in ipairs(blocks) do
         local fence_first0 = block.fence_start - 1
         local fence_last0 = block.fence_end - 1
 
         local query_text = ""
         if block.query_start <= block.query_end then
-          local q_lines = vim.api.nvim_buf_get_lines(bufnr, block.query_start - 1, block.query_end, false)
-          query_text = table.concat(q_lines, "\n")
+          query_text = table.concat(lines, "\n", block.query_start, block.query_end)
         end
+
+        -- AST cache hit: same block slot, identical query text, same resolution
+        -- day → skip parse.  query_run.run still executes (index contents
+        -- change between renders).
+        local cached = prev_query_cache[bi]
+        local cached_ast = (cached and cached.query_text == query_text and cached.day == today) and cached.ast or nil
 
         local ast, result
         local ok, err = pcall(function()
-          ast = query_parse.parse(query_text)
+          ast = cached_ast or query_parse.parse(query_text)
           local ws_root = workspace and workspace.root or nil
           result = query_run.run(ast, index, ws_root)
         end)
+
+        -- Cache only when an AST was produced.  A thrown parse leaves `ast`
+        -- nil → no entry → a later fix of the query text (or even the same
+        -- text) reparses instead of replaying a cached failure.  A run()
+        -- failure after a successful parse still caches: the AST is valid.
+        if ast ~= nil then
+          new_query_cache[bi] = { query_text = query_text, ast = ast, day = today }
+        end
 
         per_block[#per_block + 1] = {
           block = block,
@@ -482,274 +519,29 @@ function M.render_buffer(bufnr, workspace)
           parse_err = err,
         }
       end
+      -- Replace wholesale so entries for removed/renumbered blocks drop out.
+      M._query_cache[bufnr] = new_query_cache
 
       -- ── 5b. Linger decision ────────────────────────────────────────────────
-      -- Use live tasks from per_block results and pre_clear_state's line_map
-      -- to promote / drop pending entries and existing lingers.  Operates as
+      -- Delegated to render/linger.lua (entry shapes + lifecycle documented
+      -- there).  Uses live tasks from per_block results and pre_clear_state's
+      -- line_map to promote / drop pending entries and existing lingers, and
+      -- rebuilds kept tree lingers from the current node model.  Operates as
       -- a no-op when linger_on_filter_exit = false (pending is always empty
-      -- and any leftover _lingers is dropped naturally).
-      local function entry_key(p, l)
-        return (p or "") .. "\0" .. tostring(l or 0)
-      end
-
-      -- live_set across all blocks (post-rerender), keyed by (src_path, src_line)
-      local live_set = {}
-      for _, pb in ipairs(per_block) do
-        if pb.result and pb.result.groups then
-          for _, g in ipairs(pb.result.groups) do
-            for _, t in ipairs(g.tasks or {}) do
-              live_set[entry_key(t._src_path, t._src_line)] = true
-            end
-          end
-        end
-      end
-
-      -- pre_clear_map: (src_path, src_line) → block_idx → list of
-      -- {group_name, group_index} tuples (one per appearance in that block;
-      -- group-by-tags can yield multiple appearances of the same task per
-      -- block).  Used to recover prior position context when promoting a
-      -- pending linger so it slots back at its prior visual index.
-      local pre_clear_map = {}
-      if pre_clear_state then
-        for i, blk in ipairs(pre_clear_state) do
-          for _, meta in pairs(blk.line_map or {}) do
-            local key = entry_key(meta.src_path, meta.src_line)
-            pre_clear_map[key] = pre_clear_map[key] or {}
-            pre_clear_map[key][i] = pre_clear_map[key][i] or {}
-            table.insert(pre_clear_map[key][i], {
-              group_name = meta.group_name,
-              group_index = meta.group_index,
-              -- Was this row a LIT MATCHED root?  Tree-linger promotion is gated
-              -- on it (only a matched root lingers as a subtree block).
-              matched = meta.matched or false,
-            })
-          end
-        end
-      end
-
-      local pending = M._pending_lingers[bufnr] or {}
-      local existing = M._lingers[bufnr] or {}
-      local new_lingers = {}
-
-      -- Per-block LIVE ROW keys: every (path,line) the block will render live
-      -- as a SUBSTANTIVE row — lit matched roots and dragged descendants for
-      -- tree blocks (result.tree_rows with fold_group > 0); matched tasks for
-      -- flat blocks.  A linger for one of these lines would render a SECOND
-      -- managed row for the same disk line (or, via the Q8 linger-wins dedup,
-      -- shadow the live row) — both the keep and the promotion steps below
-      -- drop such lingers, since the line stays visible live, rebuilt fresh
-      -- from the node model.
-      --
-      -- Connector-ancestor BREADCRUMBS (fold_group == 0) are deliberately NOT
-      -- keyed: a toggled-Done root whose still-matching child keeps it visible
-      -- as a breadcrumb must STILL linger as a whole subtree block — the
-      -- breadcrumb carries only the ancestor chain, so dropping the linger
-      -- would instantly vanish the root's OTHER branches (non-matching
-      -- bullets / done descendants) that only the linger keeps on screen.
-      -- The Q8 dedup then suppresses the live child unit (and its breadcrumb)
-      -- in favor of the lingered block, so no line renders twice.
-      local live_rows_by_block = {}
-      for i, pb in ipairs(per_block) do
-        local keys = {}
-        if pb.result and pb.result.tree_rows then
-          for _, row in ipairs(pb.result.tree_rows) do
-            if row.src_line ~= nil and row.fold_group ~= 0 then
-              keys[entry_key(row.src_path, row.src_line)] = true
-            end
-          end
-        elseif pb.result and pb.result.groups then
-          for _, g in ipairs(pb.result.groups) do
-            for _, t in ipairs(g.tasks or {}) do
-              keys[entry_key(t._src_path, t._src_line)] = true
-            end
-          end
-        end
-        live_rows_by_block[i] = keys
-      end
-
-      -- Per-block, per-group MATCHED task keys (same sets tree.assemble dims
-      -- by): block_idx → group_name → { "path\0line" = true }.  Used when
-      -- rebuilding a lingered subtree so a descendant that still INDEPENDENTLY
-      -- matches the block's filter renders LIT inside the lingered block (D2
-      -- invariant) — its own live unit is suppressed in the block by the Q8
-      -- linger-wins dedup, so the lingered copy is the only one on screen.
-      local matched_keys_by_block = {}
-      for i, pb in ipairs(per_block) do
-        local by_group = {}
-        if pb.result and pb.result.groups then
-          for _, g in ipairs(pb.result.groups) do
-            local gname = g.name or ""
-            local set = by_group[gname] or {}
-            for _, t in ipairs(g.tasks or {}) do
-              set[entry_key(t._src_path, t._src_line)] = true
-            end
-            by_group[gname] = set
-          end
-        end
-        matched_keys_by_block[i] = by_group
-      end
-
-      -- Rebuild a TREE linger's subtree block + ancestor breadcrumbs from the
-      -- CURRENT node model.  Used at promotion AND for every kept linger on
-      -- every rerender: the subtree captured at promotion time goes stale the
-      -- moment any line of it is edited (the lingered task left the FILTER,
-      -- not the FILE — its descendants remain editable through the lingered
-      -- block).  Replaying a stale snapshot redraws pre-edit rows whose meta
-      -- then mismatches disk, so every following edit on them false-positives
-      -- the "source drift" check.
-      --
-      -- Stale-line guard (same as the original promotion-time guard): the
-      -- subtree is attached only when ent.src_line still resolves to a task
-      -- whose description matches the captured linger task — description is
-      -- checkbox-state-independent, so it survives the status flip that
-      -- created the linger.  On mismatch/absence the entry falls back to a
-      -- single dimmed root row.  ent.task is NOT touched: the ROOT row renders
-      -- from the capture-time task (refreshed via pending_by_key on in-place
-      -- edits), which stays authoritative even when the node model lags a
-      -- just-applied mutation.
-      local function rebuild_tree_linger(ent, group_name, group_index, matched_keys)
-        local tree_mod = require("obsidian-tasks.query.tree")
-        local nodes = index.nodes_for(ent.src_path) or {}
-        local sub = tree_mod.subtree_rows(nodes, ent.src_path, ent.src_line, {
-          matched = true,
-          dim = false,
-          fold_group = 1,
-          group_name = group_name or "",
-          group_index = group_index or 0,
-        })
-        local root_row = sub[1]
-        local resolved_desc = root_row and root_row.task and root_row.task.description
-        local captured_desc = ent.task and ent.task.description
-        if #sub > 0 and resolved_desc ~= nil and resolved_desc == captured_desc then
-          -- A descendant TASK that still independently matches the block's
-          -- filter renders LIT inside the lingered block (D2: only rows not in
-          -- the group's matched set dim).  layout's emit_linger reads this flag;
-          -- rows without it dim with the block as before.
-          if matched_keys then
-            for j = 2, #sub do
-              local row = sub[j]
-              if row.kind == "task" and row.src_line ~= nil and matched_keys[entry_key(ent.src_path, row.src_line)] then
-                row.lit_live = true
-              end
-            end
-          end
-          ent.linger_subtree = sub
-          -- The dim connector-ancestor breadcrumb above the lingered root
-          -- lingers WITH the block (otherwise the root renders as an orphaned
-          -- indented row once its ancestors lose their last live descendant).
-          -- layout's emit_linger dedups these against breadcrumbs a still-live
-          -- sibling already emits in the same group.
-          ent.linger_ancestors = tree_mod.ancestor_rows(nodes, ent.src_path, ent.src_line, {
-            group_name = group_name or "",
-            group_index = group_index or 0,
-          })
-        else
-          ent.linger_subtree = nil
-          ent.linger_ancestors = nil
-        end
-      end
-
-      -- Pending entries by key: an in-place edit to an already-lingered root
-      -- records a fresh pending entry (post-mutation task) whose own promotion
-      -- is gated off below (linger rows carry matched=false).  Adopt its task
-      -- into the kept entry so the rebuild guard compares against the CURRENT
-      -- description, not the capture-time one.
-      local pending_by_key = {}
-      for _, ent in ipairs(pending) do
-        pending_by_key[entry_key(ent.src_path, ent.src_line)] = ent
-      end
-
-      -- Keep existing lingers unless their task re-entered the live filter,
-      -- their line renders live anyway (dragged descendant / connector
-      -- breadcrumb of a live root), or their associated block no longer
-      -- exists.  Kept TREE lingers are rebuilt from the current node model —
-      -- never replayed from the promotion-time snapshot (see
-      -- rebuild_tree_linger).
-      for _, ent in ipairs(existing) do
-        local key = entry_key(ent.src_path, ent.src_line)
-        local block_present = ent.block_idx == nil or ent.block_idx <= #per_block
-        local live_in_block = ent.block_idx ~= nil
-          and live_rows_by_block[ent.block_idx] ~= nil
-          and live_rows_by_block[ent.block_idx][key] == true
-        if not live_set[key] and block_present and not live_in_block then
-          local fresher = pending_by_key[key]
-          if fresher and fresher.task then
-            ent.task = vim.deepcopy(fresher.task)
-          end
-          local pb = ent.block_idx ~= nil and per_block[ent.block_idx] or nil
-          if pb and pb.ast and pb.ast.tree then
-            local matched_keys = (matched_keys_by_block[ent.block_idx] or {})[ent.prior_group_name or ""]
-            rebuild_tree_linger(ent, ent.prior_group_name, ent.prior_index_within_group, matched_keys)
-          end
-          new_lingers[#new_lingers + 1] = ent
-        end
-      end
-
-      -- Promote pending entries whose task isn't in the new live set.  Use
-      -- pre_clear_map to determine which block(s) and group(s) the task
-      -- previously occupied; emit one linger entry per (block, group)
-      -- appearance, carrying prior_group_name + prior_index_within_group so
-      -- layout can splice it back at its prior position.
-      if M._opts and M._opts.linger_on_filter_exit ~= false then
-        for _, ent in ipairs(pending) do
-          local key = entry_key(ent.src_path, ent.src_line)
-          if not live_set[key] then
-            local block_map = pre_clear_map[key]
-            if block_map then
-              for i, appearances in pairs(block_map) do
-                -- Skip blocks where the line renders live anyway as a lit
-                -- root or dragged descendant of a still-live root — the live
-                -- row is fresher than any snapshot, and two managed rows per
-                -- disk line corrupt locate/drift.  (A line live only as a
-                -- connector BREADCRUMB does not count — see live_rows_by_block.)
-                if i <= #per_block and not live_rows_by_block[i][key] then
-                  -- For a `show tree` block, the lingered root must linger AS A
-                  -- WHOLE SUBTREE BLOCK: the task left the FILTER, not the FILE,
-                  -- so its descendant subtree still lives in the index.  Rebuild
-                  -- it from index.nodes_for + tree.subtree_rows (the SAME slice
-                  -- assemble uses) and attach the rows to each linger copy;
-                  -- layout renders them dimmed as one fold unit.  Flat blocks
-                  -- leave linger_subtree nil and render a single dimmed row.
-                  local block_is_tree = per_block[i].ast and per_block[i].ast.tree
-                  for _, appearance in ipairs(appearances) do
-                    -- TREE gate: only a LIT MATCHED root lingers (as a subtree
-                    -- block).  A dragged DESCENDANT (matched=false) never left
-                    -- the FILTER — it was pulled in by subtree-drag — so it must
-                    -- NOT linger.  Skip its promotion entirely.  Flat rows have
-                    -- no matched flag and always linger (unchanged behavior).
-                    if not (block_is_tree and not appearance.matched) then
-                      local copy = vim.deepcopy(ent)
-                      copy.block_idx = i
-                      copy.prior_group_name = appearance.group_name
-                      copy.prior_index_within_group = appearance.group_index
-                      if block_is_tree then
-                        local matched_keys = (matched_keys_by_block[i] or {})[appearance.group_name or ""]
-                        rebuild_tree_linger(copy, appearance.group_name, appearance.group_index, matched_keys)
-                      end
-                      new_lingers[#new_lingers + 1] = copy
-                    end
-                  end
-                end
-              end
-            end
-            -- else: no pre-clear record (task never visible in this buffer);
-            -- nothing to linger against.
-          end
-        end
-      end
+      -- and any leftover _lingers is dropped naturally).  State stays HERE:
+      -- decide() is pure-ish logic; only this module writes M._lingers /
+      -- M._pending_lingers.
+      local linger_mod = require("obsidian-tasks.render.linger")
+      local new_lingers, lingers_by_block = linger_mod.decide({
+        per_block = per_block,
+        pre_clear_state = pre_clear_state,
+        pending = M._pending_lingers[bufnr] or {},
+        existing = M._lingers[bufnr] or {},
+        linger_enabled = (M._opts and M._opts.linger_on_filter_exit ~= false) and true or false,
+      })
 
       M._lingers[bufnr] = #new_lingers > 0 and new_lingers or nil
       M._pending_lingers[bufnr] = nil
-
-      -- Pre-bucket lingers by block_idx for fast Pass-2 filtering.
-      local lingers_by_block = {}
-      for _, l in ipairs(new_lingers) do
-        local i = l.block_idx
-        if i then
-          lingers_by_block[i] = lingers_by_block[i] or {}
-          table.insert(lingers_by_block[i], l)
-        end
-      end
 
       -- ── 5c. Pass 2: layout + draw each block ───────────────────────────────
       local new_buf_state = {}
@@ -1048,12 +840,7 @@ function M.render_buffer(bufnr, workspace)
       revert.attach(bufnr, workspace, function(b, w)
         M.render_buffer(b, w)
       end)
-    end) -- end pcall wrapper
-
-    -- Allow on_lines callbacks again now that render is complete.
-    -- Called unconditionally so the counter stays balanced even if the render
-    -- pipeline threw an unexpected exception.
-    revert.unsuppress(bufnr)
+    end) -- end with_suppressed wrapper
 
     if not _render_ok then
       require("obsidian-tasks.log").warn("render_buffer error: " .. tostring(_render_err))
@@ -1100,7 +887,7 @@ function M.rerender_buffer(bufnr, workspace)
   -- clear+render here redraws from the index, which doesn't yet contain the
   -- in-flight insert-mode lines (flush drains at InsertLeave), so it would
   -- wipe the user's typing.  Defer to InsertLeave instead.
-  if bufnr == vim.api.nvim_get_current_buf() and vim.fn.mode():match("[iR]") then
+  if bufnr == vim.api.nvim_get_current_buf() and require("obsidian-tasks.render.hygiene").in_insert_mode() then
     M._defer_rerender_to_insert_leave(bufnr)
     return
   end
@@ -1329,6 +1116,7 @@ function M.clear_state(bufnr)
   -- (BufReadPre) or BufDelete invalidates any lingered rows, so drop them too.
   M._lingers[bufnr] = nil
   M._pending_lingers[bufnr] = nil
+  M._query_cache[bufnr] = nil
   require("obsidian-tasks.index").clear_render_paths(bufnr)
 end
 
@@ -1343,18 +1131,16 @@ function M.clear_buffer(bufnr)
   local hygiene = require("obsidian-tasks.render.hygiene")
 
   hygiene.with_clean_buffer(bufnr, function()
-    revert.suppress(bufnr)
-
-    local draw = require("obsidian-tasks.render.draw")
-    draw.clear(bufnr)
-    require("obsidian-tasks.render.folds").clear_foldinfo(bufnr)
-    M._buffer_state[bufnr] = nil
-    -- Keep reverse index consistent: bufnr no longer has any active render.
-    require("obsidian-tasks.index").clear_render_paths(bufnr)
-    -- Drop invalid-field diagnostics tied to the cleared render.
-    pcall(vim.diagnostic.reset, M._diag_ns, bufnr)
-
-    revert.unsuppress(bufnr)
+    revert.with_suppressed(bufnr, function()
+      local draw = require("obsidian-tasks.render.draw")
+      draw.clear(bufnr)
+      require("obsidian-tasks.render.folds").clear_foldinfo(bufnr)
+      M._buffer_state[bufnr] = nil
+      -- Keep reverse index consistent: bufnr no longer has any active render.
+      require("obsidian-tasks.index").clear_render_paths(bufnr)
+      -- Drop invalid-field diagnostics tied to the cleared render.
+      pcall(vim.diagnostic.reset, M._diag_ns, bufnr)
+    end)
   end)
 end
 

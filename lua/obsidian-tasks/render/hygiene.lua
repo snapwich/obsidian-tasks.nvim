@@ -18,6 +18,21 @@
 
 local M = {}
 
+-- ── Mode gate ─────────────────────────────────────────────────────────────────
+
+--- True while the user is in insert or replace mode (any i/R variant).
+---
+--- Shared predicate for the execution-time gates in edit.on_lines_hook,
+--- edit.flush, revert.do_revert, and render/init.rerender_buffer: a plugin
+--- write or rerender landing mid-typing would corrupt the user's in-flight
+--- edit.  Each call site keeps its own site-specific deferral behavior; only
+--- the predicate is shared.
+---
+--- @return boolean
+function M.in_insert_mode()
+  return vim.fn.mode():match("[iR]") ~= nil
+end
+
 -- ── Per-buffer baseline state ─────────────────────────────────────────────────
 -- true  : the buffer has had no real user edit since the last reset (initial
 --         render / save / completed revert / completed status-commit).  A

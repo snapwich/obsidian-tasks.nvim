@@ -106,6 +106,25 @@ function M.is_suppressed(bufnr)
   return (_suppress[bufnr] or 0) > 0
 end
 
+--- Run *fn* with on_lines suppressed for *bufnr*, exception-safely.
+---
+--- Suppresses, pcalls fn, ALWAYS unsuppresses, then rethrows the original
+--- error (unmodified, level 0) when fn raised.  Prefer this over a bare
+--- suppress()/unsuppress() pair: if an error escapes between the two calls,
+--- the counter sticks at > 0 and on_lines is silently dead for that buffer
+--- for the rest of the session.
+---
+--- @param bufnr integer
+--- @param fn    fun()
+function M.with_suppressed(bufnr, fn)
+  M.suppress(bufnr)
+  local ok, err = pcall(fn)
+  M.unsuppress(bufnr)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 -- ── Internal: revert execution ────────────────────────────────────────────────
 
 --- Execute the revert for *bufnr* immediately (synchronous, no vim.schedule).
@@ -320,11 +339,10 @@ do_revert = function(bufnr)
   -- in-flight typing.  Bail; InsertLeave's drain calls force_revert() once
   -- mode is normal.  Don't re-set _scheduled — the next on_lines event will
   -- create a fresh schedule if needed.
-  if vim.fn.mode():match("[iR]") then
+  local hygiene = require("obsidian-tasks.render.hygiene")
+  if hygiene.in_insert_mode() then
     return
   end
-
-  local hygiene = require("obsidian-tasks.render.hygiene")
 
   -- Capture cursor position before re-render.
   local wins = vim.fn.win_findbuf(bufnr)
@@ -341,9 +359,9 @@ do_revert = function(bufnr)
   -- Run with on_lines suppressed: writes to the source buffer must not feed
   -- back into the dashboard's on_lines listener.  (The source buffer is a
   -- different buffer in any case, so the suppress is defensive — but cheap.)
-  M.suppress(bufnr)
-  pcall(classify_and_commit, bufnr)
-  M.unsuppress(bufnr)
+  pcall(M.with_suppressed, bufnr, function()
+    classify_and_commit(bufnr)
+  end)
 
   -- undojoin merges the revert into the preceding user change so pressing
   -- <u> undoes the user's original edit rather than the revert separately.
@@ -355,8 +373,7 @@ do_revert = function(bufnr)
   local ok, err
   hygiene.with_clean_buffer(bufnr, function()
     -- Suppress on_lines during our own buffer mutations to avoid recursion.
-    M.suppress(bufnr)
-    ok, err = pcall(function()
+    ok, err = pcall(M.with_suppressed, bufnr, function()
       -- Use the stored render function (injected by render/init.lua at attach
       -- time) rather than a lazy require.  The lazy-require path is kept as a
       -- fallback for callers (e.g. unit tests) that attach without providing a
@@ -398,7 +415,6 @@ do_revert = function(bufnr)
         render.rerender_buffer(bufnr, _workspace[bufnr])
       end
     end)
-    M.unsuppress(bufnr)
 
     -- After the revert lands, the buffer text matches canonical — there are
     -- no pending user changes outside what we've just written.

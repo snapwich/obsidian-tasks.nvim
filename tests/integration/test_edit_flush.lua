@@ -555,6 +555,48 @@ T["edit flush: per-file write failure reverts that file's rows, other files comm
   vim.fn.delete(src_fail)
 end
 
+-- ── Q15b: apply_source_edit THROWING is handled like ok=false ─────────────────
+-- A thrown error (as opposed to a returned ok=false) used to escape the
+-- per-file loop in edit_apply.apply_batches, skipping the revert for that file
+-- and every remaining file and leaving buffer/snapshot state inconsistent.
+-- The pcall guard must route a throw into the SAME revert path as ok=false and
+-- keep the pipeline functional for subsequent flushes.
+
+T["edit flush: apply_source_edit throwing reverts rows; pipeline not wedged"] = function()
+  local bufnr, src_path, cleanup = setup_dashboard("- [ ] Throwing task #task")
+
+  local canonical = get_line(bufnr, TASK_ROW)
+  set_line(bufnr, TASK_ROW, canonical:gsub("Throwing task", "Throwing task edited"))
+
+  -- Stub apply_source_edit to THROW (not return ok=false).  Silence the
+  -- error/warn notifications the guard emits so test output stays clean.
+  local saved_apply = cmd.apply_source_edit
+  cmd.apply_source_edit = function()
+    error("simulated apply_source_edit crash")
+  end
+  local orig_notify = vim.notify
+  vim.notify = function() end
+
+  local flush_ok, flush_err = pcall(edit_mod.flush, bufnr)
+
+  -- Restore the stub (and notify) regardless of assertion outcomes below.
+  cmd.apply_source_edit = saved_apply
+  vim.notify = orig_notify
+
+  eq(flush_ok, true, "flush must not propagate the thrown error: " .. tostring(flush_err))
+  -- The edited row must have been reverted to its canonical rendered text.
+  eq(get_line(bufnr, TASK_ROW), canonical, "row should revert to canonical text after a thrown apply")
+  -- Source file untouched.
+  eq(read_src_line(src_path, 0), "- [ ] Throwing task #task", "source file should be unchanged")
+
+  -- A subsequent NORMAL flush must still work (pipeline not wedged).
+  set_line(bufnr, TASK_ROW, canonical:gsub("Throwing task", "Throwing task updated"))
+  edit_mod.flush(bufnr)
+  eq(read_src_line(src_path, 0), "- [ ] Throwing task updated #task", "subsequent flush should commit normally")
+
+  cleanup()
+end
+
 -- ── MAJOR-2: locate_miss in the batch path is NOT silent data loss ───────────
 -- A successful batch write (ok==true) can still contain an entry that hit
 -- locate_miss (genuine concurrent external drift the ±10 window can't recover).
