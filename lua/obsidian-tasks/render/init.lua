@@ -259,7 +259,9 @@ function M.refresh_source_diagnostics(bufnr, file_path)
   local diags = {}
   local idx = require("obsidian-tasks.index")
   local raw = type(idx._raw) == "function" and idx._raw() or {}
-  local entry = raw[file_path]
+  -- Index keys are canonical (forward-slash); buffer-derived file_path is
+  -- all-backslash on Windows, so normalize before the raw lookup.
+  local entry = raw[require("obsidian-tasks.util.obsidian").normalize(file_path)]
   if entry and entry.tasks then
     for _, item in ipairs(entry.tasks) do
       local task = item.task

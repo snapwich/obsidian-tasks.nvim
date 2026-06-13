@@ -483,7 +483,8 @@ T["status edit: rapid cycle updates the real index entry every commit"] = functi
   local task_row = 3
   local function row_symbol_in_index()
     local raw = index_mod._raw()
-    local entry = raw[src_path]
+    -- Index keys are canonical (vim.fs.normalize); tempname is backslash on Windows.
+    local entry = raw[vim.fs.normalize(src_path)]
     if not entry or not entry.tasks or not entry.tasks[1] then
       return nil
     end

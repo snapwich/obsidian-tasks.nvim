@@ -60,7 +60,8 @@ T["same-buffer toggle: disk + buffer + index all synchronized after edit"] = fun
   -- (c) Index reflects post-mutation state.
   local idx = require("obsidian-tasks.index")
   local raw = idx._raw() or {}
-  local entry = raw[path] or {}
+  -- Index keys are canonical (vim.fs.normalize); fixture paths are backslash on Windows.
+  local entry = raw[vim.fs.normalize(path)] or {}
   local tasks = entry.tasks or {}
   local found_x = false
   for _, item in ipairs(tasks) do

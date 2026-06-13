@@ -29,6 +29,23 @@ local _reverse_index = {}
 
 -- ── helpers ───────────────────────────────────────────────────────────────────
 
+--- Canonicalize *abs_path* to the index's key form (vim.fs.normalize — forward
+--- slashes).  Vault-scan keys arrive already normalized, but buffer-derived
+--- paths (`nvim_buf_get_name` in the BufReadPost/BufWritePost autocmds) are
+--- all-backslash on Windows; without one canonical key form the same file gets
+--- indexed twice and every task in it renders duplicated.  Applied at every
+--- public path-taking entry point so no caller can split a file across keys.
+--- (Inlined rather than routed through util/obsidian.normalize because tests
+--- stub that adapter module with partial tables.)
+--- @param abs_path string|nil
+--- @return string|nil
+local function canonical(abs_path)
+  if type(abs_path) ~= "string" or abs_path == "" then
+    return abs_path
+  end
+  return vim.fs.normalize(abs_path)
+end
+
 --- Return the mtime (seconds) for *abs_path*, or nil if stat fails.
 --- @param abs_path string
 --- @return number|nil
@@ -123,6 +140,7 @@ end
 ---
 --- @param abs_path string  absolute path to the markdown file
 function M.refresh_file(abs_path)
+  abs_path = canonical(abs_path)
   local mtime = get_mtime(abs_path)
 
   -- File no longer on disk: drop the entry and skip the ignore check
@@ -202,7 +220,7 @@ function M.refresh_all(workspace, on_done)
 
   scan.walk_files(workspace, function(abs_path, nodes)
     local mtime = get_mtime(abs_path)
-    pending[abs_path] = make_entry(mtime, nodes)
+    pending[canonical(abs_path)] = make_entry(mtime, nodes)
   end, function(_code)
     -- Files outside this workspace root never appear in the discovery results,
     -- so they are untouched; discovered files replace their prior entry.
@@ -257,7 +275,7 @@ end
 --- @param abs_path string  absolute path
 --- @return table[]  node list (the entry's own table; do NOT mutate)
 function M.nodes_for(abs_path)
-  local entry = _index[abs_path]
+  local entry = _index[canonical(abs_path)]
   return (entry and entry.nodes) or {}
 end
 
@@ -266,7 +284,7 @@ end
 ---
 --- @param abs_path string
 function M.invalidate(abs_path)
-  _index[abs_path] = nil
+  _index[canonical(abs_path)] = nil
 end
 
 --- Return a list of bufnrs whose render results currently include tasks from *path*.
@@ -277,7 +295,7 @@ end
 --- @param path string  absolute path
 --- @return integer[]  list of buffer numbers (may be empty)
 function M.reverse_index(path)
-  local set = _reverse_index[path]
+  local set = _reverse_index[canonical(path)]
   if not set then
     return {}
   end
@@ -304,10 +322,11 @@ function M.set_render_paths(bufnr, paths_set)
   end
   -- Add it for the new set of paths.
   for path in pairs(paths_set) do
-    if not _reverse_index[path] then
-      _reverse_index[path] = {}
+    local key = canonical(path)
+    if not _reverse_index[key] then
+      _reverse_index[key] = {}
     end
-    _reverse_index[path][bufnr] = true
+    _reverse_index[key][bufnr] = true
   end
 end
 

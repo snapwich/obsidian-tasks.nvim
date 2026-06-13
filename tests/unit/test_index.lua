@@ -13,6 +13,13 @@ local T = MiniTest.new_set()
 
 local VAULT = vim.fn.fnamemodify("tests/fixtures/vault", ":p")
 
+--- Index keys are canonical (vim.fs.normalize — forward slashes).  Paths used
+--- for raw `_index` lookups must pass through here or they miss on Windows,
+--- where fnamemodify/tempname return backslash paths.
+local function norm(path)
+  return vim.fs.normalize(path)
+end
+
 --- Inject a stub into package.loaded and return cleanup fn.
 local function stub_module(name, tbl)
   local prev = package.loaded[name]
@@ -33,9 +40,9 @@ local function set_obsidian_stub()
   _G.Obsidian = { workspace = { root = VAULT, name = "test" }, workspaces = {} }
 end
 
---- Absolute path to a fixture file.
+--- Absolute path to a fixture file (canonical form — usable as an index key).
 local function fixture(name)
-  return VAULT .. name
+  return norm(VAULT .. name)
 end
 
 --- True if any task item's description contains `substr`.
@@ -146,7 +153,7 @@ local scan_tests = MiniTest.new_set()
 
 --- Write `content` to a fresh temp .md file and return its path.
 local function write_tmp(content)
-  local path = vim.fn.tempname() .. ".md"
+  local path = norm(vim.fn.tempname() .. ".md")
   local f = assert(io.open(path, "w"))
   f:write(content)
   f:close()
@@ -533,7 +540,7 @@ init_tests["refresh_all_indexed_mtime: picks up an external edit when mtime adva
   local index = fresh("obsidian-tasks.index")
   index._reset()
 
-  local path = vim.fn.tempname() .. ".md"
+  local path = norm(vim.fn.tempname() .. ".md")
   local function write(content)
     local f = assert(io.open(path, "w"))
     f:write(content)
@@ -603,7 +610,7 @@ init_tests["refresh_file: deleted file is dropped from index"] = function()
   index._reset()
 
   -- Create a real file, index it.
-  local path = vim.fn.tempname() .. ".md"
+  local path = norm(vim.fn.tempname() .. ".md")
   local f = assert(io.open(path, "w"))
   f:write("- [ ] To be deleted\n")
   f:close()
@@ -648,8 +655,8 @@ init_tests["refresh_all_indexed_mtime: deleted files are dropped"] = function()
   local index = fresh("obsidian-tasks.index")
   index._reset()
 
-  local kept = vim.fn.tempname() .. ".md"
-  local gone = vim.fn.tempname() .. ".md"
+  local kept = norm(vim.fn.tempname() .. ".md")
+  local gone = norm(vim.fn.tempname() .. ".md")
   for _, p in ipairs({ kept, gone }) do
     local f = assert(io.open(p, "w"))
     f:write("- [ ] Task in " .. p .. "\n")
@@ -691,6 +698,56 @@ init_tests["refresh_file: ignored file is dropped from index"] = function()
 
   local raw = index._raw()
   MiniTest.expect.equality(raw[path], nil)
+end
+
+init_tests["refresh_file/invalidate: backslash path resolves to the same entry (Windows)"] = function()
+  if vim.fn.has("win32") == 0 then
+    MiniTest.skip("Windows-only separator behavior")
+    return
+  end
+  set_obsidian_stub()
+  reset_opts()
+
+  local cleanup_ign = stub_module("obsidian-tasks.index.ignore", {
+    is_ignored = function(_)
+      return false
+    end,
+  })
+
+  local index = fresh("obsidian-tasks.index")
+  index._reset()
+
+  local path = norm(vim.fn.tempname() .. ".md")
+  local f = assert(io.open(path, "w"))
+  f:write("- [ ] Only task\n")
+  f:close()
+
+  -- Vault scan indexes the canonical (forward-slash) key …
+  index.refresh_file(path)
+
+  -- … then BufWritePost passes the raw backslash buffer name.  Before keys
+  -- were canonicalized this created a SECOND entry for the same file and
+  -- every task in it rendered duplicated on dashboards.
+  local backslash = path:gsub("/", "\\")
+  index.invalidate(backslash)
+  index.refresh_file(backslash)
+
+  cleanup_ign()
+  os.remove(path)
+
+  local count = 0
+  local iter = index.tasks_in(nil)
+  while iter() do
+    count = count + 1
+  end
+  MiniTest.expect.equality(count, 1)
+
+  local entries = 0
+  for _ in pairs(index._raw()) do
+    entries = entries + 1
+  end
+  MiniTest.expect.equality(entries, 1)
+  MiniTest.expect.equality(index._raw()[path] ~= nil, true)
 end
 
 init_tests["invalidate: removes entry from index"] = function()
@@ -799,7 +856,7 @@ init_tests["nodes_for: returns the per-file node list for an indexed path"] = fu
   local index = fresh("obsidian-tasks.index")
   index._reset()
 
-  local path = vim.fn.tempname() .. ".md"
+  local path = norm(vim.fn.tempname() .. ".md")
   local f = assert(io.open(path, "w"))
   f:write("- [ ] root\n  - [ ] child\n  - desc bullet\n")
   f:close()
@@ -1066,7 +1123,7 @@ integration_tests["fixture scan: 3 files, one ignored, global_filter=#task → c
   -- ignored_note.md has `tasks-plugin.ignore: true` → its tasks must NOT appear
   local ignored_path = fixture("ignored_note.md")
   for _, item in ipairs(tasks) do
-    MiniTest.expect.equality(item.path ~= ignored_path, true)
+    MiniTest.expect.equality(norm(item.path) ~= ignored_path, true)
   end
 
   -- global_filter='#task': every surviving task's description must contain "#task"
@@ -1105,7 +1162,7 @@ integration_tests["fixture scan: no global_filter → includes all non-ignored t
   -- ignored_note.md must NOT appear
   local ignored_path = fixture("ignored_note.md")
   for _, item in ipairs(tasks) do
-    MiniTest.expect.equality(item.path ~= ignored_path, true)
+    MiniTest.expect.equality(norm(item.path) ~= ignored_path, true)
   end
 
   -- Without global_filter, both #task-tagged and untagged tasks are included
@@ -1126,8 +1183,8 @@ refresh_all_tests["refresh_all: populates index after walk completes"] = functio
   reset_opts()
 
   -- Real temp files so the full-read parser has something to read.
-  local path_a = vim.fn.tempname() .. ".md"
-  local path_b = vim.fn.tempname() .. ".md"
+  local path_a = norm(vim.fn.tempname() .. ".md")
+  local path_b = norm(vim.fn.tempname() .. ".md")
   do
     local f = assert(io.open(path_a, "w"))
     f:write("- [ ] Task alpha\n- [ ] Task beta\n")

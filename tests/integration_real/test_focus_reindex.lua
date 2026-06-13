@@ -125,7 +125,8 @@ T["FocusGained re-indexes external edits and preserves lingers"] = function()
     vim.api.nvim_exec_autocmds("FocusGained", { pattern = "*" })
 
     -- ── 6. The index was refreshed from disk (deterministic). ───────────────
-    local entry = index._raw()[source_path]
+    -- Index keys are canonical (vim.fs.normalize); fixture paths are backslash on Windows.
+    local entry = index._raw()[vim.fs.normalize(source_path)]
     eq(type(entry), "table")
     eq(#entry.tasks, 2)
 
