@@ -39,8 +39,9 @@ M.flush_queue = {}
 --- the task row to a different group or within-group position.
 ---
 --- Algorithm:
----   1. If both group_by and sort_by are empty → short-circuit moves=false
----      (optimization: no query dimension references any field, so no visual change).
+---   1. If group_by, sort_by and sort_groups_by are all empty → short-circuit
+---      moves=false (optimization: no query dimension references any field, so
+---      no visual change).
 ---   2. If group_by is non-empty: resolve the post-edit group name(s) via
 ---      group_mod.resolve.  If the current group name is absent from the
 ---      post-edit set → moves=true (task left its current group).
@@ -48,19 +49,25 @@ M.flush_queue = {}
 ---      the pre-edit and post-edit sort values via make_comparator.  If the
 ---      comparator orders them differently → the within-group position would
 ---      change → moves=true.
----   4. Otherwise → moves=false.
+---   4. If sort_groups_by is non-empty (`# nvim: sort groups by <key>`) and the
+---      edit changes the task's value under that chain: the task may be its
+---      group's representative, so the GROUP's position — and hence the row's —
+---      can change even though the task neither left its group nor moved within
+---      it.  Conservative: treat any change under the chain as a move.
+---   5. Otherwise → moves=false.
 ---
 --- @param task_before table  Parsed Task at render time (pre-edit source state)
 --- @param task_after  table  Parsed Task after the edit is applied
---- @param layout_ctx  table  { group_by, sort_by, src_path?, current_group_name, current_index }
+--- @param layout_ctx  table  { group_by, sort_by, sort_groups_by?, src_path?, current_group_name, current_index }
 --- @return table  { moves = bool, prior_group_name?, prior_index_within_group? }
 function M._would_move(task_before, task_after, layout_ctx)
   local group_by = layout_ctx.group_by or {}
   local sort_by = layout_ctx.sort_by or {}
+  local sort_groups_by = layout_ctx.sort_groups_by or {}
 
-  -- Optimization: if neither group-by nor sort-by can produce a visual change,
-  -- skip all computation.
-  if #group_by == 0 and #sort_by == 0 then
+  -- Optimization: if no query dimension can produce a visual change, skip all
+  -- computation.
+  if #group_by == 0 and #sort_by == 0 and #sort_groups_by == 0 then
     return { moves = false }
   end
 
@@ -97,13 +104,30 @@ function M._would_move(task_before, task_after, layout_ctx)
   -- Conservative: if the comparator orders task_before and task_after
   -- differently from equal (i.e., one is strictly less than the other), the
   -- task's within-group position would change → record a linger.
-  if #sort_by > 0 then
+  if #sort_by > 0 or #sort_groups_by > 0 then
     local sort_mod = require("obsidian-tasks.query.sort")
     local before_wrapper = { task = task_before, path = src_path or "", _idx = 0 }
     local after_wrapper = { task = task_after, path = src_path or "", _idx = 0 }
-    local cmp = sort_mod.make_comparator(sort_by)
-    -- If before < after or after < before, the values differ in sort order.
-    if cmp(before_wrapper, after_wrapper) or cmp(after_wrapper, before_wrapper) then
+
+    if #sort_by > 0 then
+      local cmp = sort_mod.make_comparator(sort_by)
+      -- If before < after or after < before, the values differ in sort order.
+      if cmp(before_wrapper, after_wrapper) or cmp(after_wrapper, before_wrapper) then
+        return {
+          moves = true,
+          prior_group_name = current_group,
+          prior_index_within_group = current_index,
+        }
+      end
+    end
+
+    -- ── Step 3: group-order shift detection ──────────────────────────────────
+    -- `# nvim: sort groups by` orders groups by their best member, so an edit
+    -- that changes this task's value under that chain can reorder the GROUPS
+    -- around a row that never left its own group.  rank() (not make_comparator)
+    -- because the wrappers share `_idx`, which make_comparator would fall back
+    -- to and report as a difference for every edit.
+    if #sort_groups_by > 0 and sort_mod.rank(sort_groups_by, before_wrapper, after_wrapper) ~= 0 then
       return {
         moves = true,
         prior_group_name = current_group,

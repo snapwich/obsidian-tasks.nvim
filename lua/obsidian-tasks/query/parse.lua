@@ -6,6 +6,7 @@
 --     filters  = { node, ... },   -- each node: { kind, children | filter }
 --     sort_by  = { { key, reverse }, ... },
 --     group_by = { { key, reverse }, ... },
+--     sort_groups_by = { { key, reverse }, ... },  -- nvim-only, see below
 --     limit    = N or nil,
 --     hide     = { 'priority', 'due date', ... },
 --     errors   = { { kind, msg, line }, ... },
@@ -755,17 +756,62 @@ local function parse_line(ast, line, line_num)
   }
 end
 
+-- ── `# nvim:` magic-comment namespace ───────────────────────────────────────
+-- Carrier for directives that exist only in this plugin.  Upstream
+-- obsidian-tasks IGNORES every line that starts with '#' but treats an unknown
+-- bare directive as fatal, so hiding our extensions behind a comment keeps the
+-- SAME query block working in the Obsidian desktop app (there it simply has no
+-- effect).  The namespace is strict on our side: any `# nvim:` line that does
+-- not parse is a fatal parse_error, so typos are reported instead of silently
+-- doing nothing.  Plain '#' comments stay free-form.
+
+--- Parse the body of a `# nvim:` comment (prefix already stripped).  Mutates `ast`.
+--- @param ast       table
+--- @param directive string   text after `# nvim:`, original case, trimmed
+--- @param line      string   full original-case trimmed line (for error msgs)
+--- @param line_num  integer
+local function parse_nvim_directive(ast, directive, line, line_num)
+  local lower = directive:lower()
+
+  -- ── sort groups by <key> [reverse] ───────────────────────────────────
+  -- Orders GROUPS by their best member instead of by group name.  Accepts the
+  -- full `sort by` key set and is repeatable, mirroring ast.sort_by.  Cannot
+  -- collide with `sort by <key>`: that pattern is anchored at "sort by ".
+  do
+    local key = lower:match("^sort groups by (.+) reverse$")
+    if key and SORT_KEYS[key] then
+      ast.sort_groups_by[#ast.sort_groups_by + 1] = { key = key, reverse = true }
+      return
+    end
+    key = lower:match("^sort groups by (.+)$")
+    if key and SORT_KEYS[key] then
+      ast.sort_groups_by[#ast.sort_groups_by + 1] = { key = key, reverse = false }
+      return
+    end
+  end
+
+  -- ── unknown nvim directive → structured parse error ──────────────────
+  ast.errors[#ast.errors + 1] = {
+    kind = "parse_error",
+    msg = "Unknown `# nvim:` directive: " .. line,
+    line = line_num,
+  }
+end
+
 -- ── Public API ───────────────────────────────────────────────────────────────
 
 --- Parse a query block string into an AST.
 ---
 --- @param query_text string  newline-separated query block contents
---- @return table  { filters, sort_by, group_by, limit, hide, errors }
+--- @return table  { filters, sort_by, group_by, sort_groups_by, limit, hide, errors }
 function M.parse(query_text)
   local ast = {
     filters = {},
     sort_by = {},
     group_by = {},
+    -- Group ORDER directives from the `# nvim:` namespace.  Empty = keep the
+    -- default alphabetical group order.
+    sort_groups_by = {},
     limit = nil,
     hide = {},
     errors = {},
@@ -779,13 +825,36 @@ function M.parse(query_text)
     return ast
   end
 
+  -- Line of the first `sort groups by` directive, for the post-pass error below.
+  local sort_groups_line = nil
+
   local lines = vim.split(query_text, "\n", { plain = true })
   for line_num, line in ipairs(lines) do
     local trimmed = line:match("^%s*(.-)%s*$")
-    -- Skip blank lines and comment lines (starting with '#')
-    if trimmed ~= "" and trimmed:sub(1, 1) ~= "#" then
+    -- `# nvim: <directive>` must be carved out BEFORE the '#' skip below.
+    -- The position capture keeps the directive body in its ORIGINAL case while
+    -- the prefix is matched case-insensitively (lowering never changes length).
+    local body_at = trimmed:lower():match("^#%s*nvim%s*:%s*()")
+    if body_at then
+      parse_nvim_directive(ast, trimmed:sub(body_at), trimmed, line_num)
+      if sort_groups_line == nil and #ast.sort_groups_by > 0 then
+        sort_groups_line = line_num
+      end
+    elseif trimmed ~= "" and trimmed:sub(1, 1) ~= "#" then
+      -- Skip blank lines and comment lines (starting with '#')
       parse_line(ast, trimmed, line_num)
     end
+  end
+
+  -- `sort groups by` orders groups; with no `group by` there are no groups to
+  -- order.  Checked here rather than in parse_nvim_directive because directives
+  -- are parsed in line order and `group by` may appear AFTER the comment line.
+  if #ast.sort_groups_by > 0 and #ast.group_by == 0 then
+    ast.errors[#ast.errors + 1] = {
+      kind = "parse_error",
+      msg = "`# nvim: sort groups by` requires a `group by` directive",
+      line = sort_groups_line,
+    }
   end
 
   return ast

@@ -193,4 +193,44 @@ T["_would_move: non-moving edit result has moves=false and no prior position fie
   eq(result.prior_index_within_group, nil)
 end
 
+-- ── 8. Group-order shift via `# nvim: sort groups by` ────────────────────────
+-- The task keeps its group and there is no `sort by`, but the edit changes the
+-- value the GROUP order is built from, so the row can still move.
+
+T["_would_move: priority change under sort_groups_by → moves=true"] = function()
+  local task_before = pt("- [ ] Task A 🔽")
+  local task_after = pt("- [ ] Task A ⏫")
+  local layout_ctx = {
+    group_by = { { key = "filename" } },
+    sort_by = {},
+    sort_groups_by = { { key = "priority", reverse = false } },
+    src_path = "notes/a.md",
+    current_group_name = "a",
+    current_index = 0,
+  }
+
+  local result = edit_mod._would_move(task_before, task_after, layout_ctx)
+
+  eq(result.moves, true, "an edit that reorders the groups must return moves=true")
+  eq(result.prior_group_name, "a")
+  eq(result.prior_index_within_group, 0)
+end
+
+T["_would_move: edit unrelated to sort_groups_by → moves=false"] = function()
+  local task_before = pt("- [ ] Task A 🔽")
+  local task_after = pt("- [ ] Task A edited 🔽")
+  local layout_ctx = {
+    group_by = { { key = "filename" } },
+    sort_by = {},
+    sort_groups_by = { { key = "priority", reverse = false } },
+    src_path = "notes/a.md",
+    current_group_name = "a",
+    current_index = 0,
+  }
+
+  local result = edit_mod._would_move(task_before, task_after, layout_ctx)
+
+  eq(result.moves, false)
+end
+
 return T

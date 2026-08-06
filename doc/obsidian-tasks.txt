@@ -299,7 +299,12 @@ Query blocks live inside a fenced ```tasks block in any markdown file.
 The query language is portable with upstream obsidian-tasks: the same
 block parses identically in Neovim and in the Obsidian desktop plugin.
 
-Each non-blank, non-`#`-comment line is one of:
+A `# nvim:` line is the one exception. The Obsidian desktop plugin
+ignores it, because it is a comment. Neovim reads it as a directive.
+The block still parses in both programs, but the result can look
+different in Neovim. See |obsidian-tasks-query-sort-groups|.
+
+Each non-blank line is one of:
 
   - a filter expression (leaf or boolean combination)
   - `sort by [reverse] <key>`
@@ -307,6 +312,8 @@ Each non-blank, non-`#`-comment line is one of:
   - `limit <N>`
   - `hide <subkey>`
   - `explain`
+  - a `# nvim:` directive, which applies in Neovim only
+  - any other `#` comment, which both programs ignore
 
                                                       *obsidian-tasks-query-bool*
 Boolean operators ~
@@ -392,6 +399,83 @@ group by ~
 
 Group keys are the sort keys minus `description` and `blocking`.
 Multiple `group by` lines nest.
+
+Groups show in alphabetical order of the group name. To show them in the
+order of their tasks, see |obsidian-tasks-query-sort-groups|.
+
+                                             *obsidian-tasks-query-sort-groups*
+sort groups by (Neovim only) ~
+
+    # nvim: sort groups by <key>
+    # nvim: sort groups by <key> reverse
+
+This directive puts the groups in the order of their tasks. The plugin
+finds the best task of each group. The best task is the task that comes
+first in the order of the given keys. If two tasks stay equal for these
+keys, the `sort by` keys give the best task. The plugin then puts the
+groups in the order of these best tasks.
+
+The directive is optional. Without it, the groups stay in alphabetical
+order of the group name. No existing query changes.
+
+The directive is a comment. The Obsidian desktop plugin ignores it and
+shows the groups in alphabetical order. The same block is valid in both
+programs.
+
+<key> is one of the sort keys (see |obsidian-tasks-query-sort|).
+`reverse` reverses the order of that key. Multiple
+`# nvim: sort groups by` lines stack (primary, secondary, …).
+
+`reverse` changes the order of the groups only. It does not change the
+best task of a group. Thus `reverse` gives the opposite order of the
+groups, also when a group has more than one task.
+
+The directive is independent of `sort by`. `sort by` puts the tasks in
+order inside each group. `# nvim: sort groups by` puts the groups in
+order.
+
+More than one `group by` key ~
+
+The plugin puts the groups in order one level at a time. First it puts
+the level-1 groups in order. Then it puts the level-2 groups in order
+inside each level-1 group. Groups with the same prefix stay together.
+
+With this directive, `reverse` on a `group by` key reverses that level
+only. Without this directive, `reverse` on the first `group by` key
+reverses the full list, as before.
+
+Equal groups ~
+
+Two groups can have equal best tasks. The plugin then compares the two
+best tasks again with the `sort by` keys. If they stay equal, the plugin
+compares the two group names alphabetically. With more than one
+`group by` key, the plugin compares the names at the level where the two
+groups differ, not the full joined names.
+
+Errors ~
+
+These three conditions cause a query error. The block then shows an
+error banner and no tasks:
+
+  - the key is not a known sort key
+  - a `# nvim:` line is not a known directive
+  - the query has a `# nvim: sort groups by` line, but no `group by` line
+
+The plugin is strict about the `# nvim:` prefix, so it reports a spelling
+mistake in a directive. All other `#` comments stay free-form.
+
+Example ~
+>
+    ```tasks
+    not done
+    group by filename
+    sort by due
+    # nvim: sort groups by priority
+    ```
+<
+The file with the task of the highest priority shows first. Inside each
+file, the tasks show in the order of their due date. The Obsidian
+desktop plugin shows the same files in alphabetical order.
 
                                                    *obsidian-tasks-query-limit*
 limit ~

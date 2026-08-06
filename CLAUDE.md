@@ -73,6 +73,21 @@ Run locally: `make test` (clones mini.nvim to `.deps/` on first run).
 
 We subscribe to `User:ObsidianNoteWritePre` (not raw `BufWritePre`) so our render-strip fires AFTER obsidian.nvim has finished updating frontmatter; any future feature that must mutate the buffer before write should also use this User event.
 
+## `# nvim:` magic-comment namespace
+
+Neovim-only query directives ride on `# nvim: <directive>` comment lines
+(first user: `# nvim: sort groups by <key> [reverse]`). Upstream obsidian-tasks
+ignores every line starting with `#`, but treats an unknown bare directive as a
+fatal query error — so a comment is the only carrier that keeps the same query
+block valid in the Obsidian desktop app.
+
+The namespace is strict on our side: any `# nvim:` line that does not parse as a
+known directive is a fatal `parse_error`, so typos surface instead of silently
+becoming comments. Plain `#` comments stay free-form. The carve-out lives in
+`query/parse.lua` M.parse, BEFORE the blank/`#` skip; cross-directive validation
+(e.g. sort-groups without `group by`) must be a post-pass after the line loop,
+since directives can appear in any order.
+
 ## Convention
 
 Append to this file only when a future agent would otherwise miss a non-obvious

@@ -209,17 +209,25 @@ end
 
 -- ── public API ─────────────────────────────────────────────────────────────────
 
---- Return a list of group name strings for a task given a list of group_by
---- directives.  For multi-key grouping the names are joined with " / ".
---- Tags may expand to multiple entries, each being a combined name.
+--- Return the task's group memberships, each as the joined display name PLUS
+--- the per-key segment array it was built from.
+---
+--- The segments matter because the joined name is lossy: a group key may
+--- legitimately contain the " / " separator (a `heading` group can be
+--- "## Design / Build"), so splitting a joined name back apart cannot recover
+--- the levels.  Callers that need to reason level-by-level — run.lua's
+--- hierarchical group ordering — must use `segments`, never a re-split.
+---
+--- `segments` has exactly one entry per group_by directive (empty when
+--- ungrouped), so `segments[i]` always belongs to `group_by_list[i]`.
 ---
 --- @param task         table
 --- @param path         string
 --- @param group_by_list table[]  list of { key, reverse }
---- @return string[]   list of group names the task belongs to
-function M.resolve(task, path, group_by_list)
+--- @return table[]  list of { name = string, segments = string[] }
+function M.resolve_detailed(task, path, group_by_list)
   if not group_by_list or #group_by_list == 0 then
-    return { "" } -- ungrouped: single empty-string group
+    return { { name = "", segments = {} } } -- ungrouped: single empty-string group
   end
 
   -- For each key, get the list of name segments.
@@ -246,9 +254,30 @@ function M.resolve(task, path, group_by_list)
     combinations = new_combos
   end
 
-  local names = {}
+  -- `combo` is freshly built above and never aliased into segments_per_key, so
+  -- handing it straight to the caller is safe and costs no extra allocation.
+  local memberships = {}
   for _, combo in ipairs(combinations) do
-    names[#names + 1] = table.concat(combo, " / ")
+    memberships[#memberships + 1] = { name = table.concat(combo, " / "), segments = combo }
+  end
+  return memberships
+end
+
+--- Return a list of group name strings for a task given a list of group_by
+--- directives.  For multi-key grouping the names are joined with " / ".
+--- Tags may expand to multiple entries, each being a combined name.
+---
+--- Thin wrapper over `resolve_detailed` — the return shape is unchanged for
+--- the render-side callers (layout.lua, edit.lua) that only bucket by name.
+---
+--- @param task         table
+--- @param path         string
+--- @param group_by_list table[]  list of { key, reverse }
+--- @return string[]   list of group names the task belongs to
+function M.resolve(task, path, group_by_list)
+  local names = {}
+  for _, membership in ipairs(M.resolve_detailed(task, path, group_by_list)) do
+    names[#names + 1] = membership.name
   end
   return names
 end

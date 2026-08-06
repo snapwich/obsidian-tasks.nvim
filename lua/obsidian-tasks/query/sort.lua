@@ -155,6 +155,64 @@ end
 
 -- ── public API ─────────────────────────────────────────────────────────────────
 
+--- Compare two wrapper items under a sort_by chain, reporting a TIE instead of
+--- silently breaking it.
+---
+--- `make_comparator` ends every chain with `a._idx < b._idx`, which is right
+--- for ordering tasks but wrong for ordering GROUPS by their best member:
+--- index-iteration order would then decide group order behind the caller's
+--- back.  `rank` stops at the end of the chain and returns 0 so the caller can
+--- apply its own tiebreak (run.lua uses the group name).
+---
+--- Items are the same `{ task, path, _idx }` wrappers make_comparator expects;
+--- the `random` key caches its draw on the wrapper, so repeated calls with the
+--- same pair of wrappers stay self-consistent.
+---
+--- @param sort_by_list table[]  list of { key, reverse }
+--- @param a table  wrapper item
+--- @param b table  wrapper item
+--- @return integer  -1 (a first), 1 (b first), 0 (chain exhausted / tie)
+function M.rank(sort_by_list, a, b)
+  for _, directive in ipairs(sort_by_list or {}) do
+    local av, ak = extract(a.task, a.path, directive.key)
+    local bv, _ = extract(b.task, b.path, directive.key)
+
+    -- `random` sentinel: assign a stable random value to each wrapper on
+    -- first encounter so successive comparisons see a consistent total
+    -- order.  Without caching, table.sort raises "invalid order function".
+    if ak == "random" then
+      a._random = a._random or math.random()
+      b._random = b._random or math.random()
+      av, bv, ak = a._random, b._random, "num"
+    end
+
+    local less
+    if ak == "num" then
+      if av ~= bv then
+        -- For numeric (priority): higher = more important → sorts first.
+        -- Default (non-reverse): highest priority first.
+        less = av > bv
+      else
+        less = nil
+      end
+    else
+      if av ~= bv then
+        less = av < bv
+      else
+        less = nil
+      end
+    end
+
+    if less ~= nil then
+      if directive.reverse then
+        less = not less
+      end
+      return less and -1 or 1
+    end
+  end
+  return 0
+end
+
 --- Build a comparator from a list of sort_by directives.
 ---
 --- Each item in `sort_by_list`:
@@ -174,42 +232,9 @@ function M.make_comparator(sort_by_list)
   end
 
   return function(a, b)
-    for _, directive in ipairs(sort_by_list) do
-      local av, ak = extract(a.task, a.path, directive.key)
-      local bv, _ = extract(b.task, b.path, directive.key)
-
-      -- `random` sentinel: assign a stable random value to each wrapper on
-      -- first encounter so successive comparisons see a consistent total
-      -- order.  Without caching, table.sort raises "invalid order function".
-      if ak == "random" then
-        a._random = a._random or math.random()
-        b._random = b._random or math.random()
-        av, bv, ak = a._random, b._random, "num"
-      end
-
-      local less
-      if ak == "num" then
-        if av ~= bv then
-          -- For numeric (priority): higher = more important → sorts first.
-          -- Default (non-reverse): highest priority first.
-          less = av > bv
-        else
-          less = nil
-        end
-      else
-        if av ~= bv then
-          less = av < bv
-        else
-          less = nil
-        end
-      end
-
-      if less ~= nil then
-        if directive.reverse then
-          return not less
-        end
-        return less
-      end
+    local r = M.rank(sort_by_list, a, b)
+    if r ~= 0 then
+      return r < 0
     end
     -- Tiebreaker: stable sort by original index.
     return a._idx < b._idx
