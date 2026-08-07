@@ -112,22 +112,19 @@ function M.mark_dirty_for_deferred_sync(bufnr)
       if not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
-      -- The current window now shows this buffer; capture the cursor before
-      -- the clear+render pass.  rerender_buffer also saves/restores cursors
-      -- for visible windows, but we restore explicitly afterwards to guard
-      -- against the rendered task at the old row shifting on the rerender.
-      local cursor = vim.api.nvim_win_get_cursor(0)
+      -- The current window now shows this buffer, so rerender_buffer can save
+      -- and restore the cursor itself.  Its restore follows the TASK identity
+      -- under the cursor, which is exactly what this deferred sync needs: the
+      -- off-screen source edit can reorder the rendered lines.  Do NOT add an
+      -- outer restore here — a row-pinned restore after the rerender would
+      -- override the identity follow and put the cursor back on whatever task
+      -- now occupies the old row.
       local path = vim.api.nvim_buf_get_name(bufnr)
       local ws
       pcall(function()
         ws = require("obsidian-tasks.util.obsidian").workspace_for_path(path)
       end)
       M.rerender_buffer(bufnr, ws)
-      local nlines = vim.api.nvim_buf_line_count(bufnr)
-      local row = math.max(1, math.min(cursor[1], math.max(1, nlines)))
-      local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
-      local col = math.max(0, math.min(cursor[2], #line))
-      pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
     end,
   })
 end
@@ -912,14 +909,15 @@ function M.rerender_buffer(bufnr, workspace)
   local managed_mod = require("obsidian-tasks.render.managed")
 
   -- ── 0. Snapshot cursor positions for every window showing this buffer ─────
-  -- Restored after the clear+render pass so user-triggered rerenders (`<leader>tr`,
-  -- `<leader>tT`, auto-refresh on save/focus, etc.) don't leave the cursor at
-  -- column 0 or at the end of the buffer.  Row clamped to the new line count
-  -- and column clamped to the new line length on restore.
-  local cursor_saves = {}
-  for _, w in ipairs(vim.fn.win_findbuf(bufnr)) do
-    cursor_saves[w] = vim.api.nvim_win_get_cursor(w)
-  end
+  -- The snapshot records the TASK under each cursor — its (src_path, src_line)
+  -- identity from the live extmark — plus the screen row it sits on.  Step 4
+  -- puts the cursor back on that same task even when the render reorders the
+  -- lines, so user-triggered rerenders (`<leader>tr`, `<leader>tT`, auto-refresh
+  -- on save/focus) no longer land the cursor on a different task.  A cursor that
+  -- is not on a rendered task row falls back to the old row/column clamp.
+  -- See render/cursor.lua for the identity key and the ranking rules.
+  local cursor_mod = require("obsidian-tasks.render.cursor")
+  local cursor_snapshot = cursor_mod.save(bufnr)
 
   -- ── 1. Snapshot fold states keyed by post-clear source-fence-row ──────────
   -- We use LIVE extmark positions for both fences and task regions, so fold
@@ -1098,22 +1096,12 @@ function M.rerender_buffer(bufnr, workspace)
   end
 
   -- ── 4. Restore cursor positions ───────────────────────────────────────────
-  -- Row clamped to new line count; column clamped to length of the resulting
-  -- line.  nvim_win_set_cursor rejects out-of-range positions, so the clamps
-  -- ensure the call succeeds even when the rendered task at the old position
-  -- shrank or disappeared.
-  local new_line_count = vim.api.nvim_buf_line_count(bufnr)
-  for w, pos in pairs(cursor_saves) do
-    if vim.api.nvim_win_is_valid(w) then
-      local row = math.min(pos[1], new_line_count)
-      if row < 1 then
-        row = 1
-      end
-      local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
-      local col = math.min(pos[2], #line)
-      pcall(vim.api.nvim_win_set_cursor, w, { row, col })
-    end
-  end
+  -- Must run AFTER render_buffer has rebuilt M._buffer_state[bufnr]: the
+  -- restore ranks the candidate rows out of the NEW line_maps, so restoring
+  -- earlier would silently degrade to the row/column clamp.  The clamp is still
+  -- the fallback when the feature is off, the cursor was not on a task, or the
+  -- task and its neighbor both disappeared.  Never raises.
+  cursor_mod.restore(bufnr, cursor_snapshot)
 end
 
 --- Drop render state for a buffer WITHOUT mutating buffer lines.

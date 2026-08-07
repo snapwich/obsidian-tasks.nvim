@@ -19,7 +19,8 @@
 --     listener ignores our own writes and doesn't recurse.
 --   • Suppress is reference-counted so nesting (render_buffer calls clear_buffer
 --     which both suppress) is safe.
---   • Cursor position is preserved across the re-render (clamped to new line count).
+--   • render/cursor.lua preserves the cursor across the re-render, in every window
+--     that shows the buffer.  It follows the task the cursor was on, not the row.
 --   • undojoin merges the revert into the preceding user change to avoid polluting
 --     the undo history.
 --   • Cleanup happens automatically via the on_detach callback when the buffer is
@@ -344,12 +345,12 @@ do_revert = function(bufnr)
     return
   end
 
-  -- Capture cursor position before re-render.
-  local wins = vim.fn.win_findbuf(bufnr)
-  local cursor_save = nil
-  if #wins > 0 then
-    cursor_save = vim.api.nvim_win_get_cursor(wins[1])
-  end
+  -- Capture the cursor of EVERY window that shows this dashboard before the
+  -- re-render.  render/cursor.lua records the task identity (src_path,
+  -- src_line) per window, so the restore below can put the cursor back on the
+  -- same task even when the render reorders the rows.
+  local cursor = require("obsidian-tasks.render.cursor")
+  local cursor_save = cursor.save(bufnr)
 
   -- Pass 1: propagate any recognized status edits to source BEFORE we wipe
   -- the managed rows.  After this pass, source files reflect any valid status
@@ -425,13 +426,12 @@ do_revert = function(bufnr)
     require("obsidian-tasks.log").warn("revert: rerender_buffer error: " .. tostring(err))
   end
 
-  -- Restore cursor (clamp row to new line count to handle line-count changes).
-  if cursor_save and #wins > 0 then
-    local line_count = vim.api.nvim_buf_line_count(bufnr)
-    local row = math.min(cursor_save[1], line_count)
-    local col = cursor_save[2]
-    pcall(vim.api.nvim_win_set_cursor, wins[1], { row, col })
-  end
+  -- Restore the cursor AFTER the rerender has repopulated render._buffer_state:
+  -- the candidate ranking reads the NEW block states, so restoring earlier would
+  -- silently fall back to the legacy row clamp.  cursor.restore also clamps the
+  -- column, which the old inline restore did not — a column past the end of the
+  -- new line made nvim_win_set_cursor fail inside its pcall.
+  cursor.restore(bufnr, cursor_save)
 end
 
 -- ── Internal: sentinel demote snapshot maintenance ───────────────────────────

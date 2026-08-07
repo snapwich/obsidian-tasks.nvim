@@ -86,6 +86,7 @@ Full opts schema with defaults:
       linger_on_filter_exit = true,
       linger_hl_group = "ObsidianTasksLinger",
       dim_completed_tasks = true,
+      follow_cursor_on_rerender = true,
       blink_cmp = { enabled = true },
       date_input = {
         natural_language = true,
@@ -147,6 +148,15 @@ linger_hl_group                                        string  ("ObsidianTasksLi
 dim_completed_tasks                                    boolean  (true)
     Dim live Done/Cancelled tasks in place. They keep their sort-by
     position and are only visually deprioritized (not moved).
+
+follow_cursor_on_rerender                              boolean  (true)
+    After a rerender, keep the cursor on the same task instead of the
+    same row number, and hold that task at its screen row. Applies when
+    a render reorders rows: manual refresh, refresh on save or focus,
+    a field edit that changes the sort position, and the revert after
+    an edit on a rendered row. If the task is gone, the cursor moves to
+    the task that came after it. Set false to keep the cursor on the row
+    number, which lands on a different task after a reorder.
 
 blink_cmp.enabled                                      boolean  (true)
     Enable the blink.cmp source. See |obsidian-tasks-cmp|.

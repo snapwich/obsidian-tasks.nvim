@@ -31,6 +31,11 @@ M.defaults = {
   -- stay in their sort-by position, just visually deprioritized (not moved).
   -- Applies in both flat and `show tree` mode.
   dim_completed_tasks = true,
+  -- After a rerender, keep the cursor on the SAME task instead of the same row
+  -- number, and hold that task at its screen row so the view does not jump.
+  -- Set false for the old behavior: the cursor stays on the row number, which
+  -- lands on a different task whenever the render reorders content.
+  follow_cursor_on_rerender = true,
   -- When true: tasks in files whose basename is a date pattern (YYYY-MM-DD,
   -- with an optional prefix) inherit that date as their scheduled date if
   -- they don't already have one.  Mirrors upstream's
@@ -113,6 +118,10 @@ local function check_field(key, value)
     if type(value) ~= "boolean" then
       error(("obsidian-tasks: 'dim_completed_tasks' must be a boolean, got %s"):format(type(value)), 2)
     end
+  elseif key == "follow_cursor_on_rerender" then
+    if type(value) ~= "boolean" then
+      error(("obsidian-tasks: 'follow_cursor_on_rerender' must be a boolean, got %s"):format(type(value)), 2)
+    end
   end
 end
 
@@ -134,6 +143,7 @@ local KNOWN_KEYS = {
   linger_on_filter_exit = true,
   linger_hl_group = true,
   dim_completed_tasks = true,
+  follow_cursor_on_rerender = true,
   use_filename_as_scheduled_date = true,
 }
 
