@@ -416,4 +416,160 @@ T["save: buffer shown by no window returns an empty snapshot"] = function()
   pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
 end
 
+-- ── 12. Viewport pin ─────────────────────────────────────────────────────────
+-- Regression: the pin first computed `topline = row - (winline - 1)`.  That
+-- mixes units — topline counts BUFFER lines, winline counts SCREEN rows — so it
+-- missed whenever the span between the top of the window and the cursor did not
+-- occupy one screen row per buffer line.  Two everyday cases do exactly that:
+-- 'wrap' is on and rendered task lines are long, and a closed fold collapses
+-- many buffer lines into one screen row.  The computed topline then put the
+-- cursor off-screen, Neovim recentred, and the task jumped to the middle of the
+-- window — even when the task had not moved at all.
+--
+-- These cases assert the SCREEN row, which is what the user actually sees.
+--
+-- They need a TALL window.  The default headless UI leaves a split of ~10 rows,
+-- and in a window that short the old arithmetic happened to land close enough
+-- that the bug did not show — so a short window silently tests nothing.  Each
+-- case grows the UI, and restores it even on failure: leaking `lines` into the
+-- rest of the suite fails ~165 unrelated cases.
+
+--- Run *fn* with a tall UI, restoring `lines` even when *fn* raises.
+--- @param fn fun()
+local function with_tall_ui(fn)
+  local prev = vim.o.lines
+  vim.o.lines = 40
+  local ok, err = pcall(fn)
+  vim.o.lines = prev
+  if not ok then
+    error(err)
+  end
+end
+
+--- line_map for *n* rows, each row0 (i-1) carrying src_line (i - shift).
+--- shift = 0 leaves every task where it was; shift ~= 0 models a reorder.
+local function shifted_map(n, shift)
+  local m = {}
+  for i = 1, n do
+    m[i - 1] = meta(i - shift, { group_name = "g" })
+  end
+  return m
+end
+
+--- Open *n* task lines with the cursor low in a tall window.
+--- `long` makes each line wrap; otherwise lines are short and 'wrap' is off.
+--- @return integer bufnr, integer win, table by_row
+local function open_tall(n, cur_row, long)
+  local lines, by_row = {}, {}
+  for i = 1, n do
+    lines[i] = long and ("- [ ] task " .. i .. " " .. string.rep("x", 300)) or ("- [ ] task " .. i)
+    by_row[i - 1] = { src_path = P, src_line = i }
+  end
+  local bufnr, win = open_buf(lines, cur_row, 0)
+  vim.wo[win].wrap = long and true or false
+  -- zb puts the cursor at the BOTTOM of the window — the position the old pin
+  -- failed hardest to hold, and where a recentre is most visible.
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("normal! zb")
+  end)
+  vim.api.nvim_win_set_cursor(win, { cur_row, 0 })
+  return bufnr, win, by_row
+end
+
+--- Screen row of the cursor in *win*.
+local function screen_row(win)
+  return vim.api.nvim_win_call(win, vim.fn.winline)
+end
+
+--- First displayed buffer line of *win*.
+local function topline(win)
+  return vim.api.nvim_win_call(win, function()
+    return vim.fn.winsaveview().topline
+  end)
+end
+
+T["viewport: wrapped lines — nothing moved, the view does not shift"] = function()
+  with_tall_ui(function()
+    local bufnr, win, by_row = open_tall(60, 40, true)
+    local restore_draw = install_draw(by_row)
+    local ok, err = pcall(function()
+      with_follow(true, function()
+        set_state(bufnr, shifted_map(60, 0))
+        local before_row, before_top = screen_row(win), topline(win)
+
+        local snap = cursor.save(bufnr)
+        cursor.restore(bufnr, snap) -- same state ⇒ the task did not move
+
+        eq(screen_row(win), before_row, "screen row unchanged")
+        eq(topline(win), before_top, "topline unchanged — no gratuitous scroll")
+        eq(vim.api.nvim_win_get_cursor(win)[1], 40, "cursor still on its row")
+      end)
+    end)
+    restore_draw()
+    cleanup(bufnr, win)
+    if not ok then
+      error(err)
+    end
+  end)
+end
+
+T["viewport: wrapped lines — task moved, its screen row is held"] = function()
+  with_tall_ui(function()
+    local bufnr, win, by_row = open_tall(60, 40, true)
+    local restore_draw = install_draw(by_row)
+    local ok, err = pcall(function()
+      with_follow(true, function()
+        set_state(bufnr, shifted_map(60, 0))
+        local before = screen_row(win)
+
+        local snap = cursor.save(bufnr)
+        -- Every task now renders two rows lower, so the followed task
+        -- (src_line 40) resolves to 0-indexed row 41 ⇒ 1-indexed 42.
+        set_state(bufnr, shifted_map(60, 2))
+        cursor.restore(bufnr, snap)
+
+        eq(vim.api.nvim_win_get_cursor(win)[1], 42, "cursor followed the task to its new row")
+        eq(screen_row(win), before, "screen row held across the move")
+      end)
+    end)
+    restore_draw()
+    cleanup(bufnr, win)
+    if not ok then
+      error(err)
+    end
+  end)
+end
+
+T["viewport: a closed fold between the top of the window and the cursor"] = function()
+  with_tall_ui(function()
+    local bufnr, win, by_row = open_tall(60, 50, false)
+    local restore_draw = install_draw(by_row)
+    local ok, err = pcall(function()
+      with_follow(true, function()
+        set_state(bufnr, shifted_map(60, 0))
+        -- Collapse 8 buffer lines just above the cursor into one screen row.
+        vim.api.nvim_win_call(win, function()
+          vim.wo.foldmethod = "manual"
+          vim.cmd("normal! zE")
+          vim.cmd("42,49fold")
+          vim.api.nvim_win_set_cursor(win, { 50, 0 })
+          vim.cmd("normal! zb")
+          vim.api.nvim_win_set_cursor(win, { 50, 0 })
+        end)
+        local before = screen_row(win)
+
+        local snap = cursor.save(bufnr)
+        cursor.restore(bufnr, snap)
+
+        eq(screen_row(win), before, "screen row held across the fold")
+      end)
+    end)
+    restore_draw()
+    cleanup(bufnr, win)
+    if not ok then
+      error(err)
+    end
+  end)
+end
+
 return T

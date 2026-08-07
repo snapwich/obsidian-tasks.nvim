@@ -80,11 +80,13 @@ end
 
 --- Snapshot the cursor of every window showing *bufnr*.
 ---
---- Result: { [winid] = { row, col, winline, leftcol, id, group_name, neighbor_id } }
+--- Result: { [winid] = { row, col, winline, leftcol, view, id, group_name, neighbor_id } }
 ---   row         1-indexed cursor row at save time
 ---   col         0-indexed cursor column
 ---   winline     screen row of the cursor inside the window (1-indexed)
 ---   leftcol     first visible column (horizontal scroll)
+---   view        full winsaveview() table, restored verbatim when the task did
+---               not move so the screen cannot shift
 ---   id          { src_path, src_line } | nil — nil when the cursor was not on
 ---               a rendered task row (prose, fence, freshly typed text)
 ---   group_name  string|nil — group hint used to break ranking ties
@@ -117,12 +119,17 @@ function M.save(bufnr)
       local entry = { row = pos[1], col = pos[2] or 0, leftcol = 0 }
 
       -- winline() and winsaveview() report the CURRENT window, so run them
-      -- inside the saved window.
+      -- inside the saved window.  The FULL view is kept, not just leftcol: when
+      -- the task does not move, restoring the view verbatim is the only way to
+      -- guarantee the screen does not shift at all.
       pcall(vim.api.nvim_win_call, w, function()
         entry.winline = vim.fn.winline()
         local view = vim.fn.winsaveview()
-        if type(view) == "table" and type(view.leftcol) == "number" then
-          entry.leftcol = view.leftcol
+        if type(view) == "table" then
+          entry.view = view
+          if type(view.leftcol) == "number" then
+            entry.leftcol = view.leftcol
+          end
         end
       end)
 
@@ -251,8 +258,23 @@ end
 
 --- Follow restore: put the cursor on *row* and hold the task at its old screen
 --- row.  winrestview needs the window to be current, hence nvim_win_call.
---- Neovim clamps topline near the ends of the buffer, so no extra guard is
---- needed; scrolloff is resolved by Neovim afterwards (only topline shifts).
+---
+--- The screen row is reached by MEASUREMENT, not arithmetic.  `topline` counts
+--- BUFFER lines while winline() counts SCREEN rows, and the two differ whenever
+--- something between the top of the window and the cursor occupies a different
+--- number of screen rows than buffer lines:
+---   • 'wrap' is on and a long rendered task line spans several screen rows;
+---   • a closed fold collapses many buffer lines into one screen row.
+--- Computing `topline = row - (winline - 1)` therefore missed the target — with
+--- wrapped lines it overshot upward, which moved the task toward the TOP of the
+--- window and made the view jump even when the task had not moved at all.
+---
+--- So: place the cursor, then step the view one screen line at a time with
+--- <C-e>/<C-y> and re-measure after each step, keeping a step only while it
+--- gets closer.  Without 'smoothscroll' those keys move a whole buffer line, so
+--- an exact hit is not always reachable — the loop stops at the closest
+--- attainable row instead of overshooting.  It also stops naturally at the ends
+--- of the buffer, where the wanted screen row is simply not available.
 ---
 --- @param win   integer
 --- @param bufnr integer
@@ -261,17 +283,48 @@ end
 local function follow_restore(win, bufnr, row, saved)
   local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
   local col = math.max(0, math.min(saved.col or 0, #line))
-  local winline = saved.winline
+  local target = saved.winline
+
   pcall(vim.api.nvim_win_call, win, function()
-    if type(winline) == "number" and winline >= 1 then
-      vim.fn.winrestview({
-        topline = math.max(1, row - (winline - 1)),
-        lnum = row,
-        col = col,
-        leftcol = saved.leftcol or 0,
-      })
-    else
-      vim.api.nvim_win_set_cursor(win, { row, col })
+    -- The task did not move: restore the saved view verbatim.  Any recomputed
+    -- topline risks shifting the screen for no reason, which is exactly the
+    -- jump this path must avoid.
+    if type(saved.view) == "table" and saved.row == row then
+      local view = vim.deepcopy(saved.view)
+      view.lnum, view.col = row, col
+      vim.fn.winrestview(view)
+      return
+    end
+
+    vim.api.nvim_win_set_cursor(win, { row, col })
+    if type(target) ~= "number" or target < 1 then
+      return
+    end
+    if type(saved.view) == "table" and type(saved.view.leftcol) == "number" then
+      vim.fn.winrestview({ leftcol = saved.view.leftcol })
+    end
+
+    local down = vim.api.nvim_replace_termcodes("<C-e>", true, false, true)
+    local up = vim.api.nvim_replace_termcodes("<C-y>", true, false, true)
+    local best = math.abs(vim.fn.winline() - target)
+
+    for _ = 1, 16 do
+      local delta = vim.fn.winline() - target
+      if delta == 0 then
+        break
+      end
+      -- Snapshot before the step so a step that does not help can be undone.
+      local before = vim.fn.winsaveview()
+      pcall(vim.cmd, "noautocmd normal! " .. (delta > 0 and down or up))
+      pcall(vim.api.nvim_win_set_cursor, win, { row, col })
+      local dist = math.abs(vim.fn.winline() - target)
+      if dist >= best then
+        -- No improvement (or the view refused to scroll — top/bottom of the
+        -- buffer).  Undo and settle for the closest row reached so far.
+        vim.fn.winrestview(before)
+        break
+      end
+      best = dist
     end
   end)
 end
