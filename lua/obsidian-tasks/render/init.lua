@@ -296,6 +296,17 @@ end
 -- each lookup, so object identity would never match.
 local _lazy_init_started = {}
 
+--- Clear the lazy-init guard (for testing).
+---
+--- The guard is a session-lifetime table, so a test that must exercise the
+--- FIRST-render walk has to drop it — clearing the index alone is not enough.
+--- Without this, such a test passes only when it runs before any other test
+--- renders a dashboard in the same workspace, which makes it order-dependent.
+--- @return nil
+function M._reset_lazy_init()
+  _lazy_init_started = {}
+end
+
 -- ── Opening-fence pattern ─────────────────────────────────────────────────────
 
 --- Match the opening fence of a tasks block.

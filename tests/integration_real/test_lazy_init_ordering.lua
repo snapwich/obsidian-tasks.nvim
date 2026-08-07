@@ -20,12 +20,12 @@ T["lazy init: full vault walk fires even when one file pre-indexed"] = function(
   local render = require("obsidian-tasks.render")
   local idx = require("obsidian-tasks.index")
   idx._reset()
-  -- Clear the per-workspace lazy-init guard (private to render/init.lua).
-  for k in pairs(rawget(render, "_lazy_init_started") or {}) do
-    -- render._lazy_init_started isn't exported; instead, use a module reload
-    -- workaround would be heavy.  Skip if not accessible.
-    _ = k
-  end
+  -- Clear the per-workspace lazy-init guard as well.  The guard lives for the
+  -- whole session, so idx._reset() alone is not enough: any earlier test in
+  -- this suite that renders a dashboard in the fixture workspace claims the
+  -- guard, the walk below is then skipped, and the index never grows.  That is
+  -- what made this test order-dependent before render._reset_lazy_init existed.
+  render._reset_lazy_init()
 
   -- (1) Open a non-dashboard md first; BufReadPost should index just it.
   local other = fixture_vault .. "/tasks_a.md"
