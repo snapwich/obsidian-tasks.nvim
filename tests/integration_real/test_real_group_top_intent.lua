@@ -10,7 +10,9 @@
 --
 -- Gestures (cursor on the top task of the "technical debt" group): `O`, `"xP`,
 -- `:put!`, `<C-o>O` from insert mode, `3O`, and a remapped `P` (a Lua function
--- that calls `:put!`, like yanky / substitute).
+-- that calls `:put!`, like yanky / substitute).  Motion + insert in one
+-- command (`:normal! ko`, `:normal! jO`, a macro) uses the row before the
+-- inserting key (vim.on_key), not a stale CursorMoved row.
 --
 -- Regression (header stays on its task, current behavior): `o` / `p` on the
 -- last task of the group above, `O` on a non-top task, `O` + <Esc> with an
@@ -475,6 +477,49 @@ T["O + <Esc> on the top task writes nothing and the header returns"] = function(
   local row = find_row(child, "Debt B")
   eq(header_row(child), row, "header back above Debt B")
   eq(#child.lua_get("_G._warns"), 0, "no warning: " .. vim.inspect(child.lua_get("_G._warns")))
+  child.stop()
+end
+
+-- ── Motion and insert in ONE command: no CursorMoved in between ──────────────
+--
+-- `:normal! ko` moves the cursor and inserts in one command, so CursorMoved
+-- does not fire between the motion and the insert.  The intent must still use
+-- the row the cursor was on just before the inserting key.
+
+T[":normal! ko from the top task inserts below the last task of the group above"] = function()
+  local child = spawn(SOURCE, GROUP_QUERY)
+  on_task(child, "Debt B")
+  child.type_keys(":normal! ko- [ ] Normal below A2 #task<CR>")
+  vim.loop.sleep(400)
+  local f = child.lua_get("_G._flushes")[1]
+  eq(f ~= nil and f.line:find("Debt B", 1, true) ~= nil, true, "header stayed on Debt B: " .. vim.inspect(f))
+  local s = src_lines(child)
+  eq(s[4], "- [ ] Normal below A2 #task", "written after the anchor: " .. vim.inspect(s))
+  eq(s[5], "## technical debt")
+  eq(#child.lua_get("_G._warns"), 0, "no warning: " .. vim.inspect(child.lua_get("_G._warns")))
+  assert_in_group(child, "Normal below A2", "refactoring")
+  child.stop()
+end
+
+T[":normal! jO from the last task of the group above is a group-top insert"] = function()
+  local child = spawn(SOURCE, GROUP_QUERY)
+  on_task(child, "Refactor A2")
+  child.type_keys(":normal! jO- [ ] Normal top<CR>")
+  vim.loop.sleep(400)
+  eq(header_was_above(child, "- [ ] Normal top"), true, vim.inspect(child.lua_get("_G._flushes")))
+  expect_group_top_fallback(child, "- [ ] Normal top")
+  child.stop()
+end
+
+T["a macro that moves and inserts uses the row before the inserting key"] = function()
+  local child = spawn(SOURCE, GROUP_QUERY)
+  on_task(child, "Debt B")
+  child.fn.setreg("q", "ko- [ ] Macro below A2 #task\27")
+  child.type_keys("@q")
+  vim.loop.sleep(400)
+  local s = src_lines(child)
+  eq(s[4], "- [ ] Macro below A2 #task", "written after the anchor: " .. vim.inspect(s))
+  assert_in_group(child, "Macro below A2", "refactoring")
   child.stop()
 end
 

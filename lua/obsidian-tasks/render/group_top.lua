@@ -8,7 +8,20 @@
 -- CursorMovedI tracker stores the cursor row BEFORE each change.
 -- revert.on_lines calls M.on_pure_insert for every pure line insert into a
 -- managed region; render/insert_intent.lua classifies it against the tracked
--- row:
+-- row.
+--
+-- CursorMoved alone is not enough: `:normal! ko`, `:normal! jO`, and macros
+-- move the cursor and insert in ONE command, so CursorMoved does not fire in
+-- between and the tracked row is stale.  A namespaced vim.on_key listener
+-- (one for all dashboards; it returns at once unless the current buffer has a
+-- tracker) also stores the cursor row just BEFORE each key runs.  on_key sees
+-- the keys that `:normal`, macros, and mappings execute, so the row is the one
+-- the inserting key starts from.  Limit: Lua code that moves the cursor and
+-- changes the buffer in one call, with no key in between
+-- (nvim_win_set_cursor + nvim_buf_set_lines or a `:put!` from Lua), still uses
+-- the row from before that call.
+--
+-- Classification:
 --
 --   "above"          → the cursor was on the pushed-down row (`O`, `P`,
 --                      `:put!`, `<C-o>O`, a remapped put).  Move the group
@@ -34,6 +47,27 @@ local _tracked = {} -- [bufnr] = integer
 -- Buffer-local tracker autocmd group.
 local _augroup = {} -- [bufnr] = integer
 
+-- Namespace of the one vim.on_key listener (nil until the first attach).
+local _on_key_ns = nil
+
+--- Register the vim.on_key listener once.  It stores the cursor row of the
+--- current window before every key, when the current buffer has a tracker.
+local function ensure_on_key()
+  if _on_key_ns then
+    return
+  end
+  _on_key_ns = vim.api.nvim_create_namespace("ObsidianTasksInsertIntentKey")
+  vim.on_key(function()
+    local bufnr = vim.api.nvim_get_current_buf()
+    if _augroup[bufnr] then
+      local ok, cursor = pcall(vim.api.nvim_win_get_cursor, 0)
+      if ok then
+        _tracked[bufnr] = cursor[1] - 1
+      end
+    end
+  end, _on_key_ns)
+end
+
 --- Store the cursor row of a window that shows *bufnr* (the current window
 --- first).  No-op when no window shows it.
 ---
@@ -57,6 +91,7 @@ end
 ---
 --- @param bufnr integer
 function M.attach(bufnr)
+  ensure_on_key()
   if not _augroup[bufnr] then
     local group = vim.api.nvim_create_augroup("ObsidianTasksInsertIntent_" .. bufnr, { clear = true })
     _augroup[bufnr] = group

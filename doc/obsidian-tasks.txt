@@ -369,6 +369,14 @@ The same rule applies to `:put!`, `<C-o>O`, counts (`3O`), and plugins
 that remap put. If you leave insert mode on an empty line, the group
 header goes back to its task. The plugin writes nothing.
 
+The cursor row is read before each key, also for keys that `:normal`, a
+macro, or a mapping executes. Thus `:normal! ko` on the first task of a
+group adds the line at the end of the group above, and `:normal! jO` on
+the last task of a group adds it to the group-top slot below. Limit: Lua
+code that moves the cursor and changes the buffer in one call, with no
+key between (for example `nvim_win_set_cursor()` followed by
+`nvim_buf_set_lines()`), uses the cursor row from before that call.
+
                                              *obsidian-tasks-group-top-target*
 Where a group-top task goes ~
 
