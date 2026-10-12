@@ -66,7 +66,7 @@ Run locally: `make test` (clones mini.nvim to `.deps/` on first run).
 
 ## Decisions and domain language
 
-- `CONTEXT.md` — glossary. Use its terms in code comments, tests, and docs.
+- `GLOSSARY.md` — glossary. Use its terms in code comments, tests, and docs.
 - `docs/adr/` — why the structure is the way it is (dashboard save via
   `BufWriteCmd`, disk-authoritative source writes, the strict `# nvim:`
   comment namespace, …). Read the relevant ADR before you change one of these
