@@ -30,6 +30,25 @@
 
 local M = {}
 
+-- One-shot follow override: [bufnr] = { src_path, src_line }.  Set by
+-- M.follow_next, consumed by the next M.save of that buffer.
+local _follow_next = {}
+
+--- Make the NEXT save of *bufnr* follow the task *id* instead of the row under
+--- the cursor.
+---
+--- A flush that writes a new task from a freshly typed row (the group-top write
+--- path, plan D9) calls this: the typed row has no identity, so without it the
+--- rerender would put the cursor on the neighbor task.  The sort can put the
+--- new task anywhere in its group, so the follow goes by identity.  The
+--- override is consumed by one save.
+---
+--- @param bufnr integer
+--- @param id    table  { src_path, src_line } of the task to follow
+function M.follow_next(bufnr, id)
+  _follow_next[bufnr] = id
+end
+
 --- Read the follow_cursor_on_rerender gate.
 ---
 --- Same runtime pattern as linger_on_filter_exit / dim_completed_tasks in
@@ -103,6 +122,8 @@ function M.save(bufnr)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return snapshot
   end
+  local follow_id = _follow_next[bufnr]
+  _follow_next[bufnr] = nil
 
   local ok_draw, draw = pcall(require, "obsidian-tasks.render.draw")
   local state = buffer_state(bufnr)
@@ -168,6 +189,13 @@ function M.save(bufnr)
             break
           end
         end
+      end
+
+      -- A one-shot override (M.follow_next) names the task to follow instead.
+      if follow_id then
+        entry.id = { src_path = follow_id.src_path, src_line = follow_id.src_line }
+        entry.group_name = nil
+        entry.neighbor_id = nil
       end
 
       snapshot[w] = entry

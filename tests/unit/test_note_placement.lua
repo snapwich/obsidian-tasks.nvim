@@ -361,4 +361,33 @@ T["placement: property — re-indexed task heading equals the target"] = functio
   eq(checked > 500, true)
 end
 
+-- ── end of file (plan D3: tags / priority / status, filename, ungrouped) ─────
+
+T["append: empty file → the task alone"] = function()
+  local r = placement.append({}, { NEW })
+  eq(r.row, 0)
+  eq(r.lines_to_insert, { NEW })
+  eq(r.created_heading, false)
+end
+
+T["append: last line is a list item → directly after it"] = function()
+  local lines = { "# Day", "", "- [ ] a" }
+  local r = placement.append(lines, { NEW })
+  eq(apply(lines, r), { "# Day", "", "- [ ] a", NEW })
+end
+
+T["append: last line is prose or a heading → one blank between"] = function()
+  local lines = { "# Day", "text" }
+  local r = placement.append(lines, { NEW })
+  eq(apply(lines, r), { "# Day", "text", "", NEW })
+  local lines2 = { "# Day" }
+  eq(apply(lines2, placement.append(lines2, { NEW })), { "# Day", "", NEW })
+end
+
+T["append: last line is blank → no extra blank"] = function()
+  local lines = { "# Day", "" }
+  local r = placement.append(lines, { NEW })
+  eq(apply(lines, r), { "# Day", "", NEW })
+end
+
 return T

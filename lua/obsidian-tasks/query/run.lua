@@ -337,7 +337,9 @@ function M.run(ast, index, workspace_root)
     end)
   end
 
-  -- 6. Apply limit (total cap across all groups).
+  -- 6. Apply limit (total cap across all groups).  Each group keeps its
+  --    per-key `segments` (group.resolve_detailed): the group-top write path
+  --    reads the levels from them, never from a " / " split of the name.
   local groups = {}
   local total = 0
 
@@ -354,13 +356,13 @@ function M.run(ast, index, workspace_root)
         total = total + 1
       end
       remaining = remaining - #slice
-      groups[#groups + 1] = { name = name, tasks = slice }
+      groups[#groups + 1] = { name = name, tasks = slice, segments = g.segments }
     end
   else
     for _, name in ipairs(group_names_ordered) do
       local g = group_map[name]
       total = total + #g.tasks
-      groups[#groups + 1] = { name = name, tasks = g.tasks }
+      groups[#groups + 1] = { name = name, tasks = g.tasks, segments = g.segments }
     end
   end
 

@@ -16,6 +16,10 @@
 --     the first heading: after its last list item, else directly before the
 --     first heading.  No headings → end of file.
 --
+-- M.append is the end-of-file rule for targets with no heading level (tags /
+-- priority / status groups, a filename group, an ungrouped or zero-result
+-- dashboard): directly after a last list item, else after one blank line.
+--
 -- PURE: works on the note's lines (readfile form, no trailing-newline element),
 -- no IO.  The caller writes the result as one count=0 apply_source_edit.
 
@@ -146,6 +150,26 @@ function M.place(lines, heading, level, new_lines)
   local before = non_blank_at(lines, n - 1) and { "" } or {}
   local heading_line = string.rep("#", level or 2) .. " " .. heading
   return { row = n, lines_to_insert = concat(before, { heading_line }, new_lines), created_heading = true }
+end
+
+--- True when *line* is a list item (bullet or ordered), at any indent.
+local function is_list_item(line)
+  return line:match("^%s*[-*+]%s") ~= nil or line:match("^%s*%d+[.)]%s") ~= nil
+end
+
+--- Compute an end-of-file placement of *new_lines* in a note.
+---
+--- The task joins a list that ends the file; after prose or a heading it gets
+--- one blank line between.  A blank last line (or an empty file) needs none.
+---
+--- @param lines     string[]  the note's lines
+--- @param new_lines string[]  the task line(s) to write, in order
+--- @return { row: integer, lines_to_insert: string[], created_heading: boolean }
+function M.append(lines, new_lines)
+  local n = #lines
+  local last = lines[n]
+  local before = (last ~= nil and not list_block.is_blank(last) and not is_list_item(last)) and { "" } or {}
+  return { row = n, lines_to_insert = concat(before, new_lines), created_heading = false }
 end
 
 return M

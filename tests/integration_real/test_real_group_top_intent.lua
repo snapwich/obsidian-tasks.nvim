@@ -2,10 +2,11 @@
 -- Real-input coverage for insert intent from cursor provenance (plan D2,
 -- ADR 0004): a line inserted ABOVE the first task of a group (the group-top
 -- slot) moves the group header up to the new line, and the insert is flagged
--- group-top for process_inserts.  Until the daily-note write lands (plan step
--- 4), a group-top insert takes the no-anchor fallback: the typed line is kept
--- below the dashboard as note content, the source note is not written, and a
--- warning is shown.
+-- group-top for process_inserts.  These children have no daily-note resolver
+-- (no obsidian.nvim, no `daily_note` option), so a group-top insert takes the
+-- no-anchor fallback: the typed line is kept below the dashboard as note
+-- content, the source note is not written, and a warning is shown.  The write
+-- to the daily note is covered by test_real_group_top_write.lua.
 --
 -- Gestures (cursor on the top task of the "technical debt" group): `O`, `"xP`,
 -- `:put!`, `<C-o>O` from insert mode, `3O`, and a remapped `P` (a Lua function
@@ -226,9 +227,9 @@ local function warned(child, needle)
   return false
 end
 
---- The group-top fallback outcome for *text* (step 3, before the daily-note
---- write): source untouched, the line kept *n* times as note content below the
---- dashboard, and the no-anchor warning shown.
+--- The group-top fallback outcome for *text* (no daily-note resolver): source
+--- untouched, the line kept *n* times as note content below the dashboard, and
+--- the no-anchor warning shown.
 local function expect_group_top_fallback(child, text, n)
   eq(src_lines(child), SOURCE, "a group-top insert must not write the source note")
   eq(count(note_rows(child), text), n or 1, "typed line kept as note content: " .. vim.inspect(dash_lines(child)))

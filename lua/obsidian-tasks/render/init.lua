@@ -180,11 +180,27 @@ end
 --       render_range      = { first, last } | nil,  -- 0-indexed inserted task lines (stale after edits)
 --       extmark_ids       = { eid, ... },            -- task extmark IDs (draw NS)
 --       line_map          = { [lnum] = {src_path, src_line, src_hash, rendered_text, group_name, group_index, linger?, dim?} },
+--       group_by, sort_by = the block's directives,
+--       group_segments    = { [group_name] = { seg1, seg2, … } },
+--       filters           = the query's filter nodes,
+--       tree              = boolean (`show tree`),
 --     },
 --     ...
 --   }
 --
 M._buffer_state = {}
+
+--- Group name → per-key segment list for one query result (empty when the
+--- block failed to run).  See query/run.lua step 6.
+--- @param result table|nil  query_run.run result
+--- @return table<string, string[]>
+local function group_segments_of(result)
+  local out = {}
+  for _, g in ipairs((result and result.groups) or {}) do
+    out[g.name] = g.segments
+  end
+  return out
+end
 
 -- ── Linger state ─────────────────────────────────────────────────────────────
 -- _pending_lingers[bufnr]:  recently-mutated tasks awaiting linger promotion
@@ -781,6 +797,13 @@ function M.render_buffer(bufnr, workspace)
           line_map = line_map,
           group_by = (pb.ast and pb.ast.group_by) or {},
           sort_by = (pb.ast and pb.ast.sort_by) or {},
+          -- Group-top write path (plan D3/D6, render/group_top_write.lua):
+          -- group name → its per-key segments (a heading can contain " / ", so
+          -- the joined name cannot be split back), the query's filters (the
+          -- "this query hides it" check), and the `show tree` flag.
+          group_segments = group_segments_of(pb.result),
+          filters = (pb.ast and pb.ast.filters) or {},
+          tree = (pb.ast and pb.ast.tree) or false,
           -- Phase 4: per-subtree fold ranges (0-indexed buffer rows) for fold
           -- state capture/restore across re-render.  Empty for flat blocks.
           subtree_folds = clean_subtree_folds,
@@ -873,6 +896,86 @@ function M.refresh_buffer(bufnr, workspace)
   -- render_buffer does its own internal clear; an explicit clear here would
   -- wipe pre_clear_state needed for linger promotion.
   M.render_buffer(bufnr, workspace)
+end
+
+--- Capture the CLOSED subtree folds of *bufnr*, keyed by their matched root's
+--- "src_path:src_line" (see rerender_buffer step 1b for why the LIVE root row is
+--- probed).  Must run BEFORE the managed extmarks are cleared.  Also used by
+--- revert.do_revert, so the canonical rerender after an insert keeps the
+--- subtrees the user collapsed.
+---
+--- @param bufnr integer
+--- @return table<string, true>
+function M._capture_closed_subtrees(bufnr)
+  local folds_mod = require("obsidian-tasks.render.folds")
+  local closed_subtree_roots = {}
+  local old_buf_state = M._buffer_state[bufnr]
+  if old_buf_state then
+    local managed_mod_1b = require("obsidian-tasks.render.managed")
+    for _, block_state in ipairs(old_buf_state) do
+      for _, sf in ipairs(block_state.subtree_folds or {}) do
+        local meta = block_state.line_map and block_state.line_map[sf[1]]
+        if meta and meta.src_path and meta.src_line then
+          -- Live 0-indexed row of the root task (auto-tracked by Neovim),
+          -- falling back to the stale sf[1] when no live extmark is found
+          -- (e.g. unit tests with a mock draw module / no real extmarks).
+          --
+          -- D2: a matched root can render multiple times (LIT fold-owner in the
+          -- groups it matches; DIM breadcrumb copies where only a relative
+          -- matched).  The children fold is owned by the LIT instance, so resolve
+          -- to the fold-owning (fold_group ~= 0) copy nearest this fold's prior
+          -- root row sf[1] — NOT just any (src_path, src_line) match, which could
+          -- land on a dim breadcrumb whose row+1 is not the fold's first child.
+          local live_root_row = managed_mod_1b.live_fold_root_row_for_source(
+            bufnr,
+            meta.src_path,
+            meta.src_line - 1,
+            sf[1]
+          ) or sf[1]
+          -- Subtree folds are CHILDREN-ONLY ([root+1..last]); the root row itself
+          -- is never folded.  Probe the first child row (live_root_row + 1) to read
+          -- whether the user collapsed this subtree.
+          local state = folds_mod.capture_fold_state(bufnr, live_root_row + 1)
+          if state == "closed" then
+            closed_subtree_roots[meta.src_path .. ":" .. tostring(meta.src_line)] = true
+          end
+        end
+      end
+    end
+  end
+
+  return closed_subtree_roots
+end
+
+--- Re-close the subtree folds whose root key is in *closed_subtree_roots*
+--- (from M._capture_closed_subtrees) after a render rebuilt every fold open.
+---
+--- @param bufnr                integer
+--- @param closed_subtree_roots table<string, true>
+function M._reclose_subtrees(bufnr, closed_subtree_roots)
+  local folds_mod = require("obsidian-tasks.render.folds")
+  if next(closed_subtree_roots) ~= nil then
+    local new_buf_state = M._buffer_state[bufnr]
+    if new_buf_state then
+      for _, block_state in ipairs(new_buf_state) do
+        for _, sf in ipairs(block_state.subtree_folds or {}) do
+          local root_row = sf[1]
+          local meta = block_state.line_map and block_state.line_map[root_row]
+          if meta and meta.src_path and meta.src_line then
+            local key = meta.src_path .. ":" .. tostring(meta.src_line)
+            if closed_subtree_roots[key] then
+              -- Re-close the CHILDREN-ONLY range ([root+1..last]); skip subtrees
+              -- too small to fold (child_fold_range returns nil).
+              local s1, e1 = folds_mod.child_fold_range(sf[1], sf[2])
+              if s1 then
+                folds_mod.close_fold_range(bufnr, s1, e1)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
 end
 
 --- Re-render a buffer while preserving block fold states.
@@ -1006,40 +1109,7 @@ function M.rerender_buffer(bufnr, workspace)
   -- CURRENT rendered row from its stable (src_path, src_line) via the live
   -- per-task extmark — mirroring how the fence capture above uses managed
   -- extmark positions.
-  local closed_subtree_roots = {}
-  if old_buf_state then
-    local managed_mod_1b = require("obsidian-tasks.render.managed")
-    for _, block_state in ipairs(old_buf_state) do
-      for _, sf in ipairs(block_state.subtree_folds or {}) do
-        local meta = block_state.line_map and block_state.line_map[sf[1]]
-        if meta and meta.src_path and meta.src_line then
-          -- Live 0-indexed row of the root task (auto-tracked by Neovim),
-          -- falling back to the stale sf[1] when no live extmark is found
-          -- (e.g. unit tests with a mock draw module / no real extmarks).
-          --
-          -- D2: a matched root can render multiple times (LIT fold-owner in the
-          -- groups it matches; DIM breadcrumb copies where only a relative
-          -- matched).  The children fold is owned by the LIT instance, so resolve
-          -- to the fold-owning (fold_group ~= 0) copy nearest this fold's prior
-          -- root row sf[1] — NOT just any (src_path, src_line) match, which could
-          -- land on a dim breadcrumb whose row+1 is not the fold's first child.
-          local live_root_row = managed_mod_1b.live_fold_root_row_for_source(
-            bufnr,
-            meta.src_path,
-            meta.src_line - 1,
-            sf[1]
-          ) or sf[1]
-          -- Subtree folds are CHILDREN-ONLY ([root+1..last]); the root row itself
-          -- is never folded.  Probe the first child row (live_root_row + 1) to read
-          -- whether the user collapsed this subtree.
-          local state = folds_mod.capture_fold_state(bufnr, live_root_row + 1)
-          if state == "closed" then
-            closed_subtree_roots[meta.src_path .. ":" .. tostring(meta.src_line)] = true
-          end
-        end
-      end
-    end
-  end
+  local closed_subtree_roots = M._capture_closed_subtrees(bufnr)
 
   -- ── 2. Re-render ───────────────────────────────────────────────────────────
   -- render_buffer does its own internal clear_buffer and applies folds for ALL
@@ -1051,28 +1121,7 @@ function M.rerender_buffer(bufnr, workspace)
   -- ── 2b. Re-close preserved subtree folds ───────────────────────────────────
   -- render_buffer recreated every subtree fold OPEN.  Re-close the ones the user
   -- had collapsed before, matched by their root's (src_path, src_line).
-  if next(closed_subtree_roots) ~= nil then
-    local new_buf_state = M._buffer_state[bufnr]
-    if new_buf_state then
-      for _, block_state in ipairs(new_buf_state) do
-        for _, sf in ipairs(block_state.subtree_folds or {}) do
-          local root_row = sf[1]
-          local meta = block_state.line_map and block_state.line_map[root_row]
-          if meta and meta.src_path and meta.src_line then
-            local key = meta.src_path .. ":" .. tostring(meta.src_line)
-            if closed_subtree_roots[key] then
-              -- Re-close the CHILDREN-ONLY range ([root+1..last]); skip subtrees
-              -- too small to fold (child_fold_range returns nil).
-              local s1, e1 = folds_mod.child_fold_range(sf[1], sf[2])
-              if s1 then
-                folds_mod.close_fold_range(bufnr, s1, e1)
-              end
-            end
-          end
-        end
-      end
-    end
-  end
+  M._reclose_subtrees(bufnr, closed_subtree_roots)
 
   -- ── 3. Restore "open" fold states when default_folded=true ─────────────────
   -- When default_folded=false, render_buffer leaves folds open — nothing to do.

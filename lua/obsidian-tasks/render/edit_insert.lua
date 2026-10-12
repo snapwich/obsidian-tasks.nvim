@@ -217,6 +217,159 @@ local function group_insert_blocks(insert_rows, group_top_rows)
   return blocks
 end
 
+--- The block state (render._buffer_state entry) whose query block holds
+--- 0-indexed buffer *row*: the block with the nearest opening fence above it.
+--- Fence rows come from the LIVE managed-NS fence extmarks, so typed lines
+--- above a block do not misplace the lookup.
+---
+--- @param bufnr integer
+--- @param row   integer
+--- @return table|nil
+local function block_for_row(bufnr, row)
+  local bs = require("obsidian-tasks.render.init")._buffer_state[bufnr]
+  if not bs then
+    return nil
+  end
+  local ns = require("obsidian-tasks.render.managed").namespace()
+  local best, best_row = nil, -1
+  for _, blk in ipairs(bs) do
+    local frow = blk.fence_first
+    if blk.managed_fence_id then
+      local ok, pos = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, ns, blk.managed_fence_id, {})
+      if ok and pos and pos[1] then
+        frow = pos[1]
+      end
+    end
+    if frow and frow < row and frow > best_row then
+      best, best_row = blk, frow
+    end
+  end
+  return best
+end
+
+--- The group-top write context for a no-anchor *block*, or nil when the block
+--- keeps the below-fence fallback (plan D3):
+---   • a group-top block (flagged by the moved header) → its group is the
+---     group of task B, the first managed row below the slot;
+---   • a block in an ungrouped or zero-result dashboard → the daily note, end
+---     of file.
+---
+--- @return table|nil  ctx for group_top_write.write
+local function group_top_context(bufnr, block, meta_by_row, group_top_rows)
+  local first_row = block[1].row
+  local blk = block_for_row(bufnr, first_row)
+  if group_top_rows[first_row] then
+    local last_row = block[#block].row
+    local b_row, b_meta = nil, nil
+    for r, m in pairs(meta_by_row) do
+      if r > last_row and not m.read_only and (b_row == nil or r < b_row) then
+        b_row, b_meta = r, m
+      end
+    end
+    return { blk = blk, group_name = b_meta and b_meta.group_name or "", b_meta = b_meta }
+  end
+  if blk and (#(blk.group_by or {}) == 0 or next(blk.line_map or {}) == nil) then
+    return { blk = blk, ungrouped = true }
+  end
+  return nil
+end
+
+--- Remove the typed rows of *block* from the dashboard (on_lines suppressed).
+local function drop_block_rows(bufnr, block)
+  local revert = require("obsidian-tasks.render.revert")
+  revert.suppress(bufnr)
+  for bi = #block, 1, -1 do
+    pcall(vim.api.nvim_buf_set_lines, bufnr, block[bi].row, block[bi].row + 1, false, {})
+  end
+  revert.unsuppress(bufnr)
+end
+
+--- Q4 no-anchor fallback: there is no note to write the typed block to.  Rather
+--- than LOSE the typed content, keep it as plain NOTE content right where it
+--- was typed — just below the query block's closing fence, OUTSIDE the
+--- rendered region — so it survives and the user can relocate it.  The
+--- dashboard buffer IS the note file, so we keep the buffer AUTHORITATIVE:
+--- rebuild it from its own source (rendered rows stripped), splice the typed
+--- line(s) back at their position, reset the buffer, and re-render.  A later
+--- :w then persists the line (no buffer⇄disk divergence).
+---
+--- Falls back to the original revert+notify when the buffer has no backing
+--- file (a scratch dashboard can't persist note content).
+---
+--- @param bufnr    integer
+--- @param block    table[]     { {row, new_text}, … }
+--- @param warn_msg string|nil  warning (nil = the default no-anchor one)
+local function keep_below_fence(bufnr, block, warn_msg)
+  local revert = require("obsidian-tasks.render.revert")
+  local managed_mod = require("obsidian-tasks.render.managed")
+  local log = require("obsidian-tasks.log")
+  local render_init = require("obsidian-tasks.render.init")
+  local first_row = block[1].row
+
+  local note_path = vim.api.nvim_buf_get_name(bufnr)
+  if note_path == nil or note_path == "" then
+    log.warn("no anchor above insert — insert reverted")
+    drop_block_rows(bufnr, block)
+    return
+  end
+  local save = require("obsidian-tasks.render.save")
+  local hygiene = require("obsidian-tasks.render.hygiene")
+
+  -- Rows to drop when reconstructing the note source: every rendered
+  -- (managed) row PLUS the typed rows themselves (on_lines may have absorbed
+  -- them into the adjacent managed region, so strip them explicitly to avoid
+  -- duplicating them when we re-splice).
+  local exclude = {}
+  for _, r in ipairs(save.compute_managed_ranges(bufnr)) do
+    for row = r[1], r[2] do
+      exclude[row] = true
+    end
+  end
+  for bi = 1, #block do
+    exclude[block[bi].row] = true
+  end
+
+  -- Split the surviving note lines around the typed block's position so the
+  -- typed line(s) land exactly where the user put them (below the fence).
+  local all = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local before, after, past = {}, {}, false
+  for row = 0, #all - 1 do
+    if row >= first_row then
+      past = true
+    end
+    if not exclude[row] then
+      if past then
+        after[#after + 1] = all[row + 1]
+      else
+        before[#before + 1] = all[row + 1]
+      end
+    end
+  end
+  local new_source = {}
+  vim.list_extend(new_source, before)
+  for bi = 1, #block do
+    new_source[#new_source + 1] = block[bi].new_text
+  end
+  vim.list_extend(new_source, after)
+
+  revert.with_suppressed(bufnr, function()
+    hygiene.with_clean_buffer(bufnr, function()
+      managed_mod.clear_buffer(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_source)
+    end)
+  end)
+  -- rerender_buffer (not render_buffer): D1 — preserve any user-closed
+  -- subtree fold + cursor across this no-anchor reconstruction re-render.
+  render_init.rerender_buffer(bufnr, nil)
+  -- The typed line is unsaved note content: keep the buffer modified + dirty
+  -- so the user is prompted to save and cross-buffer re-renders don't clear it.
+  hygiene.mark_dirty(bufnr)
+  pcall(function()
+    vim.bo[bufnr].modified = true
+  end)
+  log.warn(warn_msg or "no task to anchor to — kept below the dashboard; move it where it belongs")
+end
+
 --- Process INSERT rows (Q4 + Q11) for one flush tick.
 ---
 --- For each INSERT row (non-meta, non-blank row within a managed region):
@@ -253,9 +406,10 @@ end
 --- group-top slot (below a header that on_lines moved up; see
 --- render/group_top.lua).  The flag is carried, not re-derived from rows_above:
 --- the row above a group-top block is the last task of the PREVIOUS group, which
---- is not its anchor.  For now a group-top block has no anchor, so it takes the
---- no-anchor fallback (kept below the dashboard + warn); plan step 4 writes it to
---- the daily note instead.
+--- is not its anchor.  A group-top block has no anchor: render/group_top_write.lua
+--- writes it to the daily note (or a filename group's file), and so does a
+--- no-anchor block in an ungrouped or zero-result dashboard (plan D3).  Every
+--- other no-anchor block keeps the below-fence fallback.
 ---
 --- @param bufnr          integer  dashboard buffer
 --- @param insert_rows    table[]  { {row, new_text}, … } ascending by row
@@ -265,10 +419,8 @@ end
 --- @return table  { had_successful_insert, pushes_in_flush, partial_failure }
 function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row, group_top_rows)
   local revert = require("obsidian-tasks.render.revert")
-  local managed_mod = require("obsidian-tasks.render.managed")
   local cmd = require("obsidian-tasks.cmd")
   local log = require("obsidian-tasks.log")
-  local render_init = require("obsidian-tasks.render.init")
 
   local indent_of = edit_util.indent_of
   local repair_prefix = edit_util.repair_prefix
@@ -343,82 +495,27 @@ function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row, group_t
       end
       revert.unsuppress(bufnr)
     elseif not anchor_meta then
-      -- Q4 no-anchor (e.g. a zero-result dashboard): there is no managed task to
-      -- attach to.  Rather than LOSE the typed content, keep it as plain NOTE
-      -- content right where it was typed — just below the query block's closing
-      -- fence, OUTSIDE the rendered region — so it survives and the user can
-      -- relocate it.  The dashboard buffer IS the note file, so we keep the buffer
-      -- AUTHORITATIVE: rebuild it from its own source (rendered rows stripped),
-      -- splice the typed line(s) back at their position, reset the buffer, and
-      -- re-render.  A later :w then persists the line (no buffer⇄disk divergence).
-      --
-      -- Falls back to the original revert+notify when the buffer has no backing
-      -- file (a scratch dashboard can't persist note content).
-      local note_path = vim.api.nvim_buf_get_name(bufnr)
-      if note_path == nil or note_path == "" then
-        log.warn("no anchor above insert — insert reverted")
-        revert.suppress(bufnr)
-        for bi = #block, 1, -1 do
-          pcall(vim.api.nvim_buf_set_lines, bufnr, block[bi].row, block[bi].row + 1, false, {})
-        end
-        revert.unsuppress(bufnr)
+      -- No anchor.  A group-top block, or a block in an ungrouped / zero-result
+      -- dashboard, goes to the daily note (or a filename group's file) — see
+      -- render/group_top_write.lua.  Anything else, and every case the write
+      -- path cannot serve (no resolver, a folder group, …), keeps the typed
+      -- line below the fence (Q4 fallback).
+      local outcome, fallback_msg = "fallback", nil
+      local ctx = group_top_context(bufnr, block, meta_by_row, group_top_rows)
+      if ctx then
+        outcome, fallback_msg = require("obsidian-tasks.render.group_top_write").write(bufnr, block, ctx)
+      end
+      if outcome == "written" then
+        had_successful_insert = true
+        -- One apply_source_edit = one undo-ring entry (Q13 merge count).
+        pushes_in_flush = pushes_in_flush + 1
+      elseif outcome == "failed" then
+        -- Refused (target has unsaved changes) or the write failed: the
+        -- warning is already out; drop the typed rows so the rerender shows
+        -- the canonical dashboard (plan D8).
+        drop_block_rows(bufnr, block)
       else
-        local save = require("obsidian-tasks.render.save")
-        local hygiene = require("obsidian-tasks.render.hygiene")
-
-        -- Rows to drop when reconstructing the note source: every rendered
-        -- (managed) row PLUS the typed rows themselves (on_lines may have absorbed
-        -- them into the adjacent managed region, so strip them explicitly to avoid
-        -- duplicating them when we re-splice).
-        local exclude = {}
-        for _, r in ipairs(save.compute_managed_ranges(bufnr)) do
-          for row = r[1], r[2] do
-            exclude[row] = true
-          end
-        end
-        for bi = 1, #block do
-          exclude[block[bi].row] = true
-        end
-
-        -- Split the surviving note lines around the typed block's position so the
-        -- typed line(s) land exactly where the user put them (below the fence).
-        local all = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        local before, after, past = {}, {}, false
-        for row = 0, #all - 1 do
-          if row >= first_row then
-            past = true
-          end
-          if not exclude[row] then
-            if past then
-              after[#after + 1] = all[row + 1]
-            else
-              before[#before + 1] = all[row + 1]
-            end
-          end
-        end
-        local new_source = {}
-        vim.list_extend(new_source, before)
-        for bi = 1, #block do
-          new_source[#new_source + 1] = block[bi].new_text
-        end
-        vim.list_extend(new_source, after)
-
-        revert.with_suppressed(bufnr, function()
-          hygiene.with_clean_buffer(bufnr, function()
-            managed_mod.clear_buffer(bufnr)
-            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_source)
-          end)
-        end)
-        -- rerender_buffer (not render_buffer): D1 — preserve any user-closed
-        -- subtree fold + cursor across this no-anchor reconstruction re-render.
-        render_init.rerender_buffer(bufnr, nil)
-        -- The typed line is unsaved note content: keep the buffer modified + dirty
-        -- so the user is prompted to save and cross-buffer re-renders don't clear it.
-        hygiene.mark_dirty(bufnr)
-        pcall(function()
-          vim.bo[bufnr].modified = true
-        end)
-        log.warn("no task to anchor to — kept below the dashboard; move it where it belongs")
+        keep_below_fence(bufnr, block, fallback_msg)
       end
     elseif anchor_is_tree and #block > 1 then
       -- ── Phase 5c: tree MULTI-LINE block — two-pass reconcile + write ─────────

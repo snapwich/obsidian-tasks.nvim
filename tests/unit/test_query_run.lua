@@ -1076,6 +1076,21 @@ run_tests["workspace_root: trailing slash handled correctly"] = function()
   eq(result.groups[1].tasks[1].description, "Inside vault")
 end
 
+run_tests["groups carry their structured segments (a ' / ' in a key stays one segment)"] = function()
+  local t = pt("- [ ] a #work")
+  t.heading = "Design / Build"
+  local result = run("group by heading\ngroup by tags", make_index({ { task = t, path = "n.md" } }))
+  eq(#result.groups, 1)
+  eq(result.groups[1].name, "Design / Build / #work")
+  eq(result.groups[1].segments, { "Design / Build", "#work" })
+end
+
+run_tests["groups carry segments under a limit too"] = function()
+  local t = pt("- [ ] a")
+  local result = run("group by heading\nlimit 5", make_index({ { task = t, path = "n.md" } }))
+  eq(result.groups[1].segments, { "(No heading)" })
+end
+
 T["run"] = run_tests
 
 -- ── integration tests: fixture vault ──────────────────────────────────────

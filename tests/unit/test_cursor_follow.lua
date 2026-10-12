@@ -398,6 +398,33 @@ T["fallback: cursor not on a rendered task row — no identity, legacy clamp run
   cleanup(bufnr, win)
 end
 
+-- ── 10b. Follow a just-written task (plan D9, group-top insert) ─────────────
+-- The cursor sits on a freshly typed row (no identity).  cursor.follow_next
+-- names the task the flush just wrote, so the next save carries that identity
+-- and the restore lands on the task's rendered row.  The override is consumed
+-- by one save.
+
+T["follow_next: the next save follows the named task, then the override is gone"] = function()
+  local bufnr, win = open_buf(LINES, 2, 0)
+  local restore_draw = install_draw({}) -- the typed row is not a render line
+  set_state(bufnr, {})
+
+  cursor.follow_next(bufnr, { src_path = "/vault/daily.md", src_line = 3 })
+  local snap = cursor.save(bufnr)
+  local snap2 = cursor.save(bufnr)
+  restore_draw()
+
+  eq(snap[win].id, { src_path = "/vault/daily.md", src_line = 3 })
+  eq(snap2[win].id, nil, "consumed by the first save")
+
+  set_state(bufnr, { [5] = { src_path = "/vault/daily.md", src_line = 3 } })
+  with_follow(true, function()
+    cursor.restore(bufnr, snap)
+  end)
+  eq(vim.api.nvim_win_get_cursor(win)[1], 6)
+  cleanup(bufnr, win)
+end
+
 -- ── 11. Hidden buffer ────────────────────────────────────────────────────────
 -- cmd/init.lua refreshes other dashboards that no window shows.  win_findbuf
 -- returns nothing, so save gives an empty snapshot and restore is a no-op.

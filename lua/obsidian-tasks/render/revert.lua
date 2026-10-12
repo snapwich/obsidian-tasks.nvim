@@ -358,6 +358,17 @@ do_revert = function(bufnr)
   local cursor = require("obsidian-tasks.render.cursor")
   local cursor_save = cursor.save(bufnr)
 
+  -- Capture the subtree folds the user closed, before step 1 below clears the
+  -- managed extmarks that locate them: the canonical render rebuilds every fold
+  -- open, and an insert (a group-top write included) must not unfold the rest
+  -- of the dashboard.  Guarded: unit tests may mock the render module.
+  local render_mod = package.loaded["obsidian-tasks.render.init"]
+  local closed_subtrees = nil
+  if type(render_mod) == "table" and type(render_mod._capture_closed_subtrees) == "function" then
+    local ok_c, set = pcall(render_mod._capture_closed_subtrees, bufnr)
+    closed_subtrees = ok_c and set or nil
+  end
+
   -- Pass 1: propagate any recognized status edits to source BEFORE we wipe
   -- the managed rows.  After this pass, source files reflect any valid status
   -- changes the user typed directly on rendered rows.  Other edits do nothing
@@ -417,6 +428,9 @@ do_revert = function(bufnr)
         -- managed extmarks were cleared in step 1, draw.clear's line-removal step
         -- is a no-op and only cleans up draw-NS extmarks and state tables.
         fn(bufnr, _workspace[bufnr])
+        if closed_subtrees and type(render_mod._reclose_subtrees) == "function" then
+          pcall(render_mod._reclose_subtrees, bufnr, closed_subtrees)
+        end
       else
         local render = require("obsidian-tasks.render.init")
         render.rerender_buffer(bufnr, _workspace[bufnr])
@@ -848,6 +862,13 @@ function M.attach(bufnr, workspace, rerender_fn)
       M._cleanup(bufnr)
     end,
   })
+end
+
+--- The workspace *bufnr* was last rendered with (nil for an ad-hoc render).
+--- @param bufnr integer
+--- @return table|nil  { root, name }
+function M.workspace(bufnr)
+  return _workspace[bufnr]
 end
 
 --- Run the pending revert for *bufnr* synchronously (test seam).
