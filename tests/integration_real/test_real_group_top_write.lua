@@ -57,6 +57,8 @@ local WORK = {
 ---   resolver  boolean|nil        false → opts.daily_note = false
 ---   setup     table|nil          extra obsidian-tasks setup opts
 ---   no_trailing boolean|nil      true → the closing fence is the last line
+---   daily_rel  string|nil        the resolver's path (default DAILY_REL)
+---   dash_extra string[]|nil      lines appended to the dashboard note
 local function spawn(opts)
   local child = MiniTest.new_child_neovim()
   child.start({ "--clean", "-n", "--headless" })
@@ -122,6 +124,7 @@ local function spawn(opts)
       fence[#fence + 1] = ""
       fence[#fence + 1] = "Trailing prose."
     end
+    for _, l in ipairs(o.dash_extra or {}) do fence[#fence + 1] = l end
     extra.__no_trailing = nil
     vim.fn.writefile(fence, dash)
 
@@ -160,7 +163,8 @@ local function spawn(opts)
         query = opts.query,
         daily = opts.daily,
         resolver = opts.resolver,
-        daily_rel = DAILY_REL,
+        daily_rel = opts.daily_rel or DAILY_REL,
+        dash_extra = opts.dash_extra,
         extra = vim.tbl_extend("force", opts.setup or {}, { __no_trailing = opts.no_trailing or nil }),
       },
     }
@@ -314,7 +318,7 @@ end
 --- The fallback outcome: the typed *text* is kept as note content DIRECTLY
 --- below the closing fence of the query block (the dashboard note, managed rows
 --- stripped, is the fence, then the line, then the trailing prose).
-local function expect_kept_below_fence(child, text, query)
+local function expect_kept_below_fence(child, text, query, tail)
   local note = child.lua_get([[(function()
     local save = require("obsidian-tasks.render.save")
     local skip = {}
@@ -330,6 +334,7 @@ local function expect_kept_below_fence(child, text, query)
   local expect = { "# Dashboard", "", "```tasks" }
   vim.list_extend(expect, query)
   vim.list_extend(expect, { "```", text, "", "Trailing prose." })
+  vim.list_extend(expect, tail or {})
   eq(note, expect, "typed line kept below the fence: " .. vim.inspect(dash_lines(child)))
 end
 
@@ -836,6 +841,39 @@ T["no resolver (daily_note = false) → below-fence fallback"] = function()
   eq(file_lines(child, "projects/work.md"), WORK)
   eq(has_msg(child, "no task to anchor to", WARN), true, vim.inspect(msgs(child)))
   expect_kept_below_fence(child, "Homeless debt", { "not done", "group by heading" })
+  child.stop()
+end
+
+T["the daily note is this dashboard → fallback names the daily note"] = function()
+  local child = spawn({
+    files = { ["projects/work.md"] = WORK },
+    query = { "not done", "group by heading" },
+    daily_rel = "dashboard.md",
+  })
+  on_task(child, "Debt B")
+  child.type_keys("O", "Self debt", "<Esc>")
+  settle()
+
+  eq(file_lines(child, "projects/work.md"), WORK)
+  eq(has_msg(child, "the daily note is this dashboard", WARN), true, vim.inspect(msgs(child)))
+  expect_kept_below_fence(child, "Self debt", { "not done", "group by heading" })
+  child.stop()
+end
+
+T["a filename group whose file is this dashboard → fallback names that file"] = function()
+  local child = spawn({
+    files = { ["projects/work.md"] = { "- [ ] Work one #task" } },
+    query = { "not done", "group by filename" },
+    dash_extra = { "", "- [ ] Dash one #task" },
+  })
+  on_task(child, "Dash one")
+  child.type_keys("O", "Dash zero", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), vim.NIL, "no daily note for a filename group")
+  eq(has_msg(child, "dashboard.md is this dashboard", WARN), true, vim.inspect(msgs(child)))
+  eq(has_msg(child, "daily note"), false, "the target is not the daily note: " .. vim.inspect(msgs(child)))
+  expect_kept_below_fence(child, "Dash zero", { "not done", "group by filename" }, { "", "- [ ] Dash one #task" })
   child.stop()
 end
 

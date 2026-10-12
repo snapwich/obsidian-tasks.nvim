@@ -337,7 +337,9 @@ function M.write(bufnr, block, ctx)
   -- authoritative (rendered rows are not on disk), and apply_source_edit cannot
   -- map a source row into another dashboard's rendered buffer: keep the line.
   if path == vim.fs.normalize(vim.api.nvim_buf_get_name(bufnr)) then
-    return "fallback", "the daily note is this dashboard" .. FALLBACK_TAIL
+    -- Name the real target: a filename group's file can be this note too.
+    local what = (target.kind == "file") and shown or "the daily note"
+    return "fallback", what .. " is this dashboard" .. FALLBACK_TAIL
   end
   local loaded = cmd._loaded_source_buf(path)
   if loaded and vim.b[loaded].obsidian_tasks_dashboard then

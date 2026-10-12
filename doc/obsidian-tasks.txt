@@ -464,7 +464,8 @@ it belongs, then save:
 - A `group by` key gives no note: folder, path, or root without
   filename, or a key that is not in the table above.
 - The target note is the dashboard itself, or it is open as a dashboard
-  in a different buffer.
+  in a different buffer. The warning names the target: "the daily note
+  is this dashboard", or "<file> is this dashboard" for a filename group.
 - The plugin cannot create or read the target note.
 - The group is not in the last query result (only lingered tasks show in
   it), and the plugin cannot split the group name into its keys.
