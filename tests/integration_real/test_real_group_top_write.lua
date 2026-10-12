@@ -249,6 +249,40 @@ local function on_task(child, needle, group)
   return row
 end
 
+--- Put the cursor on the group top of "## <group>": the row that carries that
+--- group header (a group header is a virtual line attached to the first task of
+--- its group).  Use this when the task order inside the group is not fixed (the
+--- sort breaks ties by index order, which is not stable across notes), so the
+--- gesture always takes the group-top path and never an anchored insert.
+local function on_group_top(child, group)
+  local header = "## " .. group
+  local row = child.lua_get(
+    [[(function(header)
+      local ns = require("obsidian-tasks.util.extmark").NS
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(_G._b, ns, 0, -1, { details = true })) do
+        for _, chunks in ipairs(m[4].virt_lines or {}) do
+          for _, c in ipairs(chunks) do
+            if c[2] == "ObsidianTasksGroupHeader" and c[1] == header then return m[2] end
+          end
+        end
+      end
+      return -1
+    end)(...)]],
+    { header }
+  )
+  eq(row >= 0, true, header .. " must be rendered: " .. vim.inspect(dash_lines(child)))
+  eq(
+    child.lua_get("require('obsidian-tasks.render.managed').task_meta_for_row(_G._b, ...) ~= nil", { row }),
+    true,
+    "the group top of " .. header .. " must be a task row"
+  )
+  child.api.nvim_win_set_cursor(0, { row + 1, 0 })
+  vim.loop.sleep(50)
+  child.type_keys("<Ignore>")
+  vim.loop.sleep(50)
+  return row
+end
+
 local function settle()
   vim.loop.sleep(500)
 end
@@ -317,7 +351,9 @@ T["heading: section with items → after the last item of that section"] = funct
     query = { "not done", "group by heading" },
     daily = { "# 2026-10-11", "", "## technical debt", "- [ ] Old debt #task", "", "## notes", "text" },
   })
-  on_task(child, "Debt B")
+  -- 'Old debt' (daily note) and 'Debt B' (work) tie in the sort, so either can
+  -- be the first task of the group: `O` on the group top, not on 'Debt B'.
+  on_group_top(child, "technical debt")
   child.type_keys("O", "- [ ] Fresh debt", "<Esc>")
   settle()
 
