@@ -385,6 +385,12 @@ function M.flush(bufnr)
     end
   end
 
+  -- Group-top rows (plan D2): the rows below a group header that on_lines moved
+  -- up for an "above" insert.  Read from the LIVE header extmarks now, at the
+  -- same moment as insert_rows, before any write or rerender below can redraw
+  -- the headers.
+  local group_top_rows = require("obsidian-tasks.render.group_top").rows(bufnr, meta_by_row, all_regions)
+
   -- ── P7: mass-delete safety gate ───────────────────────────────────────────
   -- If 2+ managed rows were deleted in this tick, check whether every
   -- registered tasks block still has its opening and closing fences.
@@ -422,7 +428,7 @@ function M.flush(bufnr)
 
   -- ── 3b. Process INSERT rows (Q4 + Q11) — render/edit_insert.lua ────────────
   local edit_insert = require("obsidian-tasks.render.edit_insert")
-  local ins = edit_insert.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row)
+  local ins = edit_insert.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row, group_top_rows)
   local had_successful_insert = ins.had_successful_insert
   pushes_in_flush = pushes_in_flush + ins.pushes_in_flush
   partial_failure = partial_failure or ins.partial_failure

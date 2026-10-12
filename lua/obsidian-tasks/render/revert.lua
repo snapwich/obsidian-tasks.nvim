@@ -309,6 +309,12 @@ local function needs_revert(bufnr)
   if _pending_deletes[bufnr] and #_pending_deletes[bufnr] > 0 then
     return true
   end
+  -- A moved group header (plan D2) is a pending change too: `O` + <Esc> on the
+  -- top task of a group leaves an empty line under the moved header, and only
+  -- the canonical rerender puts the header back on its task.
+  if require("obsidian-tasks.render.group_top").has_moved_header(bufnr) then
+    return true
+  end
   local snap = _region_snapshot[bufnr] or {}
   local meta = _meta_snapshot[bufnr] or {}
   for _, region in ipairs(snap) do
@@ -674,6 +680,15 @@ local function on_lines(_, bufnr, _tick, first_line, last_line, new_lastline, _b
       end
     end
     _meta_snapshot[bufnr] = new_meta
+
+    -- Insert intent (plan D2, ADR 0004): a PURE line insert above the first task
+    -- of a group moves that group's header up to the new line, so the line
+    -- shows in the group-top slot and flush treats it as a group-top insert.
+    -- An extmark move only (no text change): safe mid-typing.  pcall: the
+    -- intent hook must never break the revert path.
+    if last_line == first_line then
+      pcall(require("obsidian-tasks.render.group_top").on_pure_insert, bufnr, first_line, last_line, new_lastline)
+    end
   elseif delta < 0 and last_line > first_line then
     -- ── TOUCHED DELETION ────────────────────────────────────────────────────────
     -- Record every managed row in [first_line, last_line) as a pending delete.
@@ -818,6 +833,10 @@ function M.attach(bufnr, workspace, rerender_fn)
     _rerender_fn[bufnr] = rerender_fn
   end
 
+  -- Insert-intent cursor tracker (plan D2): created once per buffer, re-seeded
+  -- at every render so it never holds a pre-render row.
+  require("obsidian-tasks.render.group_top").attach(bufnr)
+
   if _attached[bufnr] then
     return
   end
@@ -900,6 +919,7 @@ function M._cleanup(bufnr)
   _meta_snapshot[bufnr] = nil
   _pending_deletes[bufnr] = nil
   _rerender_fn[bufnr] = nil
+  require("obsidian-tasks.render.group_top").detach(bufnr)
 end
 
 --- Classify a single-row edit on a managed dashboard row.

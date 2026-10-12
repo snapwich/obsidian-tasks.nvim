@@ -372,6 +372,10 @@ function M.restore(bufnr, snapshot)
       end
     end
   end
+
+  -- The restore moved the cursor from code: re-seed the insert-intent tracker
+  -- (plan D2) so it holds the restored row even when no CursorMoved follows.
+  require("obsidian-tasks.render.group_top").seed(bufnr)
 end
 
 return M

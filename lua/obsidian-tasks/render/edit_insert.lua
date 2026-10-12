@@ -196,15 +196,18 @@ end
 --- Two inserted rows belong to the same block iff their buffer rows are adjacent
 --- (row, row+1, …) — i.e. a single InsertLeave's typed/pasted run with no managed
 --- row interleaved.  A non-contiguous gap (a managed row between two inserts)
---- starts a new block.
+--- starts a new block.  So does a change of the group-top flag: rows in a
+--- group-top slot never join a block with rows above the group header.
 ---
---- @param insert_rows table[]   { {row, new_text}, … } ascending by row
+--- @param insert_rows    table[]                 { {row, new_text}, … } ascending by row
+--- @param group_top_rows table<integer, true>    group-top rows (may be empty)
 --- @return table[]   array of blocks, each { {row, new_text}, … }
-local function group_insert_blocks(insert_rows)
+local function group_insert_blocks(insert_rows, group_top_rows)
   local blocks = {}
   local cur = nil
   for _, ir in ipairs(insert_rows) do
-    if cur and ir.row == cur[#cur].row + 1 then
+    local same_slot = cur and (group_top_rows[ir.row] == group_top_rows[cur[#cur].row])
+    if cur and same_slot and ir.row == cur[#cur].row + 1 then
       cur[#cur + 1] = ir
     else
       cur = { ir }
@@ -246,12 +249,21 @@ end
 --- against the dashboard and cascades the reshape to its descendants.  A 1-line
 --- block is the degenerate single-line case and stays byte-identical to P5b.
 ---
---- @param bufnr       integer  dashboard buffer
---- @param insert_rows table[]  { {row, new_text}, … } ascending by row
---- @param delete_rows table[]  { {row, meta}, … } same-tick deletes (overlap check)
---- @param meta_by_row table    row→meta snapshot (revert.meta_snapshot)
+--- Group-top (plan D2): *group_top_rows* flags the rows typed or pasted in a
+--- group-top slot (below a header that on_lines moved up; see
+--- render/group_top.lua).  The flag is carried, not re-derived from rows_above:
+--- the row above a group-top block is the last task of the PREVIOUS group, which
+--- is not its anchor.  For now a group-top block has no anchor, so it takes the
+--- no-anchor fallback (kept below the dashboard + warn); plan step 4 writes it to
+--- the daily note instead.
+---
+--- @param bufnr          integer  dashboard buffer
+--- @param insert_rows    table[]  { {row, new_text}, … } ascending by row
+--- @param delete_rows    table[]  { {row, meta}, … } same-tick deletes (overlap check)
+--- @param meta_by_row    table    row→meta snapshot (revert.meta_snapshot)
+--- @param group_top_rows table<integer, true>|nil  group-top rows (group_top.rows)
 --- @return table  { had_successful_insert, pushes_in_flush, partial_failure }
-function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row)
+function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row, group_top_rows)
   local revert = require("obsidian-tasks.render.revert")
   local managed_mod = require("obsidian-tasks.render.managed")
   local cmd = require("obsidian-tasks.cmd")
@@ -273,12 +285,18 @@ function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row)
   -- pasted subtree.  A 1-line block is the degenerate single-line case and stays
   -- byte-identical to P5b; the FLAT path runs per-line (each line anchors to the
   -- same managed row above the block, matching prior per-line behavior).
-  for _, block in ipairs(group_insert_blocks(insert_rows)) do
+  group_top_rows = group_top_rows or {}
+  for _, block in ipairs(group_insert_blocks(insert_rows, group_top_rows)) do
     local first_row = block[1].row
 
     -- Q4: collect EVERY managed row above the block (top→anchor order, read-only
     -- BLANK rows excluded).  rows_above[#rows_above] is the immediate anchor.
-    local rows_above = collect_rows_above(meta_by_row, first_row)
+    -- A group-top block has NO anchor: the managed rows above it belong to the
+    -- previous group (plan D1/D2).
+    local rows_above = {}
+    if not group_top_rows[first_row] then
+      rows_above = collect_rows_above(meta_by_row, first_row)
+    end
     local anchor_meta = nil
     local anchor_dashboard_row = nil
     if #rows_above > 0 then

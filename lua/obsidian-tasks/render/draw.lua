@@ -30,6 +30,9 @@ local NS = extmark_util.NS
 --       all_eids         = { eid, ... },     -- ALL draw-NS extmark ids for this block
 --       managed_fence_id = integer | nil,    -- managed fence extmark
 --       managed_region_id = integer | nil,   -- managed region extmark
+--       group_headers    = { [extmark_id] = { virt_lines, moved } },
+--                          -- virt_lines_above extmarks that carry a group
+--                          -- header (see M.move_group_header)
 --     },
 --     ...
 --   }
@@ -238,6 +241,8 @@ function M.draw(bufnr, fence_range, layout_lines)
   local em_map = {}
   local task_index = 0 -- tracks how many task lines have been processed
   local pending_virt = {} -- virt_line rows waiting for the next real line
+  local pending_has_header = false -- pending_virt carries a group_header line
+  local group_headers = {} -- [eid] = { virt_lines, moved } (see M.move_group_header)
   local last_task_lnum = nil
 
   for _, ll in ipairs(layout_lines) do
@@ -246,6 +251,7 @@ function M.draw(bufnr, fence_range, layout_lines)
     if kind == "group_header" or kind == "error" then
       -- Accumulate; will appear above the next task line.
       pending_virt[#pending_virt + 1] = { { ll.text, hl(kind) } }
+      pending_has_header = pending_has_header or kind == "group_header"
     elseif kind == "task" then
       local task_lnum = insert_at + task_index
 
@@ -256,7 +262,13 @@ function M.draw(bufnr, fence_range, layout_lines)
           virt_lines_above = true,
         })
         all_eids[#all_eids + 1] = eid
+        if pending_has_header then
+          -- This task is the first of its group: an insert ABOVE it can move the
+          -- header up to the new line (insert intent, plan D2).
+          group_headers[eid] = { virt_lines = pending_virt, moved = false }
+        end
         pending_virt = {}
+        pending_has_header = false
       end
 
       -- Per-line task extmark (draw NS) — id stored in em_map for keymap lookup.
@@ -444,6 +456,7 @@ function M.draw(bufnr, fence_range, layout_lines)
     managed_fence_id = managed_fence_id,
     managed_region_id = managed_region_id,
     sentinel_extmark_id = sentinel_extmark_id,
+    group_headers = group_headers,
   }
 
   -- Attach buffer-local keymap and BufWriteCmd save handler on first draw.
@@ -563,6 +576,70 @@ end
 --- @return table|nil  per-block state map, or nil
 function M.render_state(bufnr)
   return _state[bufnr]
+end
+
+--- Move the group header that sits above *from_row* up to *to_row*.
+---
+--- A group header is a virt_lines_above extmark on the first task of its group.
+--- A line inserted above that task pushes the task, and the header with it,
+--- down: the new line shows ABOVE the header, in the previous group.  When the
+--- insert intent is "above" (plan D2, ADR 0004), revert.on_lines calls this to
+--- put the header back above the first inserted row, so the new line shows in
+--- the group-top slot.  The header is then flagged `moved`: the rows from its
+--- new position down to the next managed row are group-top inserts (see
+--- M.moved_group_header_rows).  A rerender redraws every header unmoved.
+---
+--- A moved header is LEFT-gravity: text typed on the group-top line pushes a
+--- right-gravity mark to the line end, and a later split there (<CR>, the
+--- repeat of `3O`) would carry the header down to the next line.  A left-gravity
+--- mark stays at column 0, and also stays put when a line is inserted at its
+--- row, so the caller moves it down again for a "below" insert there.
+---
+--- @param bufnr      integer
+--- @param from_row   integer  0-indexed live row of the header now
+--- @param to_row     integer  0-indexed row to put it above
+--- @param moved_only boolean? only move a header that was moved before
+--- @return boolean  true when a header was moved
+function M.move_group_header(bufnr, from_row, to_row, moved_only)
+  for _, block in pairs(_state[bufnr] or {}) do
+    for eid, header in pairs(block.group_headers or {}) do
+      if header.moved or not moved_only then
+        local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, eid, {})
+        if pos[1] == from_row then
+          vim.api.nvim_buf_set_extmark(bufnr, NS, to_row, 0, {
+            id = eid,
+            virt_lines = header.virt_lines,
+            virt_lines_above = true,
+            right_gravity = false,
+          })
+          header.moved = true
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+--- Live 0-indexed rows of every group header that M.move_group_header moved
+--- since the last draw (ascending).  Empty when no header moved.
+---
+--- @param bufnr integer
+--- @return integer[]
+function M.moved_group_header_rows(bufnr)
+  local rows = {}
+  for _, block in pairs(_state[bufnr] or {}) do
+    for eid, header in pairs(block.group_headers or {}) do
+      if header.moved then
+        local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, eid, {})
+        if pos[1] then
+          rows[#rows + 1] = pos[1]
+        end
+      end
+    end
+  end
+  table.sort(rows)
+  return rows
 end
 
 --- Demote the sentinel of a single block: stop managing it so user-typed
