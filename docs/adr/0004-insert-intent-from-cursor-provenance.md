@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Insert intent comes from cursor provenance, not keymaps

@@ -97,12 +97,16 @@ Full opts schema with defaults:
       log_level = "info",
       max_file_bytes = 1048576,
       use_filename_as_scheduled_date = false,
+      daily_note = nil,
     })
 <
                                             *obsidian-tasks-config-options*
 
 global_filter                                          string | nil  (nil)
     Only parse/render tasks whose description contains this string.
+    When you type a new task in a dashboard and its description does
+    not contain this string, the plugin adds it to the end of the
+    description. Thus the new task stays a task and stays in view.
 
 auto_render                                            boolean  (true)
     Render task extmarks when a vault markdown buffer is opened.
@@ -178,6 +182,37 @@ use_filename_as_scheduled_date                         boolean  (false)
     Tasks in files whose basename contains `YYYY-MM-DD` inherit that as
     their scheduled date when none is set. Mirrors upstream's
     `useFilenameAsScheduledDate`.
+
+                                            *obsidian-tasks-config-daily_note*
+daily_note                                       function | false | nil  (nil)
+    The daily-note resolver. It gives the path of the daily note for a
+    date. A new task that you type in a group-top slot goes to today's
+    daily note. See |obsidian-tasks-group-top|.
+
+    nil       The default resolver. When obsidian.nvim is loaded, the
+              plugin uses the daily-note path of obsidian.nvim. When
+              obsidian.nvim is not loaded, there is no daily note.
+    function  A custom resolver: `function(date) -> path | nil`.
+              {date} is an `os.time()` value. Return an absolute path,
+              or nil when there is no daily note. If the function
+              causes an error, the plugin shows a warning and uses nil.
+    false     No daily note. A group-top task that needs the daily
+              note stays below the dashboard (see
+              |obsidian-tasks-group-top-fallback|). A `group by
+              filename` group still writes to its file.
+
+    When the daily note does not exist, the plugin creates it. If the
+    path is the daily-note path of obsidian.nvim, obsidian.nvim creates
+    the note, so its template and frontmatter apply. For all other
+    paths, the plugin creates an empty file.
+
+    Example of a custom resolver:
+>lua
+    daily_note = function(date)
+      local dir = vim.fn.expand("~/vault/daily/")
+      return dir .. os.date("%Y-%m-%d", date) .. ".md"
+    end,
+<
 
 ==============================================================================
 5. COMMANDS                                           *obsidian-tasks-commands*
@@ -285,7 +320,11 @@ can edit them directly:
   Natural-language date values (e.g. `📅 next monday`) are normalized to
   ISO dates during the flush.
 - Inserting a task — add a new line inside a rendered region to create
-  a new task; group-by attributes for the region are auto-added.
+  a new task. The new task goes after the task above it in the same
+  group (the anchor), in the source note of that task. The group-by
+  attributes for the region are auto-added, and so is the
+  `global_filter`. For a new line at the top of a group, see
+  |obsidian-tasks-group-top|.
 - Deleting a task — delete a rendered row to remove the corresponding
   task line from the source file.
 - Status character — in normal mode, typing a configured status symbol
@@ -296,6 +335,132 @@ can edit them directly:
 Edits the plugin can't classify are reverted on the next event-loop
 tick. The rendered region snaps back to its canonical state.
 
+                                                    *obsidian-tasks-group-top*
+New tasks at the top of a group ~
+
+A group header is not a buffer row. It shows above the first task of its
+group. The group header above a new line decides the group of the new
+task. The position of the line decides the group, not the key that you
+push.
+
+The group-top slot is the position directly below a group header and
+above the first task of the group. A line in this slot has no task above
+it in its group, so it has no anchor. All other new lines go after their
+anchor, as usual.
+
+A new line above the first task of a query without `group by`, or in a
+query with zero results, has no anchor too. The same rules apply to it.
+
+The plugin does not map keys. It compares the cursor row before the
+change with the row of the new line:
+
+    `O` or `P` on the first task of a group     The new line is in the
+                                                group-top slot. The
+                                                group header moves up
+                                                to the new line.
+    `o` or `p` on the last task of a group      The new line is at the
+                                                end of that group.
+
+The same rule applies to `:put!`, `<C-o>O`, counts (`3O`), and plugins
+that remap put. If you leave insert mode on an empty line, the group
+header goes back to its task. The plugin writes nothing.
+
+                                             *obsidian-tasks-group-top-target*
+Where a group-top task goes ~
+
+A task in the group-top slot goes to today's daily note (see
+|obsidian-tasks-config-daily_note|), at a position that keeps the task
+in the group where you typed it:
+
+    group by                 target
+    -----------------------  -------------------------------------------
+    heading                  daily note, in the section of that heading
+    heading "(No heading)"   daily note, before the first heading
+    tags                     daily note, end of file; the tag is added
+                             ("No tags": nothing is added)
+    priority                 daily note, end of file; the priority is
+                             added
+    status                   daily note, end of file; the status is set
+    filename                 end of that file (not the daily note)
+    folder, path, root       fallback (a daily note puts the task in a
+                             different group)
+    all other keys (dates,   fallback (the key gives no note)
+    backlink, urgency, ...)
+    no `group by`            daily note, end of file
+    zero results             daily note, end of file (any `group by`)
+
+With more than one `group by` key, each level adds its part. A filename
+level wins over the daily note: with `group by filename` and `group by
+heading`, the task goes into that file, in the section of that heading.
+A filename level also satisfies a folder, path, or root level. One
+fallback key makes the full insert fall back.
+
+In the section of a heading:
+
+- The plugin uses the last heading with the same text, of any level.
+- When the section has list items, the task goes after the last list
+  item, with its subtree.
+- When the section has no list items, the task goes below the heading,
+  after one blank line.
+- The task always goes before the next heading of any level.
+- When the heading is missing, the plugin adds the heading and the task
+  at the end of the note. The new heading has the level of the heading
+  above the first task of the group. If there is no such heading, the
+  level is `##`.
+
+For "(No heading)", the task goes after the frontmatter and the text at
+the top of the note, directly before the first heading. When the note
+has no heading, the task goes at the end of the note.
+
+The plugin adds the `global_filter` to each new task. In a `show tree`
+dashboard, a pasted block keeps its relative indentation, and each root
+of the block goes to the top level (depth 0). The group attribute goes
+on the root tasks only. A description bullet at the root is written as
+typed, with a warning, because it does not show in the dashboard.
+
+The plugin writes all lines of the block in one write. After the write,
+a message tells where the task went. "(created)" shows when the plugin
+created the note or the heading:
+>
+    added to daily/2026-10-11.md › ## technical debt
+    added to daily/2026-10-11.md › ## technical debt (created)
+<
+After the rerender, the cursor goes to the new task. The `sort by` keys
+can put the task at a different row in its group.
+
+`u` in the dashboard removes the lines that the plugin wrote: the task,
+and the heading if the plugin created it. `u` does not delete a note
+that the plugin created. `<C-r>` writes the lines again.
+
+                                           *obsidian-tasks-group-top-fallback*
+Fallback and warnings ~
+
+In these cases the plugin does not write to a source note. The typed
+line stays in the dashboard as note text, directly below the closing
+fence of the query block, and a warning shows. Move the line to where
+it belongs, then save:
+
+- There is no daily note: `daily_note = false`, or the resolver gives
+  nil (for example, obsidian.nvim is not loaded).
+- A `group by` key gives no note: folder, path, or root without
+  filename, or a key that is not in the table above.
+- The target note is the dashboard itself, or it is open as a dashboard
+  in a different buffer.
+- The plugin cannot create or read the target note.
+- The group is not in the last query result (only lingered tasks show in
+  it), and the plugin cannot split the group name into its keys.
+
+When the target note is open with unsaved changes, the plugin does not
+write. It removes the typed line and shows this warning:
+>
+    daily/2026-10-11.md has unsaved changes — save it and retry
+<
+When a query filter hides the new task (for example, `path includes
+projects/`), the plugin writes the task and shows a warning:
+>
+    added to daily/2026-10-11.md › ## technical debt, but this query
+    hides it (path filter)
+<
 Save semantics (BufWriteCmd) ~
 
 Saving a dashboard buffer (`:w`) writes only the source content — query
@@ -620,6 +785,9 @@ v1 limitations:
   externally while Neovim is running are not picked up until opened or
   until a full `:ObsidianTask refresh`.
 - `filter by function` (JS expression filters) is not supported.
+- A group-top task cannot go to the daily note when that note is open as
+  a dashboard. The typed line stays below the query block (see
+  |obsidian-tasks-group-top-fallback|).
 
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:
