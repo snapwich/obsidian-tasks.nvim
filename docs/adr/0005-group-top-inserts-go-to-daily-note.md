@@ -31,4 +31,11 @@ its file).
 
 - When the target note is the dashboard itself, or is open as another
   dashboard, the line keeps the below-fence fallback: a source write cannot map
-  into a dashboard buffer whose rendered rows are not on disk.
+  into a dashboard buffer whose rendered rows are not on disk. The warning
+  names the real target (the daily note, or the file of a filename group).
+- Placement in the target note and the index use one notion of "heading line"
+  and "list item line" (`util/md_structure.lua`). As in Obsidian, a line in the
+  frontmatter or in a fenced code block is neither, so a `# ...` comment in a
+  query block does not start a section, and no task is written into a fence.
+- The "this query hides it" warning reruns the whole query, so a `limit` that
+  cuts the new task is reported too.
