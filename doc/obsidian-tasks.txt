@@ -28,6 +28,10 @@ Vault format is portable with the upstream desktop plugin: emoji fields
 recognised, query syntax matches upstream, and path-based filters resolve
 against vault-relative paths.
 
+As in Obsidian, a line in the frontmatter or in a fenced code block (```
+or ~~~, a query block too) is not a task and not a heading. A `# ...`
+comment line in a query block does not change `task.heading`.
+
 ==============================================================================
 2. REQUIREMENTS                                   *obsidian-tasks-requirements*
 
@@ -411,6 +415,13 @@ In the section of a heading:
 For "(No heading)", the task goes after the frontmatter and the text at
 the top of the note, directly before the first heading. When the note
 has no heading, the task goes at the end of the note.
+
+Placement uses the same headings as the index: a `# ...` line in the
+frontmatter or in a fenced code block (for example a comment in a query
+block) is not a heading, and a list item in a fenced code block is not a
+list item. The plugin never writes a task into a fenced code block. When
+a fence is not closed, it continues to the end of the note, so the task
+goes before that fence.
 
 The plugin adds the `global_filter` to each new task. In a `show tree`
 dashboard, a pasted block keeps its relative indentation, and each root

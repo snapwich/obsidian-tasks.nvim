@@ -241,6 +241,120 @@ T["heading: a heading flushes the indent stack (no cross-heading subtree)"] = fu
   eq(m[3].depth, 0)
 end
 
+-- ── code fences and frontmatter (upstream: not headings, not list items) ────
+-- Obsidian does not see a heading or a list item inside a fenced code block or
+-- inside the YAML frontmatter.  A `# ...` comment line in a ```tasks query block
+-- is the common case.
+
+T["fence: a # line inside a ``` fence is not a heading"] = function()
+  local ns = parse(table.concat({
+    "## Real", -- 1
+    "```tasks", -- 2
+    "# due this week", -- 3 query comment, not a heading
+    "not done", -- 4
+    "```", -- 5
+    "- [ ] after fence", -- 6 heading stays "Real"
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[6].kind, "task")
+  eq(m[6].heading, "Real")
+  eq(m[6].task.heading, "Real")
+end
+
+T["fence: list items inside a fence are not nodes"] = function()
+  local ns = parse(table.concat({
+    "```", -- 1
+    "- [ ] not a task", -- 2
+    "- not a bullet", -- 3
+    "", -- 4 blank inside the fence: not a node either
+    "```", -- 5
+    "- [ ] real", -- 6
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[2], nil)
+  eq(m[3], nil)
+  eq(m[4], nil)
+  eq(m[6].kind, "task")
+  eq(#nodes.tasks(ns), 1)
+end
+
+T["fence: ~~~ fences; a ``` line does not close a ~~~ fence"] = function()
+  local ns = parse(table.concat({
+    "# A", -- 1
+    "~~~", -- 2
+    "```", -- 3 inside: does not close
+    "# not a heading", -- 4
+    "- [ ] not a task", -- 5
+    "~~~", -- 6 closes
+    "- [ ] real", -- 7
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[5], nil)
+  eq(m[7].heading, "A")
+end
+
+T["fence: a closing fence must be at least as long as the opening fence"] = function()
+  local ns = parse(table.concat({
+    "````md", -- 1
+    "```", -- 2 shorter: does not close
+    "# inside", -- 3
+    "````", -- 4 closes
+    "- [ ] real", -- 5
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[5].heading, nil)
+end
+
+T["fence: an indented fence inside a list item hides its lines"] = function()
+  local ns = parse(table.concat({
+    "- [ ] parent", -- 1
+    "  ```", -- 2
+    "  - [ ] code, not a child", -- 3
+    "  ```", -- 4
+    "  - [ ] real child", -- 5
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[3], nil)
+  eq(m[5].parent_line, 1)
+end
+
+T["fence: an unclosed fence runs to the end of the file"] = function()
+  local ns = parse(table.concat({
+    "# A", -- 1
+    "- [ ] before", -- 2
+    "```", -- 3 never closed
+    "# not a heading", -- 4
+    "- [ ] not a task", -- 5
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[2].heading, "A")
+  eq(m[5], nil)
+  eq(#nodes.tasks(ns), 1)
+end
+
+T["frontmatter: a # comment is not a heading; YAML list items are not bullets"] = function()
+  local ns = parse(table.concat({
+    "---", -- 1
+    "# a yaml comment", -- 2
+    "tags:", -- 3
+    "  - daily", -- 4
+    "---", -- 5
+    "- [ ] first", -- 6
+  }, "\n"))
+  local m = by_line(ns)
+  eq(m[4], nil)
+  eq(m[6].heading, nil)
+end
+
+T["frontmatter: an unclosed --- block is not frontmatter"] = function()
+  local ns = parse(table.concat({
+    "---", -- 1
+    "# Real heading", -- 2
+    "- [ ] t", -- 3
+  }, "\n"))
+  eq(by_line(ns)[3].heading, "Real heading")
+end
+
 -- ── on_task hook (global_filter / DateFallback analogue) ─────────────────────
 
 T["on_task: returning false drops the task and keeps the tree well-formed"] = function()

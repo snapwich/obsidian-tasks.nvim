@@ -3,8 +3,9 @@
 -- a task line sits under (upstream's `task.precedingHeader`).
 --
 -- v1 scope: column-0 ATX headings only (`# …` … `###### …`).  Setext headings
--- and code-fence awareness are out of scope — consistent with the task-line
--- scanner, which likewise treats `- [ ]` inside a fenced block as a task.
+-- are out of scope.  This parser looks at ONE line; whether that line can be a
+-- heading at all (not in the frontmatter, not in a fenced code block) is
+-- util/md_structure.lua's job — callers go through md_structure.scan(lines).
 
 local M = {}
 

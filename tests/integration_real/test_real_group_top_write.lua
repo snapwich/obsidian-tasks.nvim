@@ -414,6 +414,36 @@ T["(No heading): before the first heading of the daily note"] = function()
   child.stop()
 end
 
+T["(No heading): a ```tasks block in the daily note stays intact (review probe)"] = function()
+  -- A `# ...` comment line in a query block is not a heading (upstream, and
+  -- the index).  Placement must agree: the task goes before the first REAL
+  -- heading, outside the fence, and the query block keeps its lines.
+  local daily = { "```tasks", "# due this week", "not done", "```", "", "## log", "text" }
+  local child = spawn({
+    files = { ["inbox.md"] = { "- [ ] Loose A #task" }, ["projects/work.md"] = WORK },
+    query = { "not done", "group by heading" },
+    daily = daily,
+  })
+  on_group_top(child, "(No heading)")
+  child.type_keys("O", "Loose new", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), {
+    "```tasks",
+    "# due this week",
+    "not done",
+    "```",
+    "",
+    "- [ ] Loose new #task",
+    "",
+    "## log",
+    "text",
+  })
+  eq(has_msg(child, "added to " .. DAILY_REL .. " › (No heading)", INFO), true, vim.inspect(msgs(child)))
+  assert_in_group(child, "Loose new", "(No heading)")
+  child.stop()
+end
+
 T["tags: daily note end of file + the tag"] = function()
   local child = spawn({
     files = { ["projects/work.md"] = { "- [ ] Alpha #home #task", "- [ ] Bravo #work #task" } },

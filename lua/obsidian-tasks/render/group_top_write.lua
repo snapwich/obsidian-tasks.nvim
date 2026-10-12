@@ -31,7 +31,7 @@
 local M = {}
 
 local edit_util = require("obsidian-tasks.render.edit_util")
-local heading_mod = require("obsidian-tasks.index.heading")
+local md_structure = require("obsidian-tasks.util.md_structure")
 
 -- Location keys that only a filename level can satisfy (see M.target).
 local LOCATION_KEYS = { folder = true, path = true, root = true }
@@ -155,18 +155,21 @@ function M.build_lines(block_lines, opts)
 end
 
 --- Level of the nearest heading at or above 0-indexed *row* in *lines*, when
---- its text is *text* (the heading task B really sits under); else nil.
+--- its text is *text* (the heading task B really sits under); else nil.  A `#`
+--- line in a code fence or in the frontmatter is not a heading (the indexer's
+--- rule, util/md_structure.lua).
 ---
 --- @param lines string[]
 --- @param row   integer
 --- @param text  string
 --- @return integer|nil
 function M.heading_level(lines, row, text)
+  local st = md_structure.scan(lines)
   for r = math.min(row, #lines - 1), 0, -1 do
-    local line = lines[r + 1]
-    if heading_mod.parse(line) ~= nil then
-      if heading_mod.parse(line) == text then
-        return #line:match("^(#+)")
+    local h = st.heading(r + 1)
+    if h ~= nil then
+      if h == text then
+        return #lines[r + 1]:match("^(#+)")
       end
       return nil
     end
@@ -179,9 +182,10 @@ end
 --- Level of the LAST heading with *text* in *lines* (the one placement uses).
 --- @return integer|nil
 local function last_heading_level(lines, text)
+  local st = md_structure.scan(lines)
   local level = nil
-  for _, line in ipairs(lines) do
-    if heading_mod.parse(line) == text then
+  for i, line in ipairs(lines) do
+    if st.heading(i) == text then
       level = #line:match("^(#+)")
     end
   end

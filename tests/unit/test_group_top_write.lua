@@ -200,4 +200,11 @@ T["heading_level"]["nil when the nearest heading has other text, or none exists"
   eq(gtw.heading_level({ "- [ ] B" }, 0, "technical debt"), nil)
 end
 
+T["heading_level"]["skips # lines inside a code fence and in the frontmatter"] = function()
+  local lines = { "## technical debt", "```", "# technical debt", "```", "- [ ] B #task" }
+  eq(gtw.heading_level(lines, 4, "technical debt"), 2)
+  local fm = { "---", "# technical debt", "---", "- [ ] B #task" }
+  eq(gtw.heading_level(fm, 3, "technical debt"), nil)
+end
+
 return T

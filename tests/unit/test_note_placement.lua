@@ -248,6 +248,89 @@ T["placement: (No heading), empty file"] = function()
   eq(out, { NEW })
 end
 
+-- ── code fences and frontmatter ─────────────────────────────────────────────
+-- A `# ...` line inside a fenced code block (a ```tasks query block's comment
+-- lines, a shell snippet) or inside the frontmatter is not a heading, and a
+-- list item inside a fence is not a list item.  Placement must agree with the
+-- indexer (index/nodes.lua), so the task shows in the group where it was typed.
+
+T["placement: (No heading) never goes inside a ```tasks query block (review probe)"] = function()
+  local lines = { "```tasks", "# due this week", "not done", "```", "", "## log", "text" }
+  local _, out = place(lines, nil)
+  eq(out, { "```tasks", "# due this week", "not done", "```", "", NEW, "", "## log", "text" })
+end
+
+T["placement: (No heading), a fence with a # line and no real heading → end of file"] = function()
+  local lines = { "```tasks", "# comment", "```" }
+  local _, out = place(lines, nil)
+  eq(out, { "```tasks", "# comment", "```", "", NEW })
+end
+
+T["placement: a fenced # line BEFORE the section is not the target heading"] = function()
+  local lines = { "## Work", "- [ ] a", "## Home", "```", "# Work", "```" }
+  local _, out = place(lines, "Work")
+  eq(out, { "## Work", "- [ ] a", NEW, "## Home", "```", "# Work", "```" })
+end
+
+T["placement: a fenced # line is not a heading that can be matched"] = function()
+  local lines = { "## Home", "```", "# Work", "```" }
+  local r, out = place(lines, "Work")
+  eq(r.created_heading, true)
+  eq(out, { "## Home", "```", "# Work", "```", "", "## Work", NEW })
+end
+
+T["placement: a fenced # line INSIDE the section does not end it"] = function()
+  local lines = { "## Work", "- [ ] a", "```sh", "# a shell comment", "- [ ] fake", "```", "- [ ] b", "## Home" }
+  local _, out = place(lines, "Work")
+  eq(out, { "## Work", "- [ ] a", "```sh", "# a shell comment", "- [ ] fake", "```", "- [ ] b", NEW, "## Home" })
+end
+
+T["placement: list items inside a fence AFTER the last item are not items"] = function()
+  local lines = { "## Work", "- [ ] a", "", "```", "- [ ] fake", "```", "## Home" }
+  local _, out = place(lines, "Work")
+  eq(out, { "## Work", "- [ ] a", NEW, "", "```", "- [ ] fake", "```", "## Home" })
+end
+
+T["placement: a section with only a fence has no list items"] = function()
+  local lines = { "## Work", "~~~", "- [ ] fake", "# x", "~~~", "## Home" }
+  local _, out = place(lines, "Work")
+  eq(out, { "## Work", "", NEW, "", "~~~", "- [ ] fake", "# x", "~~~", "## Home" })
+end
+
+T["placement: an unclosed fence — nothing goes inside it"] = function()
+  local lines = { "## Work", "- [ ] a", "```", "# x", "- [ ] fake" }
+  local _, out = place(lines, "Work")
+  eq(out, { "## Work", "- [ ] a", NEW, "```", "# x", "- [ ] fake" })
+  -- A missing heading goes before the unclosed fence, not at the end of file.
+  local r2, out2 = place(lines, "Home")
+  eq(r2.created_heading, true)
+  eq(out2, { "## Work", "- [ ] a", "", "## Home", NEW, "", "```", "# x", "- [ ] fake" })
+  -- (No heading) with no real heading: before the unclosed fence.
+  local _, out3 = place({ "text", "```", "# x" }, nil)
+  eq(out3, { "text", "", NEW, "", "```", "# x" })
+end
+
+T["placement: (No heading), a # comment in the frontmatter is not a heading"] = function()
+  local lines = { "---", "# a yaml comment", "a: 1", "---", "## Work" }
+  local _, out = place(lines, nil)
+  eq(out, { "---", "# a yaml comment", "a: 1", "---", NEW, "", "## Work" })
+  local r2, out2 = place(lines, "a yaml comment")
+  eq(r2.created_heading, true)
+  eq(out2, { "---", "# a yaml comment", "a: 1", "---", "## Work", "", "## a yaml comment", NEW })
+end
+
+T["append: never inside an unclosed fence"] = function()
+  local lines = { "# Day", "- [ ] a", "```", "code" }
+  local r = placement.append(lines, { NEW })
+  eq(apply(lines, r), { "# Day", "- [ ] a", NEW, "", "```", "code" })
+end
+
+T["append: a list item inside a closed fence at the end is not a list"] = function()
+  local lines = { "```", "- [ ] fake", "```" }
+  local r = placement.append(lines, { NEW })
+  eq(apply(lines, r), { "```", "- [ ] fake", "```", "", NEW })
+end
+
 -- ── trailing newline ────────────────────────────────────────────────────────
 
 T["placement: file without a trailing newline"] = function()
@@ -282,6 +365,14 @@ local LIST_SHAPES = {
 }
 local PROSE = { {}, { "Some prose." }, { "", "Prose after blank.", "" }, { "" } }
 local NAMES = { "Work", "Home", "Ideas", "Work", "Sub" }
+-- Fenced blocks whose lines look like headings / list items (they are not).
+local FENCES = {
+  {},
+  { "```tasks", "# Work", "not done", "```" },
+  { "~~~", "## Home", "- [ ] fenced task", "~~~" },
+  { "```sh", "# Sub", "```" },
+  { "````md", "```", "# Ideas", "- [ ] x", "````" },
+}
 
 --- Build a note from seed *s*.  Returns lines and the list of heading texts.
 local function gen_note(s)
@@ -300,6 +391,9 @@ local function gen_note(s)
   if s % 5 == 2 then
     push_all({ "- [ ] preamble task" })
   end
+  if s % 6 == 1 then
+    push_all({ "```tasks", "# due this week", "not done", "```" })
+  end
   local nsec = s % 4
   for k = 1, nsec do
     local name = NAMES[((s + k) % #NAMES) + 1]
@@ -307,8 +401,14 @@ local function gen_note(s)
     lines[#lines + 1] = string.rep("#", level) .. " " .. name
     heads[#heads + 1] = name
     push_all(PROSE[((s * 7 + k) % #PROSE) + 1])
+    push_all(FENCES[((s + k * 3) % #FENCES) + 1])
     push_all(LIST_SHAPES[((s * 3 + k) % #LIST_SHAPES) + 1])
+    push_all(FENCES[((s * 5 + k) % #FENCES) + 1])
     push_all(PROSE[((s + k * 5) % #PROSE) + 1])
+  end
+  if s % 11 == 4 then
+    -- An unclosed fence ends the note.
+    push_all({ "```", "# Work", "- [ ] in the open fence" })
   end
   return lines, heads
 end

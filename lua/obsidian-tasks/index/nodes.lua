@@ -23,6 +23,9 @@
 -- never descriptions in the round-trip-safe nested-list form) and are omitted.
 -- ATX heading lines are likewise not nodes — they update the running heading
 -- that gets attached to task nodes (heading is a separate axis, not hierarchy).
+-- Lines in the frontmatter or in a fenced code block are never headings or list
+-- items (upstream parity; util/md_structure.lua, shared with the group-top
+-- placement): they are omitted like prose, blank lines included.
 --
 -- Structure axes (independent):
 --   depth       — numeric indent level (0 = top-level), derived from leading
@@ -50,12 +53,6 @@
 --   { kind = "blank",  line_num }
 
 local M = {}
-
--- A list item: optional indent, then a `-`/`*`/`+` marker followed by a space
--- (or end-of-line).  The body capture is everything after the marker+space.
-local LIST_PAT = "^(%s*)([-*+])%s(.*)$"
--- A marker on its own line ("-", "  *") with no trailing space/body.
-local LIST_BARE_PAT = "^(%s*)([-*+])%s*$"
 
 --- Compute the indent "width" of a leading-whitespace string, expanding tabs to
 --- the next multiple of 4 columns (matches common Markdown list nesting).
@@ -87,8 +84,9 @@ end
 --- @return table[]  ordered node list
 function M.parse_lines(lines, opts)
   opts = opts or {}
-  local heading = opts.heading or require("obsidian-tasks.index.heading")
   local parse = opts.parse or require("obsidian-tasks.task.parse")
+  -- Headings and list items come from the shared fence/frontmatter-aware scan.
+  local structure = require("obsidian-tasks.util.md_structure").scan(lines, { heading = opts.heading })
   local on_task = opts.on_task
 
   local nodes = {}
@@ -105,12 +103,16 @@ function M.parse_lines(lines, opts)
     local line = raw:gsub("\r$", "")
     local line_num = i
 
+    -- Frontmatter / fenced code: never a node, never a heading (omitted, like
+    -- prose).
+    local is_code = structure.code[i] == true
+
     -- ── blank ───────────────────────────────────────────────────────────────
-    if line:match("^%s*$") then
+    if not is_code and line:match("^%s*$") then
       nodes[#nodes + 1] = { kind = "blank", line_num = line_num }
-    else
+    elseif not is_code then
       -- ── heading (separate axis; not a node) ────────────────────────────────
-      local h = heading.parse(line)
+      local h = structure.heading(i)
       if h ~= nil then
         current_heading = h
         -- A heading is a structural break: flush the indent stack so the next
@@ -118,13 +120,7 @@ function M.parse_lines(lines, opts)
         stack = {}
       else
         -- ── list item? ───────────────────────────────────────────────────────
-        local ws, marker, body = line:match(LIST_PAT)
-        if ws == nil then
-          ws, marker = line:match(LIST_BARE_PAT)
-          if ws ~= nil then
-            body = ""
-          end
-        end
+        local ws, marker, body = structure.list_item(i)
 
         if ws ~= nil then
           local width = indent_width(ws)
