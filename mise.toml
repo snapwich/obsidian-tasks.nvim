@@ -1,0 +1,5 @@
+# Lint/format tools for `make lint` / `make format` / `make ci`.
+# CI installs these same versions via jdx/mise-action.
+[tools]
+stylua = "2.4.1"
+"aqua:Kampfkarren/selene" = "0.30.1"
