@@ -436,6 +436,32 @@ local function is_superset_in_order(orig, out)
   return j == #orig + 1
 end
 
+--- The NEWTASK node after re-indexing *lines*, or nil.
+local function new_task_node(lines)
+  for _, n in ipairs(nodes_mod.parse_lines(lines)) do
+    if n.kind == "task" and n.task.description:find("NEWTASK", 1, true) then
+      return n
+    end
+  end
+  return nil
+end
+
+T["placement: an indented fence under the last item with a column-0 line inside → after the fence"] = function()
+  local cases = {
+    { "## log", "- [ ] a", "  ```", "code at col 0", "  ```", "## next", "x" },
+    { "## log", "- [ ] a", "", "  ```", "", "z", "  ```", "## next" },
+  }
+  for _, lines in ipairs(cases) do
+    local out = apply(lines, placement.place(lines, "log", nil, { NEW }))
+    local n = new_task_node(out)
+    eq(n ~= nil, true, "NEWTASK is indexed (not inside the fence): " .. vim.inspect(out))
+    eq(n.task.heading, "log")
+  end
+  local lines = { "- [ ] a", "  ```", "code at col 0", "  ```", "", "# h" }
+  local out = apply(lines, placement.place(lines, nil, nil, { NEW }))
+  eq(new_task_node(out) ~= nil, true, "(No heading): NEWTASK is indexed: " .. vim.inspect(out))
+end
+
 T["placement: property — re-indexed task heading equals the target"] = function()
   local checked = 0
   for s = 0, 239 do

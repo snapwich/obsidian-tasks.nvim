@@ -50,8 +50,10 @@ end
 --- nil when the section has no list items.  The node parser runs on the whole
 --- note (so fences and frontmatter are seen in context) and gives the depth; a
 --- heading flushes its indent stack, so depth 0 == top-level in the section.
+--- The continuation walk goes by indent only, so it can stop on a shallow line
+--- INSIDE a fence that opens under the item; step past the rest of that fence.
 --- @return integer|nil
-local function after_last_item(lines, from, to)
+local function after_last_item(st, lines, from, to)
   if to <= from then
     return nil
   end
@@ -66,6 +68,9 @@ local function after_last_item(lines, from, to)
     return nil
   end
   local row = list_block.continuation_end(lines, last_root, list_block.indent_of(lines[last_root + 1]))
+  while row < to and st.code[row + 1] and st.code[row] do
+    row = row + 1
+  end
   return math.min(row, to)
 end
 
@@ -105,7 +110,7 @@ function M.place(lines, heading, level, new_lines)
     local from = st.body_start
     local first_h = next_heading(st, from, n)
     local to = first_h or n
-    local row = after_last_item(lines, from, to)
+    local row = after_last_item(st, lines, from, to)
     if row ~= nil then
       return { row = row, lines_to_insert = concat(new_lines), created_heading = false }
     end
@@ -127,7 +132,7 @@ function M.place(lines, heading, level, new_lines)
   if h_row ~= nil then
     local from = h_row + 1
     local to = next_heading(st, from, n) or n
-    local row = after_last_item(lines, from, to)
+    local row = after_last_item(st, lines, from, to)
     if row ~= nil then
       return { row = row, lines_to_insert = concat(new_lines), created_heading = false }
     end
