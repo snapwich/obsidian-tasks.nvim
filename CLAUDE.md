@@ -64,11 +64,6 @@ Run locally: `make test` (clones mini.nvim to `.deps/` on first run).
 - **stylua**: 2-space indent, 120 col, `call_parentheses = "Always"` (see `stylua.toml`)
 - **selene**: `std = "vim+lua51"` (see `selene.toml`)
 
-## Source of truth
-
-- `.jr/plans/requirements_v1.md` — confirmed scope decisions
-- `.jr/plans/implementation.md` — module layout, phase plan, risks
-
 ## BufWritePre ordering
 
 We subscribe to `User:ObsidianNoteWritePre` (not raw `BufWritePre`) so our render-strip fires AFTER obsidian.nvim has finished updating frontmatter; any future feature that must mutate the buffer before write should also use this User event.
