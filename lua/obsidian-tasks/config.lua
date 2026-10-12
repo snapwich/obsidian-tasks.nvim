@@ -41,6 +41,11 @@ M.defaults = {
   -- they don't already have one.  Mirrors upstream's
   -- `useFilenameAsScheduledDate` setting (off by default).
   use_filename_as_scheduled_date = false,
+  -- Daily-note resolver for group-top inserts: `function(date) -> abs_path|nil`
+  -- (date is an os.time() value).  nil = use obsidian.nvim's daily note when
+  -- it is loaded; false = off (a group-top insert keeps the below-fence
+  -- fallback).  See util/daily_note.lua.
+  daily_note = nil,
 }
 
 --- Type-check a single field.
@@ -122,6 +127,10 @@ local function check_field(key, value)
     if type(value) ~= "boolean" then
       error(("obsidian-tasks: 'follow_cursor_on_rerender' must be a boolean, got %s"):format(type(value)), 2)
     end
+  elseif key == "daily_note" then
+    if value ~= nil and value ~= false and type(value) ~= "function" then
+      error(("obsidian-tasks: 'daily_note' must be a function, false, or nil, got %s"):format(tostring(value)), 2)
+    end
   end
 end
 
@@ -145,6 +154,7 @@ local KNOWN_KEYS = {
   dim_completed_tasks = true,
   follow_cursor_on_rerender = true,
   use_filename_as_scheduled_date = true,
+  daily_note = true,
 }
 
 --- Validate user opts types and return deep-merged result.

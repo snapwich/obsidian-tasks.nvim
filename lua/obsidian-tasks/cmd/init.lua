@@ -45,16 +45,9 @@ for _, v in ipairs(VALID_SUBCMDS) do
   VALID_SUBCMDS_SET[v] = true
 end
 
--- Count leading whitespace characters in a line.
-local function indent_of(line)
-  local s = line:match("^(%s*)")
-  return s and #s or 0
-end
-
--- A line is blank iff it is empty or whitespace-only.
-local function is_blank(line)
-  return line:match("^%s*$") ~= nil
-end
+-- The list-item continuation rule (shared with render/note_placement).
+local list_block = require("obsidian-tasks.util.list_block")
+local indent_of = list_block.indent_of
 
 -- ── Per-dashboard undo / redo ring ────────────────────────────────────────────
 -- apply_source_edit appends each plugin-driven mutation to the undo ring keyed
@@ -1174,11 +1167,8 @@ function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_lin
     return false
   end
 
-  local n = #lines
-
-  -- Walk forward from anchor_row+1 (0-indexed) past all continuation lines.
-  -- lines array is 1-indexed: lines[i+1] is the 0-indexed row i.
-  local i = anchor_row + 1 -- first 0-indexed row to test (one after anchor)
+  -- First 0-indexed row after the anchor (the FIRST-CHILD insert position).
+  local i = anchor_row + 1
 
   -- FIRST-CHILD insert (Bug 2): when the new line is indented DEEPER than the
   -- anchor, it is a CHILD of the anchor and must land immediately after the
@@ -1191,31 +1181,9 @@ function M.insert_after_anchor(src_path, anchor_row, anchor_indent, new_task_lin
   local first_new = type(new_task_line) == "table" and new_task_line[1] or new_task_line
   local is_child_insert = first_new ~= nil and indent_of(first_new) > anchor_indent
 
-  while not is_child_insert and i < n do
-    local line = lines[i + 1] -- 1-indexed access into readfile result
-
-    if is_blank(line) then
-      -- Blank line: look at the next non-blank row to decide whether this blank
-      -- is part of the continuation (blank-followed-by-indented rule).
-      local next_i = i + 1
-      -- Find the first non-blank row at or after next_i.
-      while next_i < n and is_blank(lines[next_i + 1]) do
-        next_i = next_i + 1
-      end
-      -- If no following non-blank row exists, or the following row is NOT
-      -- indented more than anchor_indent, the blank ends the continuation.
-      if next_i >= n or indent_of(lines[next_i + 1]) <= anchor_indent then
-        break
-      end
-      -- Otherwise the blank is part of the continuation; keep walking.
-      i = i + 1
-    elseif indent_of(line) <= anchor_indent then
-      -- Non-blank row at same or shallower indent: not a continuation.
-      break
-    else
-      -- Non-blank row indented deeper than anchor: continuation line.
-      i = i + 1
-    end
+  if not is_child_insert then
+    -- Walk past the anchor's continuation block (util/list_block rule).
+    i = list_block.continuation_end(lines, anchor_row, anchor_indent)
   end
 
   -- Insert new_task_line(s) at 0-indexed position i with count=0 (pure insert).
@@ -1256,41 +1224,11 @@ function M.delete_block(src_path, task_row, task_indent)
     return false
   end
 
-  local n = #lines
-
-  -- Walk forward from task_row+1, tracking the last row included in the block.
-  -- lines is 1-indexed; i is a 0-indexed row number so lines[i+1] accesses it.
-  local end_row = task_row
-  local i = task_row + 1
-
-  while i < n do
-    local line = lines[i + 1]
-
-    if is_blank(line) then
-      -- Blank line: look ahead to find the next non-blank row.
-      local next_i = i + 1
-      while next_i < n and is_blank(lines[next_i + 1]) do
-        next_i = next_i + 1
-      end
-      -- If no following non-blank exists, or it is not indented deeper than
-      -- task_indent, the blank ends the continuation block.
-      if next_i >= n or indent_of(lines[next_i + 1]) <= task_indent then
-        break
-      end
-      -- Blank is part of the continuation; include it and keep walking.
-      end_row = i
-      i = i + 1
-    elseif indent_of(line) <= task_indent then
-      -- Non-blank row at same or shallower indent: end of continuation.
-      break
-    else
-      -- Non-blank row indented deeper: continuation line.
-      end_row = i
-      i = i + 1
-    end
-  end
-
-  local count = end_row - task_row + 1
+  -- The block is the task row through the last continuation row (the
+  -- util/list_block rule: a trailing blank not followed by an indented row is
+  -- NOT part of the block and is NOT deleted).
+  local block_end = list_block.continuation_end(lines, task_row, task_indent)
+  local count = block_end - task_row
   return M.apply_source_edit(src_path, task_row, {}, { count = count })
 end
 
