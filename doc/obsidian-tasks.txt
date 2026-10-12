@@ -475,11 +475,16 @@ write. It removes the typed line and shows this warning:
 >
     daily/2026-10-11.md has unsaved changes — save it and retry
 <
-When a query filter hides the new task (for example, `path includes
-projects/`), the plugin writes the task and shows a warning:
+When the query does not show the new task, the plugin writes the task
+and shows a warning. The plugin runs the full query again to find out:
+a filter (for example, `path includes projects/`) or a `limit` can hide
+the task. The warning names the first filter that rejects the task, or
+`limit`:
 >
     added to daily/2026-10-11.md › ## technical debt, but this query
     hides it (path filter)
+    added to daily/2026-10-11.md › ## alpha (created), but this query
+    hides it (limit)
 <
 Save semantics (BufWriteCmd) ~
 

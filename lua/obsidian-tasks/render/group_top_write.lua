@@ -249,10 +249,24 @@ local function filter_label(node)
   return "boolean filter"
 end
 
+--- True when the query result *result* shows the task at *path*:*src_line*.
+local function result_shows(result, path, src_line)
+  for _, g in ipairs(result.groups or {}) do
+    for _, t in ipairs(g.tasks or {}) do
+      if t._src_line == src_line and t._src_path and vim.fs.normalize(t._src_path) == path then
+        return true
+      end
+    end
+  end
+  return false
+end
+
 --- Why the query of *blk* hides the task at *path*:*src_line*, or nil when it
---- shows it.  Runs the query filters on the task as the index now has it
---- (heading, global filter and filename date included), at its vault-relative
---- path — the same inputs query/run.lua uses.
+--- shows it.  The exact check reruns the whole query (blk.ast) on the index
+--- as it is now, as the rerender will: filters, then sort, group and `limit`.
+--- When the task is not in the result, the reason is the first top-level
+--- filter that rejects it (run at its vault-relative path, the same inputs
+--- query/run.lua uses), else the `limit`.
 local function hidden_reason(blk, prefix, path, src_line)
   local rel = path
   if prefix then
@@ -261,8 +275,9 @@ local function hidden_reason(blk, prefix, path, src_line)
       return "outside the vault"
     end
   end
+  local index = require("obsidian-tasks.index")
   local task = nil
-  for _, n in ipairs(require("obsidian-tasks.index").nodes_for(path) or {}) do
+  for _, n in ipairs(index.nodes_for(path) or {}) do
     if n.kind == "task" and n.line_num == src_line then
       task = n.task
       break
@@ -270,6 +285,12 @@ local function hidden_reason(blk, prefix, path, src_line)
   end
   if task == nil then
     return "global filter"
+  end
+  if blk.ast then
+    local ok, result = pcall(require("obsidian-tasks.query.run").run, blk.ast, index, prefix)
+    if ok and type(result) == "table" and result_shows(result, path, src_line) then
+      return nil
+    end
   end
   local filter_mod = require("obsidian-tasks.query.filter")
   for _, node in ipairs(blk.filters or {}) do
@@ -279,6 +300,9 @@ local function hidden_reason(blk, prefix, path, src_line)
     if ok and not pass then
       return filter_label(node)
     end
+  end
+  if blk.ast and blk.ast.limit then
+    return "limit"
   end
   return nil
 end

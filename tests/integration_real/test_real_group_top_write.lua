@@ -900,6 +900,28 @@ T["a query filter hides the task → written anyway + warning"] = function()
   child.stop()
 end
 
+T["limit hides the task → written anyway + warning (limit)"] = function()
+  -- `limit 1` keeps only the first task of the sorted result: the new task
+  -- passes every filter but is cut by the limit, so it does not show.
+  local child = spawn({
+    files = { ["projects/work.md"] = { "## alpha", "- [ ] Alpha one #task", "## beta", "- [ ] Beta one #task" } },
+    query = { "not done", "group by heading", "sort by description", "limit 1" },
+  })
+  on_task(child, "Alpha one")
+  child.type_keys("O", "Zulu", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), { "## alpha", "- [ ] Zulu #task" })
+  eq(
+    has_msg(child, "added to " .. DAILY_REL .. " › ## alpha (created), but this query hides it (limit)", WARN),
+    true,
+    vim.inspect(msgs(child))
+  )
+  eq(count(dash_lines(child), "Zulu"), 0, "cut by the limit")
+  eq(count(dash_lines(child), "Alpha one"), 1)
+  child.stop()
+end
+
 -- ── undo / redo ───────────────────────────────────────────────────────────────
 
 T["undo removes the heading and the task; the note stays; redo puts them back"] = function()

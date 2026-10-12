@@ -799,10 +799,12 @@ function M.render_buffer(bufnr, workspace)
           sort_by = (pb.ast and pb.ast.sort_by) or {},
           -- Group-top write path (plan D3/D6, render/group_top_write.lua):
           -- group name → its per-key segments (a heading can contain " / ", so
-          -- the joined name cannot be split back), the query's filters (the
-          -- "this query hides it" check), and the `show tree` flag.
+          -- the joined name cannot be split back), the query's filters and
+          -- its AST (the "this query hides it" check reruns the query, so a
+          -- `limit` counts too), and the `show tree` flag.
           group_segments = group_segments_of(pb.result),
           filters = (pb.ast and pb.ast.filters) or {},
+          ast = pb.ast,
           tree = (pb.ast and pb.ast.tree) or false,
           -- Phase 4: per-subtree fold ranges (0-indexed buffer rows) for fold
           -- state capture/restore across re-render.  Empty for flat blocks.
