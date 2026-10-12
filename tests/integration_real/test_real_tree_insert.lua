@@ -20,6 +20,8 @@
 --   (l) outdent to col 0 → a true TOP-LEVEL task (NOT under the dim grandparent).
 --
 -- Each test asserts the EXACT source bytes (indent + marker + kind) after insert.
+-- The child runs with global_filter = "#task", so every new TASK line ends with
+-- " #task" (plan D6); description bullets are written as typed.
 
 local T = MiniTest.new_set()
 local eq = MiniTest.expect.equality
@@ -189,7 +191,7 @@ T["(a) col-0 bare text after top task → new sibling top-level task (existing b
   eq(#src, 2, "exactly one line inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "root must be untouched")
   -- Bare text col-0 → repaired into a well-formed TOP-LEVEL task (no indent).
-  eq(src[2], "- [ ] another root", "col-0 bare text → top-level sibling task: [" .. tostring(src[2]) .. "]")
+  eq(src[2], "- [ ] another root #task", "col-0 bare text → top-level sibling task: [" .. tostring(src[2]) .. "]")
 
   child.stop()
 end
@@ -255,7 +257,7 @@ T["(d) indented '- [ ] sub' under a task → child task at depth 1"] = function(
   eq(#src, 2, "exactly one line inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "root must be untouched")
   -- A typed checkbox at depth 1 stays a TASK at that depth (child of root).
-  eq(src[2], "  - [ ] sub task", "indented checkbox → child task at depth 1: [" .. tostring(src[2]) .. "]")
+  eq(src[2], "  - [ ] sub task #task", "indented checkbox → child task at depth 1: [" .. tostring(src[2]) .. "]")
 
   child.stop()
 end
@@ -303,7 +305,7 @@ T["(f) level-skipping indent clamps to anchor depth + 1"] = function()
   local src = child_src(child)
   eq(#src, 2, "exactly one line inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "root must be untouched")
-  eq(src[2], "  - [ ] way deep", "level-skip clamps to depth 1 (2-space indent): [" .. tostring(src[2]) .. "]")
+  eq(src[2], "  - [ ] way deep #task", "level-skip clamps to depth 1 (2-space indent): [" .. tostring(src[2]) .. "]")
 
   child.stop()
 end
@@ -402,7 +404,7 @@ T["(m) first child of a task with existing children → inserted FIRST, not last
   local src = child_src(child)
   eq(#src, 4, "exactly one line inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "root untouched")
-  eq(src[2], "  - [ ] new first child", "new child is FIRST, immediately after parent: " .. vim.inspect(src))
+  eq(src[2], "  - [ ] new first child #task", "new child is FIRST, immediately after parent: " .. vim.inspect(src))
   eq(src[3], "  - [ ] existing child one", "existing child one pushed down")
   eq(src[4], "  - [ ] existing child two", "existing child two pushed down")
 
@@ -482,7 +484,7 @@ T["(j) o on lit match → sibling at the match's depth (autoindent inherits)"] =
   eq(src[2], "  - [ ] Parent #task", "parent untouched")
   eq(src[3], "    - [ ] Match #task", "match untouched")
   -- Sibling of the match: 4-space source indent (depth 2, child of the dim parent).
-  eq(src[4], "    - [ ] sibling", "o on lit match → sibling at depth 2: [" .. tostring(src[4]) .. "]")
+  eq(src[4], "    - [ ] sibling #task", "o on lit match → sibling at depth 2: [" .. tostring(src[4]) .. "]")
 
   child.stop()
 end
@@ -501,7 +503,11 @@ T["(k) indent one more under lit match → child at depth 3"] = function()
   local src = child_src(child)
   eq(src[3], "    - [ ] Match #task", "match untouched")
   -- Child of the match: 6-space source indent (depth 3).
-  eq(src[4], "      - [ ] deeper", "indent one more → child of lit match at depth 3: [" .. tostring(src[4]) .. "]")
+  eq(
+    src[4],
+    "      - [ ] deeper #task",
+    "indent one more → child of lit match at depth 3: [" .. tostring(src[4]) .. "]"
+  )
 
   child.stop()
 end
@@ -529,7 +535,7 @@ T["(l) col-0 note below the lit subtree → top-level task, NOT under dim grandp
   -- child dragged under the dim grandparent.
   eq(
     src[4],
-    "- [ ] outdented top",
+    "- [ ] outdented top #task",
     "col-0 line → top-level task, NOT under dim grandparent: [" .. tostring(src[4]) .. "]"
   )
   eq(src[4]:match("^%s"), nil, "must have NO leading indent (true top level)")

@@ -98,6 +98,47 @@ function M.indent_of(line)
   return s and #s or 0
 end
 
+--- Put the global filter into the DESCRIPTION of a new task line written by a
+--- dashboard insert, so the index keeps it as a task (index/init.lua
+--- make_on_task drops a task whose description lacks the global filter, and the
+--- new task would disappear on the next rerender).
+---
+--- The parser's description is the text before the first emoji / dataview
+--- field, so the filter goes at the end of the description, before any field.
+--- Returns *line* unchanged when *global_filter* is nil / empty, when *line* is
+--- not a task (a description bullet), or when the description already contains
+--- the filter (plain string match, same as the index).
+---
+--- @param line          string      task line (may carry leading indent)
+--- @param global_filter string|nil  configured opts.global_filter
+--- @return string
+function M.ensure_global_filter(line, global_filter)
+  if global_filter == nil or global_filter == "" then
+    return line
+  end
+  local task = require("obsidian-tasks.task.parse").parse(line)
+  if not task or task.description:find(global_filter, 1, true) then
+    return line
+  end
+  -- Byte position where the parser's body starts (after "- [x]" + one space),
+  -- then skip the body's leading whitespace to reach the description.
+  local body_start = line:match("^%s*[-*+] %[.%] ?()")
+  local desc_start = body_start + #line:sub(body_start):match("^%s*")
+  local desc = task.description
+  if desc == "" then
+    -- No description text (empty, or fields only): the filter becomes the
+    -- description, ahead of any fields.
+    local head = line:sub(1, desc_start - 1)
+    if not head:match("%s$") then
+      head = head .. " "
+    end
+    local rest = line:sub(desc_start)
+    return head .. global_filter .. (rest ~= "" and (" " .. rest) or "")
+  end
+  local desc_end = desc_start + #desc - 1
+  return line:sub(1, desc_end) .. " " .. global_filter .. line:sub(desc_end + 1)
+end
+
 --- Compute the re-added structural prefix for a REPAIR_AND_MUTATE row and
 --- return the repaired text plus the number of characters inserted at the start.
 ---

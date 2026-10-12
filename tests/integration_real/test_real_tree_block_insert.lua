@@ -16,7 +16,9 @@
 --   (E) a level-skip within the block clamps to parent + 1.
 --   (F) a 1-line "block" equals the P5b single-line output byte-for-byte.
 --
--- Each test asserts the EXACT source bytes after the block insert.
+-- Each test asserts the EXACT source bytes after the block insert.  The child
+-- runs with global_filter = "#task", so every new TASK line ends with " #task"
+-- (plan D6); description bullets are written as typed.
 
 local T = MiniTest.new_set()
 local eq = MiniTest.expect.equality
@@ -116,9 +118,9 @@ T["(A) nested block under top task keeps root/child/grandchild shape"] = functio
   eq(#src, 4, "three lines inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "anchor untouched")
   -- root is a col-0 task → top-level sibling.
-  eq(src[2], "- [ ] root", "root → top-level task: [" .. tostring(src[2]) .. "]")
+  eq(src[2], "- [ ] root #task", "root → top-level task: [" .. tostring(src[2]) .. "]")
   -- child nests one level under root (2-space indent).
-  eq(src[3], "  - [ ] child", "child nests under root: [" .. tostring(src[3]) .. "]")
+  eq(src[3], "  - [ ] child #task", "child nests under root: [" .. tostring(src[3]) .. "]")
   -- grandchild nests one level under child (4-space indent), description.
   eq(src[4], "    - grandchild", "grandchild nests under child: [" .. tostring(src[4]) .. "]")
 
@@ -160,7 +162,7 @@ T["(C) mixed block: task root + later description root both stay top-level"] = f
   eq(#src, 3, "two lines inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "anchor untouched")
   -- The task root is a col-0 task → top-level sibling.
-  eq(src[2], "- [ ] task root", "task root stays top-level: [" .. tostring(src[2]) .. "]")
+  eq(src[2], "- [ ] task root #task", "task root stays top-level: [" .. tostring(src[2]) .. "]")
   -- Phase 2: the col-0 description is ALSO a true top-level item (no promotion).
   eq(src[3], "- desc root", "description root stays top-level at col 0: [" .. tostring(src[3]) .. "]")
 
@@ -179,10 +181,10 @@ T["(D) outdent back to col-0 mid-block starts a fresh top-level root"] = functio
   local src = child_src(child)
   eq(#src, 4, "three lines inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "anchor untouched")
-  eq(src[2], "- [ ] a", "a → top-level: [" .. tostring(src[2]) .. "]")
-  eq(src[3], "  - [ ] b", "b nests under a: [" .. tostring(src[3]) .. "]")
+  eq(src[2], "- [ ] a #task", "a → top-level: [" .. tostring(src[2]) .. "]")
+  eq(src[3], "  - [ ] b #task", "b nests under a: [" .. tostring(src[3]) .. "]")
   -- c outdented back to col-0 is a FRESH top-level task, NOT a child of b.
-  eq(src[4], "- [ ] c", "c outdents back to top-level: [" .. tostring(src[4]) .. "]")
+  eq(src[4], "- [ ] c #task", "c outdents back to top-level: [" .. tostring(src[4]) .. "]")
 
   child.stop()
 end
@@ -200,9 +202,9 @@ T["(E) level-skip within the block clamps to parent + 1"] = function()
   local src = child_src(child)
   eq(#src, 3, "two lines inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "anchor untouched")
-  eq(src[2], "- [ ] root", "root → top-level: [" .. tostring(src[2]) .. "]")
+  eq(src[2], "- [ ] root #task", "root → top-level: [" .. tostring(src[2]) .. "]")
   -- deep clamps to within-block depth 1 (2-space indent), child of root.
-  eq(src[3], "  - [ ] deep", "level-skip clamps to root + 1: [" .. tostring(src[3]) .. "]")
+  eq(src[3], "  - [ ] deep #task", "level-skip clamps to root + 1: [" .. tostring(src[3]) .. "]")
 
   child.stop()
 end
@@ -250,8 +252,8 @@ T["(G) indented paste root nests under the anchor (anchor-relative, not re-roote
   eq(#src, 4, "three lines pasted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "anchor untouched")
   -- root carried a 2-space indent → child of the anchor (one level deeper).
-  eq(src[2], "  - [ ] root", "indented paste root nests under the anchor: [" .. tostring(src[2]) .. "]")
-  eq(src[3], "    - [ ] child", "child one level deeper than root: [" .. tostring(src[3]) .. "]")
+  eq(src[2], "  - [ ] root #task", "indented paste root nests under the anchor: [" .. tostring(src[2]) .. "]")
+  eq(src[3], "    - [ ] child #task", "child one level deeper than root: [" .. tostring(src[3]) .. "]")
   eq(src[4], "      - grandchild", "grandchild two levels deeper than root: [" .. tostring(src[4]) .. "]")
 
   child.stop()
@@ -275,8 +277,8 @@ T["(H) o-insert a child then a grandchild: child stays under the anchor"] = func
   local src = child_src(child)
   eq(#src, 3, "two lines inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "anchor untouched")
-  eq(src[2], "  - [ ] child", "child nests UNDER the anchor (not top-level): [" .. tostring(src[2]) .. "]")
-  eq(src[3], "    - [ ] grandchild", "grandchild nests under the child: [" .. tostring(src[3]) .. "]")
+  eq(src[2], "  - [ ] child #task", "child nests UNDER the anchor (not top-level): [" .. tostring(src[2]) .. "]")
+  eq(src[3], "    - [ ] grandchild #task", "grandchild nests under the child: [" .. tostring(src[3]) .. "]")
 
   child.stop()
 end
@@ -298,8 +300,8 @@ T["(I) o-insert child + grandchild under a below-top anchor nests correctly"] = 
   eq(#src, 4, "two lines inserted: " .. vim.inspect(src))
   eq(src[1], "- [ ] Root task #task", "top anchor untouched")
   eq(src[2], "  - [ ] existing child", "existing child untouched")
-  eq(src[3], "    - [ ] deep", "deep nests under existing child (depth 2): [" .. tostring(src[3]) .. "]")
-  eq(src[4], "      - [ ] deeper", "deeper nests under deep (depth 3): [" .. tostring(src[4]) .. "]")
+  eq(src[3], "    - [ ] deep #task", "deep nests under existing child (depth 2): [" .. tostring(src[3]) .. "]")
+  eq(src[4], "      - [ ] deeper #task", "deeper nests under deep (depth 3): [" .. tostring(src[4]) .. "]")
 
   child.stop()
 end

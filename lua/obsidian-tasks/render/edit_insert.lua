@@ -128,6 +128,19 @@ local function build_p9_group_context(bufnr, anchor_dashboard_row, anchor_meta)
   return p9_group_context, p9_task_origin
 end
 
+--- Plan D6: put the configured global filter into a new TASK line's
+--- description when it is missing, so the index keeps the new task and it stays
+--- visible after the rerender.  Applies to EVERY task line a dashboard insert
+--- writes (flat, tree single-line, tree block); description bullets never pass
+--- through here.
+---
+--- @param line string  task line (may carry leading indent)
+--- @return string
+local function apply_global_filter(line)
+  local opts = require("obsidian-tasks").opts
+  return edit_util.ensure_global_filter(line, opts and opts.global_filter)
+end
+
 --- Walk the resolved parent chain of a tree INSERT among *rows_above* and report
 --- whether any ANCESTOR is a LIT MATCHED row.
 ---
@@ -481,6 +494,9 @@ function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row)
                 local group_attr = require("obsidian-tasks.render.group_attr")
                 body = group_attr.inject_group_attributes(body, p9_group_context, p9_task_origin)
               end
+              -- D6: every task line of the block (root or child) needs the
+              -- global filter, or the index drops it.
+              body = apply_global_filter(body)
               new_line = source_indent .. body
             end
             out_lines[ri] = new_line
@@ -573,6 +589,8 @@ function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row)
               local group_attr = require("obsidian-tasks.render.group_attr")
               body = group_attr.inject_group_attributes(body, p9_group_context, p9_task_origin)
             end
+            -- D6: global filter, whatever the group-attr gate decided.
+            body = apply_global_filter(body)
             new_line = source_indent .. body
           end
 
@@ -634,6 +652,8 @@ function M.process_inserts(bufnr, insert_rows, delete_rows, meta_by_row)
         -- inherits the tag/priority/status of the group it was inserted into.
         local group_attr = require("obsidian-tasks.render.group_attr")
         write_text = group_attr.inject_group_attributes(write_text, p9_group_context, p9_task_origin)
+        -- D6: global filter in the description, so the new task stays visible.
+        write_text = apply_global_filter(write_text)
 
         -- Write to source; pass dashboard_bufnr so the undo ring entry is
         -- recorded under the correct buffer key (required for Q13 merge).

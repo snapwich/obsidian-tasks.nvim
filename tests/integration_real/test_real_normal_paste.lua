@@ -89,12 +89,19 @@ T["normal-mode paste of two rendered child rows: added to source, backlink strip
   local s = src(child)
   eq(#s, 5, "two tasks added to source: " .. vim.inspect(s))
   eq(s[1], "- [ ] anchor #task")
-  eq(s[2], "  - [ ] test2 [[note|alias]]")
-  eq(s[3], "    - [ ] test3 [[note|alias]]")
-  -- Pasted copies: anchor-relative depth (child / grandchild of anchor), and the
-  -- appended dashboard backlink ([[0]]) is NOT present — only the user's wikilink.
-  eq(s[4], "  - [ ] test2 [[note|alias]]", "pasted test2 clean + nested under anchor: [" .. tostring(s[4]) .. "]")
-  eq(s[5], "    - [ ] test3 [[note|alias]]", "pasted test3 clean + nested under test2: [" .. tostring(s[5]) .. "]")
+  -- Pasted copies go in as the FIRST children of the anchor: anchor-relative
+  -- depth (child / grandchild of anchor), and the appended dashboard backlink
+  -- ([[0]]) is NOT present — only the user's wikilink.  Each copy is a new task
+  -- line, so it also gets the global filter (plan D6).
+  eq(s[2], "  - [ ] test2 [[note|alias]] #task", "pasted test2 clean + nested under anchor: [" .. tostring(s[2]) .. "]")
+  eq(
+    s[3],
+    "    - [ ] test3 [[note|alias]] #task",
+    "pasted test3 clean + nested under test2: [" .. tostring(s[3]) .. "]"
+  )
+  -- The original children are untouched, below the pasted copies.
+  eq(s[4], "  - [ ] test2 [[note|alias]]")
+  eq(s[5], "    - [ ] test3 [[note|alias]]")
   -- No leaked numeric backlink anywhere.
   for _, l in ipairs(s) do
     eq(l:match("%[%[%d+%]%]") == nil, true, "no leaked [[N]] backlink in: [" .. l .. "]")

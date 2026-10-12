@@ -187,7 +187,7 @@ T["o + bare word: source gets - [ ] word as new task"] = function()
   local src_after = child.lua_get("vim.fn.readfile(_G._src)")
   eq(#src_after, 2, "source must have 2 lines after bare-text INSERT")
   eq(src_after[1], "- [ ] Anchor #task", "anchor unchanged")
-  eq(src_after[2], "- [ ] test", "bare-text 'test' auto-prefixed with - [ ]")
+  eq(src_after[2], "- [ ] test #task", "bare-text 'test' auto-prefixed with - [ ]")
 
   child.stop()
   pcall(vim.fn.delete, src)

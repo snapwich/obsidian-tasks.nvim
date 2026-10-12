@@ -149,12 +149,13 @@ T["group by file: new task does NOT get a file attribute auto-added"] = function
     end
   end
   eq(found ~= nil, true, "new task must appear in source")
-  -- Confirm no extraneous attributes appended (the task line stays clean — no
-  -- emoji, no #tag, no dataview field beyond what the user typed).  The
-  -- group-by-file inheritance is "the file the new task lives in".
+  -- Confirm no group attribute appended (no emoji, no group #tag, no dataview
+  -- field beyond what the user typed).  The group-by-file inheritance is "the
+  -- file the new task lives in".  The only addition is the global filter
+  -- ("#task", from setup), which every inserted task gets (plan D6).
   eq(
     found:gsub("%s+$", ""),
-    "- [ ] Plain new task",
+    "- [ ] Plain new task #task",
     "P9 must NOT auto-add anything for group by file: found=[" .. (found or "nil") .. "]"
   )
 
