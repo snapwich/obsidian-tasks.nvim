@@ -16,6 +16,10 @@
 -- last task of the group above, `O` on a non-top task, `O` + <Esc> with an
 -- empty line (writes nothing; the header returns), and one `show tree` fold.
 --
+-- A scenario that writes a task ends with assert_in_group (the task shows in
+-- the group where it was typed); a fallback scenario asserts that nothing was
+-- written and that the line is kept directly below the closing fence.
+--
 -- See CLAUDE.md: these tests drive a child Neovim with type_keys + sleep; they
 -- never edit the dashboard with nvim_buf_set_lines.
 
@@ -227,13 +231,65 @@ local function warned(child, needle)
   return false
 end
 
---- The group-top fallback outcome for *text* (no daily-note resolver): source
---- untouched, the line kept *n* times as note content below the dashboard, and
---- the no-anchor warning shown.
-local function expect_group_top_fallback(child, text, n)
+--- The note content of the dashboard (managed rows stripped) when *kept* lines
+--- sit directly below the closing fence of the query block.
+local function note_with_kept(kept)
+  local out = { "# Dashboard", "", "```tasks" }
+  vim.list_extend(out, GROUP_QUERY)
+  out[#out + 1] = "```"
+  vim.list_extend(out, kept)
+  vim.list_extend(out, { "", "Trailing prose." })
+  return out
+end
+
+--- The group-top fallback outcome for *text* (no daily-note resolver): nothing
+--- written to the source note, the typed line kept *n* times as note content
+--- DIRECTLY below the closing fence, and the no-anchor warning shown.
+--- *kept* (optional) is the full list of kept lines, for a multi-line block.
+local function expect_group_top_fallback(child, text, n, kept)
   eq(src_lines(child), SOURCE, "a group-top insert must not write the source note")
-  eq(count(note_rows(child), text), n or 1, "typed line kept as note content: " .. vim.inspect(dash_lines(child)))
+  if kept == nil then
+    kept = {}
+    for _ = 1, n or 1 do
+      kept[#kept + 1] = text
+    end
+  end
+  eq(note_rows(child), note_with_kept(kept), "typed line kept below the fence: " .. vim.inspect(dash_lines(child)))
   eq(warned(child, "no task to anchor to"), true, "no-anchor warning: " .. vim.inspect(child.lua_get("_G._warns")))
+end
+
+--- The group header label ("## <group>") nearest at or above 0-indexed *row*.
+local function header_above(child, row)
+  return child.lua_get(
+    [[(function(row)
+      local ns = require("obsidian-tasks.util.extmark").NS
+      local best_row, best = -1, vim.NIL
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(_G._dash_bufnr, ns, 0, -1, { details = true })) do
+        if m[2] <= row and m[2] >= best_row then
+          for _, chunks in ipairs(m[4].virt_lines or {}) do
+            for _, c in ipairs(chunks) do
+              if c[2] == "ObsidianTasksGroupHeader" then best_row, best = m[2], c[1] end
+            end
+          end
+        end
+      end
+      return best
+    end)(...)]],
+    { row }
+  )
+end
+
+--- The core invariant: after the rerender, the task that shows *text* is a
+--- managed dashboard row under the group header "## <group>".
+local function assert_in_group(child, text, group)
+  local row = find_row(child, text)
+  eq(row >= 0, true, text .. " must be rendered: " .. vim.inspect(dash_lines(child)))
+  eq(
+    child.lua_get("require('obsidian-tasks.render.managed').task_meta_for_row(_G._dash_bufnr, ...) ~= nil", { row }),
+    true,
+    text .. " must be a managed row"
+  )
+  eq(header_above(child, row), "## " .. group, text .. " group: " .. vim.inspect(dash_lines(child)))
 end
 
 local function on_task(child, needle)
@@ -357,8 +413,7 @@ T["O + text + <CR> + text: both lines are group-top, header above the first"] = 
   child.type_keys("<Esc>")
   vim.loop.sleep(400)
   eq(header_was_above(child, "- [ ] Line one"), true)
-  expect_group_top_fallback(child, "- [ ] Line one")
-  eq(count(note_rows(child), "- [ ] Line two"), 1)
+  expect_group_top_fallback(child, "- [ ] Line one", 1, { "- [ ] Line one", "- [ ] Line two" })
   child.stop()
 end
 
@@ -374,6 +429,7 @@ T["o on the last task of the group above keeps today's anchor behavior"] = funct
   local s = src_lines(child)
   eq(s[4], "- [ ] Below A2 #task", "written after the anchor: " .. vim.inspect(s))
   eq(s[5], "## technical debt")
+  assert_in_group(child, "Below A2", "refactoring")
   child.stop()
 end
 
@@ -387,6 +443,7 @@ T["p on the last task of the group above keeps today's anchor behavior"] = funct
   eq(f ~= nil and f.line:find("Debt B", 1, true) ~= nil, true, "header stayed on Debt B: " .. vim.inspect(f))
   local s = src_lines(child)
   eq(s[4], "- [ ] Pasted below A2 #task", "written after the anchor: " .. vim.inspect(s))
+  assert_in_group(child, "Pasted below A2", "refactoring")
   child.stop()
 end
 
@@ -400,6 +457,7 @@ T["O on a non-top task keeps today's anchor behavior"] = function()
   local s = src_lines(child)
   eq(s[6], "- [ ] Above C #task", "written after Debt B: " .. vim.inspect(s))
   eq(s[7], "- [ ] Debt C #task")
+  assert_in_group(child, "Above C", "technical debt")
   child.stop()
 end
 
@@ -461,7 +519,12 @@ T["show tree: O on a group-top root moves the header and keeps its closed subtre
   child.type_keys("<Esc>")
   vim.loop.sleep(500)
   eq(header_was_above(child, "- [ ] Tree top"), true)
-  eq(src_lines(child), source)
+  eq(src_lines(child), source, "nothing written to the source note")
+  eq(
+    count(note_rows(child), "- [ ] Tree top"),
+    1,
+    "typed line kept below the fence: " .. vim.inspect(dash_lines(child))
+  )
   eq(child.fn.foldclosed(find_row(child, "Debt B") + 1), -1)
   child.stop()
 end

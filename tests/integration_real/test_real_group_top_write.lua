@@ -311,6 +311,28 @@ local function assert_in_group(child, task_text, group_path)
   end
 end
 
+--- The fallback outcome: the typed *text* is kept as note content DIRECTLY
+--- below the closing fence of the query block (the dashboard note, managed rows
+--- stripped, is the fence, then the line, then the trailing prose).
+local function expect_kept_below_fence(child, text, query)
+  local note = child.lua_get([[(function()
+    local save = require("obsidian-tasks.render.save")
+    local skip = {}
+    for _, r in ipairs(save.compute_managed_ranges(_G._b)) do
+      for row = r[1], r[2] do skip[row] = true end
+    end
+    local out = {}
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(_G._b, 0, -1, false)) do
+      if not skip[i - 1] then out[#out + 1] = l end
+    end
+    return out
+  end)()]])
+  local expect = { "# Dashboard", "", "```tasks" }
+  vim.list_extend(expect, query)
+  vim.list_extend(expect, { "```", text, "", "Trailing prose." })
+  eq(note, expect, "typed line kept below the fence: " .. vim.inspect(dash_lines(child)))
+end
+
 local function cursor_line(child)
   return child.lua_get("vim.api.nvim_get_current_line()")
 end
@@ -388,6 +410,64 @@ T["heading: heading missing → appended at the level of the real heading line"]
   eq(daily_lines(child), { "# 2026-10-11", "intro", "", "### technical debt", "- [ ] Deep debt #task" })
   eq(has_msg(child, "› ### technical debt (created)", INFO), true, vim.inspect(msgs(child)))
   assert_in_group(child, "Deep debt", "technical debt")
+  child.stop()
+end
+
+T["heading: section with NO list items → below the heading, one blank between"] = function()
+  local child = spawn({
+    files = { ["projects/work.md"] = WORK },
+    query = { "not done", "group by heading" },
+    daily = { "# 2026-10-11", "", "## technical debt", "Some notes.", "", "## other" },
+  })
+  on_task(child, "Debt B")
+  child.type_keys("O", "Prose debt", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), {
+    "# 2026-10-11",
+    "",
+    "## technical debt",
+    "",
+    "- [ ] Prose debt #task",
+    "",
+    "Some notes.",
+    "",
+    "## other",
+  })
+  eq(has_msg(child, "added to " .. DAILY_REL .. " › ## technical debt", INFO), true, vim.inspect(msgs(child)))
+  eq(has_msg(child, "(created)"), false, "nothing was created")
+  assert_in_group(child, "Prose debt", "technical debt")
+  child.stop()
+end
+
+T["(No heading): daily note without frontmatter → before the first heading"] = function()
+  local child = spawn({
+    files = { ["inbox.md"] = { "- [ ] Loose A #task" }, ["projects/work.md"] = WORK },
+    query = { "not done", "group by heading" },
+    daily = { "Intro.", "", "## technical debt", "- [ ] Old #task" },
+  })
+  on_task(child, "Loose A")
+  child.type_keys("O", "Loose plain", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), { "Intro.", "", "- [ ] Loose plain #task", "", "## technical debt", "- [ ] Old #task" })
+  assert_in_group(child, "Loose plain", "(No heading)")
+  child.stop()
+end
+
+T["(No heading): daily note without headings → end of file"] = function()
+  local child = spawn({
+    files = { ["inbox.md"] = { "- [ ] Loose A #task" }, ["projects/work.md"] = WORK },
+    query = { "not done", "group by heading" },
+    daily = { "Some text" },
+  })
+  on_task(child, "Loose A")
+  child.type_keys("O", "Loose end", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), { "Some text", "", "- [ ] Loose end #task" })
+  eq(has_msg(child, "added to " .. DAILY_REL .. " › (No heading)", INFO), true, vim.inspect(msgs(child)))
+  assert_in_group(child, "Loose end", "(No heading)")
   child.stop()
 end
 
@@ -523,18 +603,41 @@ T["folder: below-fence fallback + warning, nothing written"] = function()
   eq(daily_lines(child), vim.NIL, "no daily note for a folder group")
   eq(file_lines(child, "b/beta.md"), { "- [ ] Beta one #task" })
   eq(has_msg(child, "group by folder", WARN), true, vim.inspect(msgs(child)))
-  local fallback = child.lua_get([[(function()
-    local save = require("obsidian-tasks.render.save")
-    local skip = {}
-    for _, r in ipairs(save.compute_managed_ranges(_G._b)) do
-      for row = r[1], r[2] do skip[row] = true end
-    end
-    for i, l in ipairs(vim.api.nvim_buf_get_lines(_G._b, 0, -1, false)) do
-      if not skip[i - 1] and l == "Beta zero" then return true end
-    end
-    return false
-  end)()]])
-  eq(fallback, true, "typed line kept as note content: " .. vim.inspect(dash_lines(child)))
+  expect_kept_below_fence(child, "Beta zero", { "not done", "group by folder" })
+  child.stop()
+end
+
+T["path: below-fence fallback + warning, nothing written"] = function()
+  local child = spawn({
+    files = { ["a/alpha.md"] = { "- [ ] Alpha one #task" }, ["b/beta.md"] = { "- [ ] Beta one #task" } },
+    query = { "not done", "group by path" },
+  })
+  on_task(child, "Beta one")
+  child.type_keys("O", "Beta path", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), vim.NIL, "no daily note for a path group")
+  eq(file_lines(child, "a/alpha.md"), { "- [ ] Alpha one #task" })
+  eq(file_lines(child, "b/beta.md"), { "- [ ] Beta one #task" })
+  eq(has_msg(child, "group by path", WARN), true, vim.inspect(msgs(child)))
+  expect_kept_below_fence(child, "Beta path", { "not done", "group by path" })
+  child.stop()
+end
+
+T["root: below-fence fallback + warning, nothing written"] = function()
+  local child = spawn({
+    files = { ["a/alpha.md"] = { "- [ ] Alpha one #task" }, ["b/beta.md"] = { "- [ ] Beta one #task" } },
+    query = { "not done", "group by root" },
+  })
+  on_task(child, "Beta one")
+  child.type_keys("O", "Beta root", "<Esc>")
+  settle()
+
+  eq(daily_lines(child), vim.NIL, "no daily note for a root group")
+  eq(file_lines(child, "a/alpha.md"), { "- [ ] Alpha one #task" })
+  eq(file_lines(child, "b/beta.md"), { "- [ ] Beta one #task" })
+  eq(has_msg(child, "group by root", WARN), true, vim.inspect(msgs(child)))
+  expect_kept_below_fence(child, "Beta root", { "not done", "group by root" })
   child.stop()
 end
 
@@ -732,6 +835,7 @@ T["no resolver (daily_note = false) → below-fence fallback"] = function()
   eq(daily_lines(child), vim.NIL)
   eq(file_lines(child, "projects/work.md"), WORK)
   eq(has_msg(child, "no task to anchor to", WARN), true, vim.inspect(msgs(child)))
+  expect_kept_below_fence(child, "Homeless debt", { "not done", "group by heading" })
   child.stop()
 end
 

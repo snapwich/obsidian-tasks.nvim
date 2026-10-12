@@ -159,4 +159,149 @@ T["group-top insert creates the daily note through obsidian.nvim (template + fro
   child.stop()
 end
 
+-- A custom obsidian.nvim date_format and a daily template that has its OWN
+-- frontmatter: the default resolver follows the date_format, obsidian.nvim
+-- writes the note (template frontmatter merged with its own keys), and a
+-- "(No heading)" group-top task goes after the frontmatter and the template
+-- preamble, directly before the first heading (plan D4).
+T["date_format + a template with frontmatter: (No heading) task after the preamble"] = function()
+  local child = MiniTest.new_child_neovim()
+  child.start({ "--clean", "-n", "--headless" })
+  child.lua(
+    [[
+    local cwd, deps_dir = ...
+    vim.opt.rtp:prepend(deps_dir .. "/mini.nvim")
+    vim.opt.rtp:prepend(deps_dir .. "/obsidian.nvim")
+    vim.opt.rtp:prepend(cwd)
+    local orig = vim.treesitter.start
+    vim.treesitter.start = function(...) pcall(orig, ...) end
+
+    local vault = vim.fs.normalize(vim.fn.resolve(vim.fn.tempname()) .. "-vault")
+    for _, d in ipairs({ "/.obsidian", "/templates", "/projects", "/journal" }) do
+      vim.fn.mkdir(vault .. d, "p")
+    end
+    vim.fn.writefile(
+      { "---", "type: daily", "---", "Captured {{title}}.", "", "## technical debt" },
+      vault .. "/templates/daily.md"
+    )
+    vim.fn.writefile({ "- [ ] Loose A #task" }, vault .. "/inbox.md")
+    vim.fn.writefile({ "## technical debt", "- [ ] Debt B #task" }, vault .. "/projects/work.md")
+    vim.fn.writefile(
+      { "# Dashboard", "", "```tasks", "not done", "group by heading", "```", "", "Trailing prose." },
+      vault .. "/dashboard.md"
+    )
+    _G._vault = vault
+
+    require("obsidian").setup({
+      workspaces = { { name = "tmp-vault", path = vault } },
+      log_level = vim.log.levels.ERROR,
+      completion = { nvim_cmp = false, blink = false },
+      picker = { name = nil },
+      ui = { enable = false },
+      templates = { folder = "templates" },
+      daily_notes = { folder = "journal", date_format = "%Y_%m_%d", template = "daily.md", workdays_only = false },
+    })
+    require("obsidian-tasks").setup({ global_filter = "#task" })
+
+    _G._msgs = {}
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level, o)
+      _G._msgs[#_G._msgs + 1] = msg
+      return orig_notify(msg, level, o)
+    end
+
+    local index = require("obsidian-tasks.index")
+    local ws = require("obsidian-tasks.util.obsidian").workspace_for_path(vault .. "/dashboard.md")
+    local done = false
+    index.refresh_all(ws, function() done = true end)
+    vim.wait(5000, function() return done end)
+    index.refresh_all = function(_, on_done) if on_done then on_done() end end
+
+    local render = require("obsidian-tasks.render.init")
+    render.configure({ default_folded = false })
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(vault .. "/dashboard.md"))
+    local b = vim.api.nvim_get_current_buf()
+    vim.b[b].obsidian_tasks_dashboard = true
+    vim.bo[b].autoindent = false
+    render.render_buffer(b, ws)
+    vim.cmd("normal! zR")
+    _G._b = b
+  ]],
+    { cwd, deps_dir }
+  )
+
+  local stem = os.date("%Y_%m_%d")
+  local daily = child.lua_get("_G._vault") .. "/journal/" .. stem .. ".md"
+  eq(child.lua_get("vim.fn.filereadable(...)", { daily }), 0, "the daily note is missing before the insert")
+
+  local row = child.lua_get([[(function()
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(_G._b, 0, -1, false)) do
+      if l:find("Loose A", 1, true) then return i - 1 end
+    end
+    return -1
+  end)()]])
+  eq(row >= 0, true, "Loose A is rendered")
+  child.api.nvim_win_set_cursor(0, { row + 1, 0 })
+  vim.loop.sleep(50)
+  child.type_keys("<Ignore>")
+  vim.loop.sleep(50)
+  child.type_keys("O", "Loose new", "<Esc>")
+  vim.loop.sleep(700)
+
+  eq(child.lua_get("vim.fn.filereadable(...)", { daily }), 1, "created at the date_format path")
+  local lines = child.lua_get("vim.fn.readfile(...)", { daily })
+  local ctx = vim.inspect(lines)
+  eq(lines[1], "---", "frontmatter first: " .. ctx)
+  local fm_end
+  for i = 2, #lines do
+    if lines[i] == "---" then
+      fm_end = i
+      break
+    end
+  end
+  eq(fm_end ~= nil, true, "frontmatter is closed: " .. ctx)
+  local fm = table.concat(vim.list_slice(lines, 2, fm_end - 1), "\n")
+  eq(fm:find("type: daily", 1, true) ~= nil, true, "the template's frontmatter key is kept: " .. ctx)
+  eq(fm:find(stem, 1, true) ~= nil, true, "obsidian.nvim wrote its own keys (id): " .. ctx)
+  eq(
+    vim.list_slice(lines, fm_end + 1, #lines),
+    { "Captured " .. stem .. ".", "", "- [ ] Loose new #task", "", "## technical debt" },
+    "task after the preamble, before the first heading: " .. ctx
+  )
+
+  local msgs = child.lua_get("_G._msgs")
+  local created = false
+  for _, m in ipairs(msgs) do
+    if m:find("added to journal/" .. stem .. ".md › (No heading) (created)", 1, true) then
+      created = true
+    end
+  end
+  eq(created, true, vim.inspect(msgs))
+
+  -- The invariant: the new task shows in the (No heading) group.
+  local shown = child.lua_get([[(function()
+    local ns = require("obsidian-tasks.util.extmark").NS
+    local lines = vim.api.nvim_buf_get_lines(_G._b, 0, -1, false)
+    local row
+    for i, l in ipairs(lines) do
+      if l:find("Loose new", 1, true) then row = i - 1 end
+    end
+    if not row then return "missing" end
+    if require("obsidian-tasks.render.managed").task_meta_for_row(_G._b, row) == nil then return "not managed" end
+    local header, best = nil, -1
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(_G._b, ns, 0, -1, { details = true })) do
+      if m[2] <= row and m[2] >= best then
+        for _, chunks in ipairs(m[4].virt_lines or {}) do
+          for _, c in ipairs(chunks) do
+            if c[2] == "ObsidianTasksGroupHeader" then best, header = m[2], c[1] end
+          end
+        end
+      end
+    end
+    return header
+  end)()]])
+  eq(shown, "## (No heading)", vim.inspect(child.lua_get("vim.api.nvim_buf_get_lines(_G._b, 0, -1, false)")))
+  child.stop()
+end
+
 return T
