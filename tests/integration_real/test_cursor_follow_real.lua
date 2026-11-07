@@ -12,7 +12,9 @@
 --      that reorders GROUPS;
 --   3. revert.do_revert after an edit the flush rejects;
 --   4. rerender_buffer through mark_dirty_for_deferred_sync's BufEnter hook —
---      the site whose outer row-pinned restore was deleted.
+--      the site whose outer row-pinned restore was deleted;
+--   5. edit.flush after a whole-row replace from Lua, which deletes the row's
+--      draw extmark.
 --
 -- Why a child Neovim: an edit made with nvim_buf_set_lines runs with
 -- vim.fn.mode() == "n", so the insert-mode gates in edit.flush and do_revert
@@ -397,6 +399,50 @@ T["deferred BufEnter sync follows the task instead of pinning the row"] = functi
   eq(new_row0 ~= row0, true, "the deferred sync must have reordered")
   eq(cursor_row(child), new_row0 + 1, "the cursor must be on Task 10's NEW row")
   eq(cursor_line(child):find("Task 10", 1, true) ~= nil, true, "cursor line: [" .. cursor_line(child) .. "]")
+
+  child.stop()
+end
+
+-- ── 5. Whole-row replace from Lua (obsidian.nvim checkbox toggle) ────────────
+--
+-- obsidian.nvim's checkbox toggle (and its `<CR>` smart action) replaces the
+-- WHOLE row with nvim_buf_set_lines.  Neovim then deletes the row's draw
+-- extmark, so the identity is not on the row any more when edit.flush calls
+-- rerender_buffer.  The save must read the identity from revert's meta
+-- snapshot, which on_lines keeps aligned with the rows.
+--
+-- Under `group by status` the completed task moves to the "Done" group, which
+-- sorts above "Todo".  If the save lost the identity, the cursor would stay on
+-- the old row number, which after the move holds a different task.
+
+T["whole-row replace from Lua: the cursor follows the completed task to its new group"] = function()
+  local child = spawn_dashboard(plain_tasks(12), { "group by status" })
+
+  local row0 = find_row(child, "Task 06")
+  eq(row0 >= 0, true, "Task 06 must be rendered")
+  eq(group_at(child, row0), "Todo", "setup: Task 06 must start in the Todo group")
+  child.api.nvim_win_set_cursor(0, { row0 + 1, 0 })
+
+  -- The same edit obsidian.nvim makes: replace the whole row from Lua, bound to
+  -- a key so it runs from a real keypress in normal mode.
+  child.lua([[
+    vim.keymap.set("n", "<F5>", function()
+      local r = vim.api.nvim_win_get_cursor(0)[1]
+      local line = vim.api.nvim_buf_get_lines(0, r - 1, r, true)[1]
+      vim.api.nvim_buf_set_lines(0, r - 1, r, true, { (line:gsub("%[ %]", "[x]", 1)) })
+    end)
+  ]])
+  child.type_keys("<F5>")
+  vim.loop.sleep(500)
+
+  eq(read_source(child)[6], "- [x] Task 06 #task", "the toggle must reach the source file")
+
+  local new_row0 = find_row(child, "Task 06")
+  eq(new_row0 >= 0, true, "Task 06 must still be rendered")
+  eq(group_at(child, new_row0), "Done", "Task 06 must have moved to the Done group")
+  eq(new_row0 ~= row0, true, "the move must have changed Task 06's row")
+  eq(cursor_row(child), new_row0 + 1, "the cursor must be on Task 06's NEW row")
+  eq(cursor_line(child):find("Task 06", 1, true) ~= nil, true, "cursor line: [" .. cursor_line(child) .. "]")
 
   child.stop()
 end

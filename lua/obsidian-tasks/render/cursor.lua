@@ -162,6 +162,21 @@ function M.save(bufnr)
         end
       end
 
+      -- Fallback when the row has no draw extmark.  A whole-row replace
+      -- (nvim_buf_set_lines on the row, as obsidian.nvim's checkbox toggle
+      -- does) deletes the extmark, so the edit.flush rerender would lose the
+      -- task and pin the row.  revert's meta snapshot is kept aligned with the
+      -- live rows by on_lines, so it still names the task on this row.  Its
+      -- entries use managed.lua's names: source_file, and a 0-indexed
+      -- source_row.
+      if not entry.id then
+        local ok_rv, revert = pcall(require, "obsidian-tasks.render.revert")
+        local meta = ok_rv and type(revert.meta_snapshot) == "function" and revert.meta_snapshot(bufnr)[lnum0]
+        if meta and meta.source_file and meta.source_row then
+          entry.id = { src_path = meta.source_file, src_line = meta.source_row + 1 }
+        end
+      end
+
       -- Group hint + neighbor come from the block whose line_map holds this
       -- row.  line_map rows are STALE after buffer edits, so the hint is only
       -- accepted when its identity still equals the live one from the extmark.
